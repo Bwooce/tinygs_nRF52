@@ -35,10 +35,13 @@ To fit the full stack (Zephyr + OpenThread + mbedTLS + RadioLib) into 256KB RAM 
 | **RadioLib & App Logic** | ~30 KB | State machine, JSON parsing, LoRa buffers. |
 | **Total Estimated Peak** | **~222 KB** | **Leaves ~34 KB margin.** Hardware crypto (nRF CC310) will be used to reduce CPU load and peak RAM spikes. |
 
-### 3.3 Configuration Interface: WebBLE
-*   We will expose a BLE peripheral service on the nRF52840.
-*   Users can navigate to a static webpage (e.g., `config.tinygs.com/nrf52`) using Chrome or Edge.
-*   Using the Web Bluetooth API (WebBLE), the browser can connect directly to the board to provision Thread Network Credentials, TinyGS Station ID, and Passwords. **No smartphone app required.**
+### 3.3 Configuration Interface: WebBLE / WebUSB Hybrid
+Standard Thread Commissioning securely provisions network credentials but cannot pass application-layer secrets (like TinyGS Station ID or MQTT Password).
+
+To solve this, we will implement a dual-mode **WebBLE and WebUSB Configuration Interface**:
+1.  **WebBLE (Wireless):** On first boot, the node advertises over BLE. The user opens an internet-hosted WebBLE app (e.g., `https://config.tinygs.com`), connects, and provisions the credentials. Once provisioned, the application calls `bt_disable()` (with `CONFIG_BT_DEINIT=y`) to shut down the Bluetooth stack and reclaim the 20-30KB of RAM for the TLS buffers.
+2.  **WebUSB (Wired Fallback):** If the user plugs the device into a PC via USB-C, it registers as a WebUSB device (using Zephyr's `CONFIG_USBD_WEBUSB_CLASS`). The browser can connect to the device over the physical cable to provision the same settings, entirely bypassing the need for Bluetooth.
+3.  **QR Code Generation:** The web app retrieves the device's 802.15.4 MAC address and an auto-generated Thread Joiner Password (PSKd) over either connection method, rendering a standard Thread Commissioning QR Code for the user to scan with their Home Assistant app.
 
 ### 3.4 RadioLib Zephyr Integration
 RadioLib is natively designed for the Arduino ecosystem. To run it on Zephyr RTOS, we will create a custom HAL (Hardware Abstraction Layer) class inheriting from `RadioLibHal`.
