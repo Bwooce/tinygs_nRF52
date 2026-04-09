@@ -6,6 +6,10 @@
 #include <openthread/thread.h>
 #include <openthread/ip6.h>
 
+#include <zephyr/usb/usb_device.h>
+#include <zephyr/fs/fs.h>
+#include <ff.h>
+
 LOG_MODULE_REGISTER(tinygs_nrf52, LOG_LEVEL_DBG);
 
 /* The mqtt client struct */
@@ -62,6 +66,95 @@ static void init_openthread(void)
     openthread_start(openthread_get_default_context());
 }
 
+/* -------------------------------------------------------------------------- */
+/* USB MSC & FATFS Configuration UI */
+/* -------------------------------------------------------------------------- */
+
+static FATFS fat_fs;
+static struct fs_mount_t mp = {
+    .type = FS_FATFS,
+    .mnt_point = "/NAND:",
+    .fs_data = &fat_fs,
+};
+
+const char *html_content = 
+    "<!DOCTYPE html><html><head><title>TinyGS Configurator</title>"
+    "<style>body{font-family:sans-serif;max-width:600px;margin:40px auto;padding:20px;}</style>"
+    "</head><body>"
+    "<h1>TinyGS Setup</h1>"
+    "<p><b>MAC Address (EUI-64):</b> <span id='mac'>Loading...</span></p>"
+    "<p><b>Joiner Password (PSKd):</b> <span id='pskd'>J01NME</span></p>"
+    "<hr>"
+    "<label>Station ID:</label><br><input type='text' id='station' value='MyTinyGS'><br><br>"
+    "<label>MQTT Password:</label><br><input type='password' id='pass' value='ChangeMe'><br><br>"
+    "<button onclick='saveConfig()'>Save config.txt</button>"
+    "<script>"
+    "function saveConfig() {"
+    "  const content = 'STATION_ID=' + document.getElementById('station').value + '\\n' +"
+    "                  'MQTT_PASSWORD=' + document.getElementById('pass').value + '\\n';"
+    "  const blob = new Blob([content], { type: 'text/plain' });"
+    "  const a = document.createElement('a');"
+    "  a.href = URL.createObjectURL(blob);"
+    "  a.download = 'config.txt';"
+    "  a.click();"
+    "}"
+    "</script>"
+    "</body></html>";
+
+const char *default_config = 
+    "STATION_ID=MyTinyGS\n"
+    "MQTT_PASSWORD=ChangeMe\n";
+
+static void setup_usb_storage(void) {
+    struct fs_file_t file;
+    struct fs_dirent entry;
+
+    LOG_INF("Mounting FATFS /NAND: ...");
+    int res = fs_mount(&mp);
+
+    if (res != 0) {
+        LOG_INF("Formatting /NAND: partition...");
+        res = fs_mkfs(FS_FATFS, (uintptr_t)mp.mnt_point, &mp, 0);
+        if (res == 0) {
+            res = fs_mount(&mp);
+        } else {
+            LOG_ERR("Failed to format: %d", res);
+            return;
+        }
+    }
+
+    if (res == 0) {
+        LOG_INF("FATFS Mounted successfully!");
+        fs_file_t_init(&file);
+
+        /* Create index.html if missing */
+        if (fs_stat("/NAND:/index.html", &entry) != 0) {
+            LOG_INF("Creating index.html...");
+            if (fs_open(&file, "/NAND:/index.html", FS_O_CREATE | FS_O_WRITE) == 0) {
+                fs_write(&file, html_content, strlen(html_content));
+                fs_close(&file);
+            }
+        }
+
+        /* Create config.txt if missing */
+        if (fs_stat("/NAND:/config.txt", &entry) != 0) {
+            LOG_INF("Creating default config.txt...");
+            if (fs_open(&file, "/NAND:/config.txt", FS_O_CREATE | FS_O_WRITE) == 0) {
+                fs_write(&file, default_config, strlen(default_config));
+                fs_close(&file);
+            }
+        }
+    }
+
+    /* Enable USB subsystem */
+    res = usb_enable(NULL);
+    if (res != 0) {
+        LOG_ERR("Failed to enable USB: %d", res);
+    } else {
+        LOG_INF("USB MSC enabled. Plug into PC to configure.");
+    }
+}
+
 /**
  * Main Application Loop
  */
@@ -70,6 +163,7 @@ int main(void)
     LOG_INF("TinyGS nRF52 Port - Phase 1: TLS over Thread PoC");
     LOG_INF("Board: Heltec T114");
 
+    setup_usb_storage();
     init_openthread();
 
     /* The main loop will eventually handle the state machine for MQTT keep-alives 
