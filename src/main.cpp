@@ -9,7 +9,7 @@
 LOG_MODULE_REGISTER(tinygs_nrf52, LOG_LEVEL_DBG);
 
 /* The mqtt client struct */
-static struct mqtt_client client_ctx;
+// static struct mqtt_client client_ctx;
 
 /* MQTT Broker details */
 #define SERVER_ADDR "mqtt.tinygs.com"
@@ -18,9 +18,9 @@ static struct mqtt_client client_ctx;
 #define APP_SLEEP_MSECS 500
 
 /* Buffers for MQTT client */
-static uint8_t rx_buffer[256];
-static uint8_t tx_buffer[256];
-static uint8_t payload_buf[256];
+// static uint8_t rx_buffer[256];
+// static uint8_t tx_buffer[256];
+// static uint8_t payload_buf[256];
 
 /**
  * OpenThread State Change Callback

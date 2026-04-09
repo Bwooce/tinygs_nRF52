@@ -20,5 +20,5 @@ target_sources(app PRIVATE
 )
 
 # App Include Directories
-target_include_directories(app PRIVATE src/hal lib/RadioLib/src)
+target_include_directories(app PRIVATE src/hal lib/RadioLib/src lib/ArduinoJson/src)
 
