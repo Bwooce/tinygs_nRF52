@@ -49,7 +49,7 @@ RadioLib is natively designed for the Arduino ecosystem. To run it on Zephyr RTO
 
 ### Phase 1: High-Risk Prototyping (TLS Memory & Network)
 Before porting the state machine, we must prove the 256KB RAM budget holds up during a full TLS handshake over Thread.
-1.  **Zephyr Thread NAT64 Setup:** Configure Zephyr as an OpenThread MTD (Minimal Thread Device) and ensure it can synthesize NAT64 addresses to ping IPv4 internet servers.
+1.  **[IN PROGRESS] Zephyr Thread NAT64 Setup:** Configure Zephyr as an OpenThread MTD (Minimal Thread Device) and ensure it can synthesize NAT64 addresses to ping IPv4 internet servers. (Initial scaffolding complete).
 2.  **mbedTLS + MQTT PoC:** Establish a persistent, native MQTT-TLS connection directly to `mqtt.tinygs.com`.
 3.  **Memory Profiling:** Use Zephyr `ram_report` and Thread Analyzer to verify the heap and stack margins stay within the 222KB budget during the handshake and steady-state keep-alive phases. Ensure no memory leaks occur during disconnections/reconnections.
 4.  **RadioLib Zephyr HAL PoC:** Implement the custom `ZephyrHal` class, integrate RadioLib, and verify SX1262 SPI communication.
