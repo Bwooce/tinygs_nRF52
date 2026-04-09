@@ -38,7 +38,7 @@ To fit the full stack (Zephyr + OpenThread + mbedTLS + RadioLib) into 256KB RAM 
 ### 3.3 Configuration Interface: Pure USB Mass Storage (MSC)
 To achieve the absolute lowest possible static RAM footprint, we will completely eliminate the Bluetooth (BLE) stack and the WebUSB stack. The nRF52840 will be configured purely as a USB Flash Drive.
 
-1.  **USB Drive (MSC):** When plugged into a PC or Mac via USB-C, the device registers as a standard USB Mass Storage Class drive, mounting a 32KB FATFS partition from its internal flash.
+1.  **USB Composite Device (MSC + CDC ACM):** When plugged into a PC or Mac via USB-C, the device registers as a Composite USB Device. It presents both a standard USB Flash Drive (mounting a 32KB FATFS partition) and a Virtual COM Port (CDC ACM) simultaneously. All Zephyr `LOG_INF()` and `printk()` output is automatically routed to this COM port so the user can monitor the Thread connection and MQTT handshakes in real-time using a serial monitor (like PuTTY or `screen`).
 2.  **The Setup Page:** The Zephyr firmware dynamically generates an `index.html` file on this drive. This file contains the device's EUI64 MAC address and an auto-generated Thread Joiner Password (PSKd).
 3.  **The User Workflow:**
     *   The user opens `index.html` directly from the flash drive in their web browser.

@@ -1,8 +1,18 @@
 / {
+    chosen {
+        zephyr,console = &cdc_acm_uart0;
+    };
+
     msc_disk0 {
         compatible = "zephyr,flash-disk";
         partition = <&storage_partition>;
         disk-name = "NAND";
         cache-size = <4096>;
+    };
+};
+
+&zephyr_udc0 {
+    cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
     };
 };
