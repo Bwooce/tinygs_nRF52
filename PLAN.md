@@ -35,15 +35,19 @@ To fit the full stack (Zephyr + OpenThread + mbedTLS + RadioLib) into 256KB RAM 
 | **RadioLib & App Logic** | ~30 KB | State machine, JSON parsing, LoRa buffers. |
 | **Total Estimated Peak** | **~222 KB** | **Leaves ~34 KB margin.** Hardware crypto (nRF CC310) will be used to reduce CPU load and peak RAM spikes. |
 
-### 3.3 Configuration Interface: USB Mass Storage + WebBLE Hybrid
-Because the device has no Wi-Fi to host a local webpage, and standard Thread Commissioning cannot pass application secrets, we will use a clever **USB MSC + WebBLE Hybrid** approach to keep the configuration tool completely self-contained and app-free.
+### 3.3 Configuration Interface: Pure USB Mass Storage (MSC)
+To achieve the absolute lowest possible static RAM footprint, we will completely eliminate the Bluetooth (BLE) stack and the WebUSB stack. The nRF52840 will be configured purely as a USB Flash Drive.
 
-1.  **USB Drive (MSC):** When the Heltec T114 is plugged into a PC via USB-C, it registers as a USB Flash Drive (Mass Storage Class) using Zephyr's FATFS on the internal flash.
-2.  **Self-Contained HTML:** The device automatically writes a small `config.html` file to this drive at boot. The user opens this file directly from the USB drive in their browser.
-3.  **WebBLE Connection:** The HTML file contains a Javascript app that uses the Web Bluetooth API (`navigator.bluetooth`). When the user clicks "Connect", the browser pairs directly to the device's BLE advertising signal. *(Note: Browsers restrict WebBLE on `file://` URIs for security, so the HTML file will instruct the user to click a link to a hosted HTTPS version of the tool if the local file fails).*
-4.  **Provisioning:** The user enters their Station ID, MQTT Password, and Thread Network Key into the webpage. These are sent over the BLE GATT connection and saved to the device's NVS.
-5.  **QR Code Generation:** The webpage retrieves the device's EUI64 and an auto-generated Thread Joiner Password (PSKd) over BLE, rendering a Thread Commissioning QR Code for the user to scan with their Home Assistant app.
-6.  **RAM Reclamation:** Once provisioning is complete, the application calls `bt_disable()` to violently kill the Bluetooth stack, returning ~30KB of RAM to the system heap for the massive MQTT TLS buffers to use.
+1.  **USB Drive (MSC):** When plugged into a PC or Mac via USB-C, the device registers as a standard USB Mass Storage Class drive, mounting a tiny FATFS partition from its internal flash.
+2.  **The Setup Page:** The Zephyr firmware dynamically generates an `index.html` file on this drive. This file contains the device's EUI64 MAC address and an auto-generated Thread Joiner Password (PSKd).
+3.  **The User Workflow:**
+    *   The user opens `index.html` directly from the flash drive in their web browser.
+    *   The webpage displays a clean UI asking for their TinyGS Station ID and MQTT Password.
+    *   The webpage immediately renders the standard **Thread Commissioning QR Code** on screen (using the embedded EUI64 and PSKd) for the user to scan with their Home Assistant app to join the network.
+4.  **Saving Credentials:** When the user clicks "Save Settings" on the webpage, JavaScript generates a formatted `config.txt` file and triggers a standard browser download. The user simply saves (or drags-and-drops) this `config.txt` directly back onto the USB flash drive.
+5.  **Deployment:** On the next boot (e.g., when plugged into a solar battery outside), the Zephyr firmware reads the `config.txt` file from the FATFS partition, loads the MQTT credentials into RAM, and securely connects to `mqtt.tinygs.com` over the Thread mesh.
+
+This architecture guarantees 100% of the RAM is dedicated to the core mission (Thread + massive TLS buffers + LoRa), permanently eliminating the need to carefully juggle BLE/Matter memory states.
 
 ### 3.4 RadioLib Zephyr Integration
 RadioLib is natively designed for the Arduino ecosystem. To run it on Zephyr RTOS, we will create a custom HAL (Hardware Abstraction Layer) class inheriting from `RadioLibHal`.
