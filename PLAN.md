@@ -38,18 +38,22 @@ To fit the full stack (Zephyr + OpenThread + mbedTLS + RadioLib) into 256KB RAM 
 ### 3.3 Configuration Interface: Pure USB Mass Storage (MSC)
 To achieve the absolute lowest possible static RAM footprint, we will completely eliminate the Bluetooth (BLE) stack and the WebUSB stack. The nRF52840 will be configured purely as a USB Flash Drive.
 
-1.  **USB Drive (MSC):** When plugged into a PC or Mac via USB-C, the device registers as a standard USB Mass Storage Class drive, mounting a tiny FATFS partition from its internal flash.
+1.  **USB Drive (MSC):** When plugged into a PC or Mac via USB-C, the device registers as a standard USB Mass Storage Class drive, mounting a 32KB FATFS partition from its internal flash.
 2.  **The Setup Page:** The Zephyr firmware dynamically generates an `index.html` file on this drive. This file contains the device's EUI64 MAC address and an auto-generated Thread Joiner Password (PSKd).
 3.  **The User Workflow:**
     *   The user opens `index.html` directly from the flash drive in their web browser.
-    *   The webpage displays a clean UI asking for their TinyGS Station ID and MQTT Password.
+    *   The webpage displays a clean UI showing the full suite of TinyGS parameters (LoRa frequency, Spreading Factor, OLED brightness, etc.), exactly mimicking the ESP32 configuration dashboard.
     *   The webpage immediately renders the standard **Thread Commissioning QR Code** on screen (using the embedded EUI64 and PSKd) for the user to scan with their Home Assistant app to join the network.
-4.  **Saving Credentials:** When the user clicks "Save Settings" on the webpage, JavaScript generates a formatted `config.txt` file and triggers a standard browser download. The user simply saves (or drags-and-drops) this `config.txt` directly back onto the USB flash drive.
-5.  **Deployment:** On the next boot (e.g., when plugged into a solar battery outside), the Zephyr firmware reads the `config.txt` file from the FATFS partition, loads the MQTT credentials into RAM, and securely connects to `mqtt.tinygs.com` over the Thread mesh.
+4.  **Saving Credentials:** When the user clicks "Save Settings" on the webpage, JavaScript generates a formatted `config.json` file containing all the settings and triggers a standard browser download. The user simply saves (or drags-and-drops) this `config.json` directly back onto the USB flash drive.
+5.  **Deployment:** On the next boot, the Zephyr firmware parses `config.json` using the `ArduinoJson` library, loads the settings into RAM, and securely connects to `mqtt.tinygs.com` over the Thread mesh.
 
-This architecture guarantees 100% of the RAM is dedicated to the core mission (Thread + massive TLS buffers + LoRa), permanently eliminating the need to carefully juggle BLE/Matter memory states.
+### 3.4 Post-Commissioning Lifecycle & OTA Updates
+Once the Ground Station is deployed on the roof:
+*   **Remote Control:** It acts exactly like a normal ESP32 TinyGS. When the user changes settings on the TinyGS internet dashboard, the cloud server pushes a JSON payload to the device over MQTT. The Zephyr node parses the payload, applies the settings, and overwrites the `config.json` on its internal flash drive so the changes persist across reboots.
+*   **Over-The-Air (OTA) Updates:** The nRF52840's 1MB flash is divided into two 472KB slots (Slot 0 and Slot 1) managed by the **MCUboot** bootloader. When the TinyGS server sends a firmware update command via MQTT, the node will securely download the new `.bin` file into Slot 1 over the Thread mesh, reboot, and allow MCUboot to swap the active image.
+*   **Testing:** During development, we will run a fake local MQTT server to simulate the TinyGS cloud and verify these OTA and configuration payloads before connecting to the production `mqtt.tinygs.com`.
 
-### 3.4 RadioLib Zephyr Integration
+### 3.5 RadioLib Zephyr Integration
 RadioLib is natively designed for the Arduino ecosystem. To run it on Zephyr RTOS, we will create a custom HAL (Hardware Abstraction Layer) class inheriting from `RadioLibHal`.
 *   **SPI & GPIO:** Map RadioLib's pin logic to Zephyr's Devicetree (`gpio_dt_spec`) and `spi_transceive` APIs.
 *   **Interrupts:** Zephyr's `gpio_add_callback` will be used to trigger RadioLib's ISRs for LoRa packet reception via the SX1262 DIO1 pin.
