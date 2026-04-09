@@ -1,3 +1,6 @@
 [submodule "lib/RadioLib"]
 	path = lib/RadioLib
 	url = https://github.com/jgromes/RadioLib.git
+[submodule "lib/ArduinoJson"]
+	path = lib/ArduinoJson
+	url = https://github.com/bblanchon/ArduinoJson.git
