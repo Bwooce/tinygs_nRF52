@@ -35,13 +35,15 @@ To fit the full stack (Zephyr + OpenThread + mbedTLS + RadioLib) into 256KB RAM 
 | **RadioLib & App Logic** | ~30 KB | State machine, JSON parsing, LoRa buffers. |
 | **Total Estimated Peak** | **~222 KB** | **Leaves ~34 KB margin.** Hardware crypto (nRF CC310) will be used to reduce CPU load and peak RAM spikes. |
 
-### 3.3 Configuration Interface: WebBLE / WebUSB Hybrid
-Standard Thread Commissioning securely provisions network credentials but cannot pass application-layer secrets (like TinyGS Station ID or MQTT Password).
+### 3.3 Configuration Interface: USB Mass Storage + WebBLE Hybrid
+Because the device has no Wi-Fi to host a local webpage, and standard Thread Commissioning cannot pass application secrets, we will use a clever **USB MSC + WebBLE Hybrid** approach to keep the configuration tool completely self-contained and app-free.
 
-To solve this, we will implement a dual-mode **WebBLE and WebUSB Configuration Interface**:
-1.  **WebBLE (Wireless):** On first boot, the node advertises over BLE. The user opens an internet-hosted WebBLE app (e.g., `https://config.tinygs.com`), connects, and provisions the credentials. Once provisioned, the application calls `bt_disable()` (with `CONFIG_BT_DEINIT=y`) to shut down the Bluetooth stack and reclaim the 20-30KB of RAM for the TLS buffers.
-2.  **WebUSB (Wired Fallback):** If the user plugs the device into a PC via USB-C, it registers as a WebUSB device (using Zephyr's `CONFIG_USBD_WEBUSB_CLASS`). The browser can connect to the device over the physical cable to provision the same settings, entirely bypassing the need for Bluetooth.
-3.  **QR Code Generation:** The web app retrieves the device's 802.15.4 MAC address and an auto-generated Thread Joiner Password (PSKd) over either connection method, rendering a standard Thread Commissioning QR Code for the user to scan with their Home Assistant app.
+1.  **USB Drive (MSC):** When the Heltec T114 is plugged into a PC via USB-C, it registers as a USB Flash Drive (Mass Storage Class) using Zephyr's FATFS on the internal flash.
+2.  **Self-Contained HTML:** The device automatically writes a small `config.html` file to this drive at boot. The user opens this file directly from the USB drive in their browser.
+3.  **WebBLE Connection:** The HTML file contains a Javascript app that uses the Web Bluetooth API (`navigator.bluetooth`). When the user clicks "Connect", the browser pairs directly to the device's BLE advertising signal. *(Note: Browsers restrict WebBLE on `file://` URIs for security, so the HTML file will instruct the user to click a link to a hosted HTTPS version of the tool if the local file fails).*
+4.  **Provisioning:** The user enters their Station ID, MQTT Password, and Thread Network Key into the webpage. These are sent over the BLE GATT connection and saved to the device's NVS.
+5.  **QR Code Generation:** The webpage retrieves the device's EUI64 and an auto-generated Thread Joiner Password (PSKd) over BLE, rendering a Thread Commissioning QR Code for the user to scan with their Home Assistant app.
+6.  **RAM Reclamation:** Once provisioning is complete, the application calls `bt_disable()` to violently kill the Bluetooth stack, returning ~30KB of RAM to the system heap for the massive MQTT TLS buffers to use.
 
 ### 3.4 RadioLib Zephyr Integration
 RadioLib is natively designed for the Arduino ecosystem. To run it on Zephyr RTOS, we will create a custom HAL (Hardware Abstraction Layer) class inheriting from `RadioLibHal`.
