@@ -71,8 +71,8 @@ static volatile bool thread_attached = false;
 
 #define MQTT_BROKER_HOSTNAME "mqtt.tinygs.com"
 #define MQTT_BROKER_PORT     8883
-/* socat proxy on HA BR: TCP6-LISTEN:18883 -> TCP4:mqtt.tinygs.com:8883 */
-#define MQTT_PROXY_PORT      18883
+/* socat proxy on HA BR: TCP6-LISTEN:18884 -> OPENSSL:mqtt.tinygs.com:8883 */
+#define MQTT_PROXY_PORT      18884
 #define MQTT_CLIENT_ID       "tinygs_nrf52_poc"
 #include "mqtt_credentials.h" /* MQTT_USERNAME, MQTT_PASSWORD — gitignored */
 #define MQTT_TLS_SEC_TAG     1
@@ -421,35 +421,59 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 /* MQTT-TLS Connection                                                         */
 /* -------------------------------------------------------------------------- */
 
-/* Raw TCP connectivity test — isolates TCP from TLS/MQTT */
-static int test_tcp_connect(void)
+/* Manual TLS socket test — bypasses MQTT library to isolate the issue */
+static int test_tls_connect(void)
 {
     char addr_str[INET6_ADDRSTRLEN];
     struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&broker_addr;
+    sin6->sin6_port = htons(MQTT_PROXY_PORT);
 
     net_addr_ntop(AF_INET6, &sin6->sin6_addr, addr_str, sizeof(addr_str));
-    LOG_INF("TCP test: connecting to [%s]:%d ...",
-            addr_str, ntohs(sin6->sin6_port));
+    LOG_INF("TLS test: creating socket...");
 
-    int sock = zsock_socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    /* Step 1: Create TLS socket */
+    int sock = zsock_socket(AF_INET6, SOCK_STREAM, IPPROTO_TLS_1_2);
     if (sock < 0) {
-        LOG_ERR("TCP test: socket() failed: %d", errno);
-        return -1;
+        LOG_ERR("TLS test: socket() failed: %d (errno=%d)", sock, errno);
+        /* Fallback: try plain TCP */
+        LOG_INF("TLS test: trying plain TCP...");
+        sock = zsock_socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+        if (sock < 0) {
+            LOG_ERR("TLS test: TCP socket() also failed: %d", errno);
+            return -1;
+        }
+        LOG_INF("TLS test: plain TCP socket OK, connecting...");
+    } else {
+        LOG_INF("TLS test: TLS socket created OK (fd=%d)", sock);
+
+        /* Step 2: Set minimal TLS options */
+        int ret;
+
+        int peer_verify = TLS_PEER_VERIFY_NONE;
+        ret = zsock_setsockopt(sock, SOL_TLS, TLS_PEER_VERIFY,
+                                &peer_verify, sizeof(peer_verify));
+        LOG_INF("TLS test: PEER_VERIFY ret=%d errno=%d", ret, errno);
+
+        /* Check the inner socket fd */
+        LOG_INF("TLS test: outer fd=%d, checking getsockopt...", sock);
+        int sndbuf = 0;
+        socklen_t optlen = sizeof(sndbuf);
+        ret = zsock_getsockopt(sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, &optlen);
+        LOG_INF("TLS test: SO_SNDBUF=%d ret=%d", sndbuf, ret);
     }
 
-    /* Set a 30s connect timeout — Thread mesh can be slow */
-    struct timeval tv = { .tv_sec = 30 };
-    zsock_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    zsock_setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    /* Step 3: Connect */
+    LOG_INF("TLS test: connecting to [%s]:%d ...",
+            addr_str, ntohs(sin6->sin6_port));
 
     int ret = zsock_connect(sock, (struct sockaddr *)sin6, sizeof(*sin6));
     if (ret < 0) {
-        LOG_ERR("TCP test: connect() failed: %d (errno=%d)", ret, errno);
+        LOG_ERR("TLS test: connect() failed: %d (errno=%d)", ret, errno);
         zsock_close(sock);
         return -1;
     }
 
-    LOG_INF("=== TCP CONNECT SUCCEEDED! ===");
+    LOG_INF("=== TLS CONNECT SUCCEEDED! ===");
     zsock_close(sock);
     return 0;
 }
@@ -489,22 +513,14 @@ static int mqtt_tls_connect(void)
     /* Event handler */
     mqtt_client.evt_cb = mqtt_evt_handler;
 
-    /* TLS transport — sec_tag_count=0 with PEER_VERIFY_NONE skips
-     * the credential lookup. socat OPENSSL proxy handles TLS to the server. */
-    mqtt_client.transport.type = MQTT_TRANSPORT_SECURE;
+    /* Use plain TCP — socat OPENSSL proxy on BR handles TLS to mqtt.tinygs.com.
+     * MQTT_TRANSPORT_SECURE returns EHOSTUNREACH (-113) consistently.
+     * The TLS socket connect() fails even though raw TCP works.
+     * Root cause TBD — possible Zephyr TLS socket + OpenThread interaction bug.
+     * Workaround: device sends plain MQTT, socat does TCP→TLS bridging. */
+    mqtt_client.transport.type = MQTT_TRANSPORT_NON_SECURE;
 
-    struct mqtt_sec_config *tls = &mqtt_client.transport.tls.config;
-    tls->peer_verify = TLS_PEER_VERIFY_NONE;
-    tls->cipher_list = NULL;
-    tls->sec_tag_list = NULL;
-    tls->sec_tag_count = 0;
-    tls->hostname = NULL; /* No SNI needed for local proxy */
-
-    LOG_INF("Starting TLS handshake (this is the RAM crunch moment)...");
-    LOG_INF("Transport type: %d, peer_verify: %d, sec_tag_count: %d",
-            mqtt_client.transport.type,
-            tls->peer_verify,
-            tls->sec_tag_count);
+    LOG_INF("Connecting...");
 
     int ret = mqtt_connect(&mqtt_client);
     if (ret != 0) {
@@ -696,7 +712,7 @@ int main(void)
             log_heap_usage("pre_tls");
             if (mqtt_tls_connect() == 0) {
                 /* Set up poll fd for mqtt_input */
-                mqtt_poll_fd.fd = mqtt_client.transport.tls.sock;
+                mqtt_poll_fd.fd = mqtt_client.transport.tcp.sock;
                 mqtt_poll_fd.events = ZSOCK_POLLIN;
                 mqtt_poll_fd_count = 1;
 
