@@ -40,14 +40,12 @@ static void log_heap_usage(const char *label)
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
     struct sys_memory_stats stats;
     if (sys_heap_runtime_stats_get(&_system_heap.heap, &stats) == 0) {
-        LOG_INF("RAM [%s]: heap used=%u free=%u max=%u",
+        LOG_INF("RAM [%s]: sys_heap used=%u free=%u max=%u",
                 label,
                 (unsigned)stats.allocated_bytes,
                 (unsigned)stats.free_bytes,
                 (unsigned)stats.max_allocated_bytes);
     }
-#else
-    LOG_INF("RAM [%s]: (stats not enabled)", label);
 #endif
 }
 
