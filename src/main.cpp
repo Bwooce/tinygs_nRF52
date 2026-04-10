@@ -8,6 +8,7 @@
 #include <openthread/ip6.h>
 #include <openthread/dataset.h>
 #include <openthread/dataset_ftd.h>
+#include <openthread/dns_client.h>
 #include <openthread/joiner.h>
 #include <openthread/link.h>
 
@@ -70,6 +71,8 @@ static volatile bool thread_attached = false;
 
 #define MQTT_BROKER_HOSTNAME "mqtt.tinygs.com"
 #define MQTT_BROKER_PORT     8883
+/* socat proxy on HA BR: TCP6-LISTEN:18883 -> TCP4:mqtt.tinygs.com:8883 */
+#define MQTT_PROXY_PORT      18883
 #define MQTT_CLIENT_ID       "tinygs_nrf52_poc"
 #define MQTT_TLS_SEC_TAG     1
 
@@ -272,36 +275,103 @@ static void init_openthread(void)
 }
 
 /* -------------------------------------------------------------------------- */
-/* DNS Resolution (NAT64)                                                      */
+/* DNS Resolution via OpenThread DNS client (NAT64)                            */
 /* -------------------------------------------------------------------------- */
+
+static K_SEM_DEFINE(dns_sem, 0, 1);
+static volatile int dns_result = -1;
+
+static void dns_callback(otError aError, const otDnsAddressResponse *aResponse, void *aContext)
+{
+    if (aError != OT_ERROR_NONE) {
+        LOG_ERR("OT DNS callback error: %d", (int)aError);
+        dns_result = -1;
+        k_sem_give(&dns_sem);
+        return;
+    }
+
+    otIp6Address addr;
+    uint32_t ttl;
+    otError err = otDnsAddressResponseGetAddress(aResponse, 0, &addr, &ttl);
+    if (err != OT_ERROR_NONE) {
+        LOG_ERR("OT DNS no address in response: %d", (int)err);
+        dns_result = -1;
+        k_sem_give(&dns_sem);
+        return;
+    }
+
+    /* Store resolved address into broker_addr */
+    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&broker_addr;
+    memset(sin6, 0, sizeof(*sin6));
+    sin6->sin6_family = AF_INET6;
+    sin6->sin6_port = htons(MQTT_BROKER_PORT);
+    memcpy(&sin6->sin6_addr, &addr, sizeof(addr));
+
+    char addr_str[OT_IP6_ADDRESS_STRING_SIZE];
+    otIp6AddressToString(&addr, addr_str, sizeof(addr_str));
+    LOG_INF("Resolved %s -> [%s]:%d (TTL=%u)",
+            MQTT_BROKER_HOSTNAME, addr_str, MQTT_BROKER_PORT, (unsigned)ttl);
+
+    dns_result = 0;
+    k_sem_give(&dns_sem);
+}
 
 static int resolve_broker(void)
 {
-    struct addrinfo hints = {
-        .ai_family = AF_INET6,
-        .ai_socktype = SOCK_STREAM,
-    };
-    struct addrinfo *result = NULL;
-    char addr_str[INET6_ADDRSTRLEN];
+    struct openthread_context *ctx = openthread_get_default_context();
 
-    LOG_INF("Resolving %s ...", MQTT_BROKER_HOSTNAME);
+    LOG_INF("Resolving %s via OT DNS...", MQTT_BROKER_HOSTNAME);
 
-    int ret = getaddrinfo(MQTT_BROKER_HOSTNAME, NULL, &hints, &result);
-    if (ret != 0) {
-        LOG_ERR("DNS resolution failed: %d", ret);
-        return -1;
-    }
+    k_sem_reset(&dns_sem);
+    dns_result = -1;
 
-    /* Copy the resolved address */
-    memcpy(&broker_addr, result->ai_addr, result->ai_addrlen);
-    ((struct sockaddr_in6 *)&broker_addr)->sin6_port = htons(MQTT_BROKER_PORT);
+    /*
+     * Use otDnsClientResolveIp4Address with our BR's DNS config.
+     * The default config may use another BR's DNS (router f800) which
+     * synthesizes NAT64 addresses using a prefix that f800 doesn't
+     * actually translate. Force use of our HA SkyConnect BR's DNS proxy.
+     */
+    openthread_api_mutex_lock(ctx);
 
-    net_addr_ntop(AF_INET6,
-                  &((struct sockaddr_in6 *)&broker_addr)->sin6_addr,
-                  addr_str, sizeof(addr_str));
-    LOG_INF("Resolved %s -> [%s]:%d", MQTT_BROKER_HOSTNAME, addr_str, MQTT_BROKER_PORT);
+    /* Get the default config as a starting point, then override the NAT64 mode */
+    otDnsQueryConfig config;
+    const otDnsQueryConfig *defaultConfig = otDnsClientGetDefaultConfig(ctx->instance);
+    config = *defaultConfig;
+    config.mNat64Mode = OT_DNS_NAT64_ALLOW;
 
-    freeaddrinfo(result);
+    /*
+     * Connect via socat proxy on the HA Border Router.
+     * The HA OTBR addon doesn't have OT_NAT64_TRANSLATOR compiled in,
+     * so NAT64 translation doesn't work. Workaround: socat on HA bridges
+     * Thread IPv6 port 18883 → mqtt.tinygs.com:8883 IPv4.
+     *
+     * BR mesh-local RLOC: fd69:9a4f:1982::ff:fe00:2c00
+     * TODO: Replace with proper NAT64 when HA fixes their OTBR addon.
+     */
+    otIp6Address brAddr;
+    memset(&brAddr, 0, sizeof(brAddr));
+    /* fd9f:2193:7da6:1:30f0:ebe1:3aa:b659 — BR's stable mesh-local EID */
+    brAddr.mFields.m16[0] = htons(0xfd9f);
+    brAddr.mFields.m16[1] = htons(0x2193);
+    brAddr.mFields.m16[2] = htons(0x7da6);
+    brAddr.mFields.m16[3] = htons(0x0001);
+    brAddr.mFields.m16[4] = htons(0x30f0);
+    brAddr.mFields.m16[5] = htons(0xebe1);
+    brAddr.mFields.m16[6] = htons(0x03aa);
+    brAddr.mFields.m16[7] = htons(0xb659);
+
+    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&broker_addr;
+    memset(sin6, 0, sizeof(*sin6));
+    sin6->sin6_family = AF_INET6;
+    sin6->sin6_port = htons(MQTT_PROXY_PORT);
+    memcpy(&sin6->sin6_addr, &brAddr, sizeof(brAddr));
+
+    char addr_str[OT_IP6_ADDRESS_STRING_SIZE];
+    otIp6AddressToString(&brAddr, addr_str, sizeof(addr_str));
+    LOG_INF("Using socat proxy: [%s]:%d -> mqtt.tinygs.com:8883",
+            addr_str, MQTT_PROXY_PORT);
+
+    openthread_api_mutex_unlock(ctx);
     return 0;
 }
 
@@ -352,8 +422,6 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 
 static int mqtt_tls_connect(void)
 {
-    static sec_tag_t sec_tag_list[] = { MQTT_TLS_SEC_TAG };
-
     LOG_INF("Connecting MQTT-TLS to %s:%d ...", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
 
     mqtt_client_init(&mqtt_client);
@@ -380,8 +448,8 @@ static int mqtt_tls_connect(void)
     struct mqtt_sec_config *tls = &mqtt_client.transport.tls.config;
     tls->peer_verify = TLS_PEER_VERIFY_NONE; /* Skip cert check for PoC */
     tls->cipher_list = NULL;
-    tls->sec_tag_list = sec_tag_list;
-    tls->sec_tag_count = ARRAY_SIZE(sec_tag_list);
+    tls->sec_tag_list = NULL;
+    tls->sec_tag_count = 0;
     tls->hostname = MQTT_BROKER_HOSTNAME;
 
     LOG_INF("Starting TLS handshake (this is the RAM crunch moment)...");
