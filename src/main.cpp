@@ -71,8 +71,6 @@ static volatile bool thread_attached = false;
 
 #define MQTT_BROKER_HOSTNAME "mqtt.tinygs.com"
 #define MQTT_BROKER_PORT     8883
-/* socat proxy on HA BR: TCP6-LISTEN:18884 -> OPENSSL:mqtt.tinygs.com:8883 */
-#define MQTT_PROXY_PORT      18884
 #define MQTT_CLIENT_ID       "tinygs_nrf52_poc"
 #include "mqtt_credentials.h" /* MQTT_USERNAME, MQTT_PASSWORD — gitignored */
 #define MQTT_TLS_SEC_TAG     1
@@ -327,53 +325,56 @@ static int resolve_broker(void)
     dns_result = -1;
 
     /*
-     * Use otDnsClientResolveIp4Address with our BR's DNS config.
-     * The default config may use another BR's DNS (router f800) which
-     * synthesizes NAT64 addresses using a prefix that f800 doesn't
-     * actually translate. Force use of our HA SkyConnect BR's DNS proxy.
+     * Resolve via nat64.net's public DNS64 resolver.
+     * Returns globally-routable AAAA addresses (e.g. 2a00:1098:2c::5:9fc3:4a17).
+     * No local NAT64 translator needed — nat64.net's infrastructure translates.
      */
     openthread_api_mutex_lock(ctx);
 
-    /* Get the default config as a starting point, then override the NAT64 mode */
+    /* Configure OT DNS to use nat64.net's DNS64 resolver */
     otDnsQueryConfig config;
-    const otDnsQueryConfig *defaultConfig = otDnsClientGetDefaultConfig(ctx->instance);
-    config = *defaultConfig;
+    memset(&config, 0, sizeof(config));
+
+    /* nat64.net DNS64: 2a00:1098:2c::1 port 53 */
+    otIp6Address dnsServer;
+    memset(&dnsServer, 0, sizeof(dnsServer));
+    dnsServer.mFields.m16[0] = htons(0x2a00);
+    dnsServer.mFields.m16[1] = htons(0x1098);
+    dnsServer.mFields.m16[2] = htons(0x002c);
+    /* m16[3..6] = 0 */
+    dnsServer.mFields.m16[7] = htons(0x0001);
+
+    config.mServerSockAddr.mAddress = dnsServer;
+    config.mServerSockAddr.mPort = 53;
+    config.mResponseTimeout = 10000; /* 10s — nat64.net is ~250ms away */
+    config.mMaxTxAttempts = 3;
+    config.mRecursionFlag = OT_DNS_FLAG_RECURSION_DESIRED;
     config.mNat64Mode = OT_DNS_NAT64_ALLOW;
 
-    /*
-     * Connect via socat proxy on the HA Border Router.
-     * The HA OTBR addon doesn't have OT_NAT64_TRANSLATOR compiled in,
-     * so NAT64 translation doesn't work. Workaround: socat on HA bridges
-     * Thread IPv6 port 18883 → mqtt.tinygs.com:8883 IPv4.
-     *
-     * BR mesh-local RLOC: fd69:9a4f:1982::ff:fe00:2c00
-     * TODO: Replace with proper NAT64 when HA fixes their OTBR addon.
-     */
-    otIp6Address brAddr;
-    memset(&brAddr, 0, sizeof(brAddr));
-    /* fd9f:2193:7da6:1:30f0:ebe1:3aa:b659 — BR's stable mesh-local EID */
-    brAddr.mFields.m16[0] = htons(0xfd9f);
-    brAddr.mFields.m16[1] = htons(0x2193);
-    brAddr.mFields.m16[2] = htons(0x7da6);
-    brAddr.mFields.m16[3] = htons(0x0001);
-    brAddr.mFields.m16[4] = htons(0x30f0);
-    brAddr.mFields.m16[5] = htons(0xebe1);
-    brAddr.mFields.m16[6] = htons(0x03aa);
-    brAddr.mFields.m16[7] = htons(0xb659);
+    char dns_str[OT_IP6_ADDRESS_STRING_SIZE];
+    otIp6AddressToString(&dnsServer, dns_str, sizeof(dns_str));
+    LOG_INF("Resolving %s via nat64.net DNS64 [%s]:53 ...",
+            MQTT_BROKER_HOSTNAME, dns_str);
 
-    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&broker_addr;
-    memset(sin6, 0, sizeof(*sin6));
-    sin6->sin6_family = AF_INET6;
-    sin6->sin6_port = htons(MQTT_PROXY_PORT);
-    memcpy(&sin6->sin6_addr, &brAddr, sizeof(brAddr));
-
-    char addr_str[OT_IP6_ADDRESS_STRING_SIZE];
-    otIp6AddressToString(&brAddr, addr_str, sizeof(addr_str));
-    LOG_INF("Using socat proxy: [%s]:%d -> mqtt.tinygs.com:8883",
-            addr_str, MQTT_PROXY_PORT);
-
+    /* Query for AAAA — nat64.net DNS64 returns synthesized routable addresses */
+    otError err = otDnsClientResolveAddress(ctx->instance,
+                                            MQTT_BROKER_HOSTNAME,
+                                            dns_callback, NULL,
+                                            &config);
     openthread_api_mutex_unlock(ctx);
-    return 0;
+
+    if (err != OT_ERROR_NONE) {
+        LOG_ERR("otDnsClientResolveAddress failed: %d", (int)err);
+        return -1;
+    }
+
+    /* Wait for callback (up to 15s) */
+    if (k_sem_take(&dns_sem, K_SECONDS(15)) != 0) {
+        LOG_ERR("DNS resolution timed out");
+        return -1;
+    }
+
+    return dns_result;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -421,72 +422,74 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 /* MQTT-TLS Connection                                                         */
 /* -------------------------------------------------------------------------- */
 
-/* Manual TLS socket test — bypasses MQTT library to isolate the issue */
-static int test_tls_connect(void)
+/*
+ * TLS socket test — connect directly to mqtt.tinygs.com via public NAT64.
+ * Google NAT64 prefix: 64:ff9b::/96
+ * mqtt.tinygs.com = 159.195.74.23 → 64:ff9b::9fc3:4a17
+ */
+static int test_tls_nat64(void)
 {
+    struct sockaddr_in6 dest;
+    memset(&dest, 0, sizeof(dest));
+    dest.sin6_family = AF_INET6;
+    dest.sin6_port = htons(8883);
+
+    /* 64:ff9b::9fc3:4a17 (mqtt.tinygs.com via Google NAT64) */
+    otIp6Address nat64;
+    memset(&nat64, 0, sizeof(nat64));
+    nat64.mFields.m16[0] = htons(0x0064);
+    nat64.mFields.m16[1] = htons(0xff9b);
+    /* m16[2..5] = 0 */
+    nat64.mFields.m8[12] = 159;
+    nat64.mFields.m8[13] = 195;
+    nat64.mFields.m8[14] = 74;
+    nat64.mFields.m8[15] = 23;
+    memcpy(&dest.sin6_addr, &nat64, 16);
+
     char addr_str[INET6_ADDRSTRLEN];
-    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&broker_addr;
-    sin6->sin6_port = htons(MQTT_PROXY_PORT);
+    net_addr_ntop(AF_INET6, &dest.sin6_addr, addr_str, sizeof(addr_str));
 
-    net_addr_ntop(AF_INET6, &sin6->sin6_addr, addr_str, sizeof(addr_str));
-    LOG_INF("TLS test: creating socket...");
-
-    /* Step 1: Create TLS socket */
-    int sock = zsock_socket(AF_INET6, SOCK_STREAM, IPPROTO_TLS_1_2);
-    if (sock < 0) {
-        LOG_ERR("TLS test: socket() failed: %d (errno=%d)", sock, errno);
-        /* Fallback: try plain TCP */
-        LOG_INF("TLS test: trying plain TCP...");
-        sock = zsock_socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-        if (sock < 0) {
-            LOG_ERR("TLS test: TCP socket() also failed: %d", errno);
-            return -1;
+    /* Test 1: Plain TCP to public NAT64 address */
+    LOG_INF("NAT64 test: TCP to [%s]:8883 ...", addr_str);
+    int sock = zsock_socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    if (sock >= 0) {
+        int ret = zsock_connect(sock, (struct sockaddr *)&dest, sizeof(dest));
+        if (ret == 0) {
+            LOG_INF("=== NAT64 TCP SUCCEEDED! ===");
+        } else {
+            LOG_ERR("NAT64 TCP connect failed: errno=%d", errno);
         }
-        LOG_INF("TLS test: plain TCP socket OK, connecting...");
-    } else {
-        LOG_INF("TLS test: TLS socket created OK (fd=%d)", sock);
-
-        /* Step 2: Set minimal TLS options */
-        int ret;
-
-        int peer_verify = TLS_PEER_VERIFY_NONE;
-        ret = zsock_setsockopt(sock, SOL_TLS, TLS_PEER_VERIFY,
-                                &peer_verify, sizeof(peer_verify));
-        LOG_INF("TLS test: PEER_VERIFY ret=%d errno=%d", ret, errno);
-
-        /* Check the inner socket fd */
-        LOG_INF("TLS test: outer fd=%d, checking getsockopt...", sock);
-        int sndbuf = 0;
-        socklen_t optlen = sizeof(sndbuf);
-        ret = zsock_getsockopt(sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, &optlen);
-        LOG_INF("TLS test: SO_SNDBUF=%d ret=%d", sndbuf, ret);
-    }
-
-    /* Step 3: Connect */
-    LOG_INF("TLS test: connecting to [%s]:%d ...",
-            addr_str, ntohs(sin6->sin6_port));
-
-    int ret = zsock_connect(sock, (struct sockaddr *)sin6, sizeof(*sin6));
-    if (ret < 0) {
-        LOG_ERR("TLS test: connect() failed: %d (errno=%d)", ret, errno);
         zsock_close(sock);
-        return -1;
     }
 
-    LOG_INF("=== TLS CONNECT SUCCEEDED! ===");
-    zsock_close(sock);
+    /* Test 2: TLS socket to same address */
+    LOG_INF("NAT64 test: TLS to [%s]:8883 ...", addr_str);
+    sock = zsock_socket(AF_INET6, SOCK_STREAM, IPPROTO_TLS_1_2);
+    if (sock >= 0) {
+        int peer_verify = TLS_PEER_VERIFY_NONE;
+        zsock_setsockopt(sock, SOL_TLS, TLS_PEER_VERIFY,
+                          &peer_verify, sizeof(peer_verify));
+
+        int ret = zsock_connect(sock, (struct sockaddr *)&dest, sizeof(dest));
+        if (ret == 0) {
+            LOG_INF("=== NAT64 TLS SUCCEEDED! ===");
+        } else {
+            LOG_ERR("NAT64 TLS connect failed: errno=%d", errno);
+        }
+        zsock_close(sock);
+    } else {
+        LOG_ERR("NAT64 TLS socket() failed: errno=%d", errno);
+    }
+
     return 0;
 }
 
 static int mqtt_tls_connect(void)
 {
-    LOG_INF("Connecting MQTT-TLS to proxy port %d ...", MQTT_PROXY_PORT);
+    LOG_INF("Connecting MQTT to [%s]:%d ...", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
 
     mqtt_client_init(&mqtt_client);
 
-    /* Broker address — use proxy port */
-    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&broker_addr;
-    sin6->sin6_port = htons(MQTT_PROXY_PORT);
     mqtt_client.broker = &broker_addr;
 
     /* Client ID and credentials */
@@ -513,11 +516,9 @@ static int mqtt_tls_connect(void)
     /* Event handler */
     mqtt_client.evt_cb = mqtt_evt_handler;
 
-    /* Use plain TCP — socat OPENSSL proxy on BR handles TLS to mqtt.tinygs.com.
-     * MQTT_TRANSPORT_SECURE returns EHOSTUNREACH (-113) consistently.
-     * The TLS socket connect() fails even though raw TCP works.
-     * Root cause TBD — possible Zephyr TLS socket + OpenThread interaction bug.
-     * Workaround: device sends plain MQTT, socat does TCP→TLS bridging. */
+    /* Plain TCP to test NAT64 routing. mqtt.tinygs.com:8883 requires TLS
+     * so we'll get a connection reset, but it proves the route works.
+     * TLS socket has a separate EHOSTUNREACH bug (#40) to fix. */
     mqtt_client.transport.type = MQTT_TRANSPORT_NON_SECURE;
 
     LOG_INF("Connecting...");
