@@ -12,3 +12,6 @@ __pycache__/
 ncs/
 *.log
 *.uf2
+
+# MQTT credentials — never commit
+src/mqtt_credentials.h
