@@ -71,8 +71,8 @@ static volatile bool thread_attached = false;
 
 #define MQTT_BROKER_HOSTNAME "mqtt.tinygs.com"
 #define MQTT_BROKER_PORT     8883
-/* socat proxy on HA BR: TCP6-LISTEN:18884 -> OPENSSL:mqtt.tinygs.com:8883 */
-#define MQTT_PROXY_PORT      18884
+/* socat proxy on HA BR: TCP6-LISTEN:18883 -> TCP4:mqtt.tinygs.com:8883 */
+#define MQTT_PROXY_PORT      18883
 #define MQTT_CLIENT_ID       "tinygs_nrf52_poc"
 #include "mqtt_credentials.h" /* MQTT_USERNAME, MQTT_PASSWORD — gitignored */
 #define MQTT_TLS_SEC_TAG     1
@@ -489,17 +489,26 @@ static int mqtt_tls_connect(void)
     /* Event handler */
     mqtt_client.evt_cb = mqtt_evt_handler;
 
-    /* Plain TCP for now — socat on BR handles TLS to mqtt.tinygs.com.
-     * MQTT_TRANSPORT_SECURE with sec_tag_count=0 returns EHOSTUNREACH (-113)
-     * which appears to be a Zephyr TLS socket creation bug on Thread.
-     * TODO: Fix TLS socket over Thread or use socat OPENSSL bridge. */
-    mqtt_client.transport.type = MQTT_TRANSPORT_NON_SECURE;
+    /* TLS transport — sec_tag_count=0 with PEER_VERIFY_NONE skips
+     * the credential lookup. socat OPENSSL proxy handles TLS to the server. */
+    mqtt_client.transport.type = MQTT_TRANSPORT_SECURE;
+
+    struct mqtt_sec_config *tls = &mqtt_client.transport.tls.config;
+    tls->peer_verify = TLS_PEER_VERIFY_NONE;
+    tls->cipher_list = NULL;
+    tls->sec_tag_list = NULL;
+    tls->sec_tag_count = 0;
+    tls->hostname = NULL; /* No SNI needed for local proxy */
 
     LOG_INF("Starting TLS handshake (this is the RAM crunch moment)...");
+    LOG_INF("Transport type: %d, peer_verify: %d, sec_tag_count: %d",
+            mqtt_client.transport.type,
+            tls->peer_verify,
+            tls->sec_tag_count);
 
     int ret = mqtt_connect(&mqtt_client);
     if (ret != 0) {
-        LOG_ERR("mqtt_connect() failed: %d", ret);
+        LOG_ERR("mqtt_connect() failed: %d (errno=%d)", ret, errno);
         return ret;
     }
 
@@ -685,15 +694,9 @@ int main(void)
 
         case STATE_MQTT_CONNECT:
             log_heap_usage("pre_tls");
-            /* First test raw TCP to isolate TCP vs TLS issues */
-            if (test_tcp_connect() != 0) {
-                LOG_ERR("Raw TCP failed — not a TLS issue");
-                app_state = STATE_ERROR;
-                break;
-            }
             if (mqtt_tls_connect() == 0) {
                 /* Set up poll fd for mqtt_input */
-                mqtt_poll_fd.fd = mqtt_client.transport.tcp.sock;
+                mqtt_poll_fd.fd = mqtt_client.transport.tls.sock;
                 mqtt_poll_fd.events = ZSOCK_POLLIN;
                 mqtt_poll_fd_count = 1;
 
