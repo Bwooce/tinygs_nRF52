@@ -19,12 +19,6 @@
 #define MBEDTLS_PKCS1_V21
 #endif
 
-/* Force legacy (non-PSA) RSA verify path in pk_wrap.c.
- * The PSA drivers (CC310/Oberon) return FEATURE_UNAVAILABLE for
- * PKCS1v15 RSA signature verification during TLS handshake. */
-#ifdef MBEDTLS_USE_PSA_CRYPTO
-#undef MBEDTLS_USE_PSA_CRYPTO
-#endif
 
 /* Force ECDHE-RSA key exchange — nrf-config.h #undef's this because
  * the NCS Kconfig path doesn't resolve it with OpenThread PSA backend.
