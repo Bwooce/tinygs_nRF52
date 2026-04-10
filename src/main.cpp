@@ -693,7 +693,7 @@ int main(void)
     LOG_INF("=== TinyGS nRF52 Phase 1: MQTT-TLS over Thread ===");
     log_heap_usage("boot");
     init_openthread();
-    /* Skip radio init — not needed for MQTT-TLS test */
+    init_radio();  /* Test SX1262 with GPIO inversion fix */
 
     int retry_count = 0;
     int mqtt_poll_fd_count = 0;
