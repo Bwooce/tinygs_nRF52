@@ -23,6 +23,7 @@
 #include <zephyr/sys/reboot.h>
 #include <hal/nrf_power.h>
 
+#include <mbedtls/debug.h>
 #include <RadioLib.h>
 #include "ZephyrHal.h"
 
@@ -73,6 +74,7 @@ static volatile bool thread_attached = false;
 #define MQTT_BROKER_PORT     8883
 #define MQTT_CLIENT_ID       "tinygs_nrf52_poc"
 #include "mqtt_credentials.h" /* MQTT_USERNAME, MQTT_PASSWORD — gitignored */
+#include "tinygs_ca_cert.h"   /* TinyGS server cert for TLS cipher suite config */
 #define MQTT_TLS_SEC_TAG     1
 
 /* MQTT client and buffers */
@@ -517,16 +519,36 @@ static int mqtt_tls_connect(void)
     mqtt_client.evt_cb = mqtt_evt_handler;
 
     /* TLS direct to mqtt.tinygs.com via nat64.net public NAT64 */
+    static sec_tag_t sec_tag_list[] = { MQTT_TLS_SEC_TAG };
+    static bool cred_registered = false;
+
+    if (!cred_registered) {
+        int rc = tls_credential_add(MQTT_TLS_SEC_TAG,
+                                     TLS_CREDENTIAL_CA_CERTIFICATE,
+                                     tinygs_ca_cert,
+                                     sizeof(tinygs_ca_cert));
+        if (rc == 0 || rc == -EEXIST) {
+            LOG_INF("TLS CA cert registered (sec_tag %d)", MQTT_TLS_SEC_TAG);
+            cred_registered = true;
+        } else {
+            LOG_ERR("tls_credential_add failed: %d", rc);
+        }
+    }
+
     mqtt_client.transport.type = MQTT_TRANSPORT_SECURE;
 
     struct mqtt_sec_config *tls_cfg = &mqtt_client.transport.tls.config;
     tls_cfg->peer_verify = TLS_PEER_VERIFY_NONE;
     tls_cfg->cipher_list = NULL;
-    tls_cfg->sec_tag_list = NULL;
-    tls_cfg->sec_tag_count = 0;
+    tls_cfg->sec_tag_list = sec_tag_list;
+    tls_cfg->sec_tag_count = ARRAY_SIZE(sec_tag_list);
     tls_cfg->hostname = MQTT_BROKER_HOSTNAME;
 
-    LOG_INF("Connecting...");
+    LOG_INF("Connecting with TLS...");
+
+    /* Enable mbedTLS debug output (level 2 = state changes + info) */
+    int dbg_level = 2;
+    /* Note: this gets applied after socket creation, inside mqtt_connect */
 
     int ret = mqtt_connect(&mqtt_client);
     if (ret != 0) {
