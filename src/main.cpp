@@ -8,6 +8,7 @@
 #include <openthread/ip6.h>
 #include <openthread/dataset.h>
 #include <openthread/dataset_ftd.h>
+#include <openthread/joiner.h>
 #include <openthread/link.h>
 
 #include <zephyr/usb/usb_device.h>
@@ -211,35 +212,61 @@ static void log_ot_diagnostics(void)
     openthread_api_mutex_unlock(ctx);
 }
 
+static void joiner_callback(otError error, void *context)
+{
+    if (error == OT_ERROR_NONE) {
+        LOG_INF("=== Joiner succeeded! Starting Thread... ===");
+        struct openthread_context *ctx = openthread_get_default_context();
+        otIp6SetEnabled(ctx->instance, true);
+        otThreadSetEnabled(ctx->instance, true);
+    } else {
+        LOG_ERR("Joiner failed: %d", (int)error);
+    }
+}
+
 static void init_openthread(void)
 {
     struct openthread_context *ctx = openthread_get_default_context();
 
     LOG_INF("Starting OpenThread (Joiner mode)...");
     openthread_state_changed_cb_register(ctx, &ot_state_cb);
+    openthread_start(ctx);
 
-    /*
-     * Erase any cached dataset from NVS so the Joiner runs fresh.
-     * Without this, a stale dataset from a previous boot causes
-     * OpenThread to skip the Joiner and try direct attach (which fails).
-     */
+    k_msleep(500);
+
     openthread_api_mutex_lock(ctx);
     otInstance *inst = ctx->instance;
 
-    otError err = otDatasetSetActive(inst, NULL);
-    if (err != OT_ERROR_NONE) {
-        LOG_WRN("Could not clear dataset: %d (may be OK on first boot)", (int)err);
+    /* Check if we already have a valid dataset (from a previous successful join) */
+    otOperationalDataset dataset;
+    otError err = otDatasetGetActive(inst, &dataset);
+
+    if (err == OT_ERROR_NONE && dataset.mComponents.mIsNetworkKeyPresent) {
+        LOG_INF("Found existing dataset — attaching directly");
+        dump_ot_dataset(ctx);
+        otIp6SetEnabled(inst, true);
+        otThreadSetEnabled(inst, true);
+    } else {
+        LOG_INF("No valid dataset — starting Joiner with PSKd");
+        otIp6SetEnabled(inst, true);
+
+        err = otJoinerStart(inst,
+                            CONFIG_OPENTHREAD_JOINER_PSKD,  /* PSKd */
+                            NULL,   /* provisioning URL */
+                            NULL,   /* vendor name */
+                            NULL,   /* vendor model */
+                            NULL,   /* vendor sw version */
+                            NULL,   /* vendor data */
+                            joiner_callback, NULL);
+
+        if (err != OT_ERROR_NONE) {
+            LOG_ERR("otJoinerStart failed: %d", (int)err);
+        } else {
+            LOG_INF("Joiner started, waiting for commissioner (PSKd: %s)...",
+                    CONFIG_OPENTHREAD_JOINER_PSKD);
+        }
     }
 
-    openthread_api_mutex_unlock(ctx);
-
-    /* Start OpenThread — Joiner will run via CONFIG_OPENTHREAD_JOINER_AUTOSTART */
-    openthread_start(ctx);
-
-    k_msleep(1000);
-
-    openthread_api_mutex_lock(ctx);
-    dump_ot_dataset(ctx);
     dump_ot_state(ctx);
     openthread_api_mutex_unlock(ctx);
 }
