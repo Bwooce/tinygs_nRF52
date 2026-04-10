@@ -516,10 +516,15 @@ static int mqtt_tls_connect(void)
     /* Event handler */
     mqtt_client.evt_cb = mqtt_evt_handler;
 
-    /* Plain TCP to test NAT64 routing. mqtt.tinygs.com:8883 requires TLS
-     * so we'll get a connection reset, but it proves the route works.
-     * TLS socket has a separate EHOSTUNREACH bug (#40) to fix. */
-    mqtt_client.transport.type = MQTT_TRANSPORT_NON_SECURE;
+    /* TLS direct to mqtt.tinygs.com via nat64.net public NAT64 */
+    mqtt_client.transport.type = MQTT_TRANSPORT_SECURE;
+
+    struct mqtt_sec_config *tls_cfg = &mqtt_client.transport.tls.config;
+    tls_cfg->peer_verify = TLS_PEER_VERIFY_NONE;
+    tls_cfg->cipher_list = NULL;
+    tls_cfg->sec_tag_list = NULL;
+    tls_cfg->sec_tag_count = 0;
+    tls_cfg->hostname = MQTT_BROKER_HOSTNAME;
 
     LOG_INF("Connecting...");
 
@@ -713,7 +718,7 @@ int main(void)
             log_heap_usage("pre_tls");
             if (mqtt_tls_connect() == 0) {
                 /* Set up poll fd for mqtt_input */
-                mqtt_poll_fd.fd = mqtt_client.transport.tcp.sock;
+                mqtt_poll_fd.fd = mqtt_client.transport.tls.sock;
                 mqtt_poll_fd.events = ZSOCK_POLLIN;
                 mqtt_poll_fd_count = 1;
 
