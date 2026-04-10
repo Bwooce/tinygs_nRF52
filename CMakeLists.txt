@@ -30,6 +30,27 @@ target_include_directories(app PRIVATE src/hal lib/RadioLib/src lib/ArduinoJson/
 # This must be a global include so nrf_security's mbedtls compilation can find it
 zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# Force-compile RSA source files — NCS nrf_security PSA path doesn't compile
+# them even though MBEDTLS_RSA_C is defined in mbedtls-user-config.h.
+# mqtt.tinygs.com requires ECDHE-RSA cipher suite.
+# Force-recompile PK + RSA sources with MBEDTLS_RSA_C defined.
+# NCS nrf_security compiles pk.c without MBEDTLS_RSA_C (PSA path),
+# so RSA is #ifdef'd out of the PK dispatch table. CC310 provides
+# the RSA implementation but pk.c doesn't call it.
+zephyr_library_named(mbedtls_rsa_fix)
+zephyr_library_sources(
+    ${ZEPHYR_MBEDTLS_MODULE_DIR}/library/rsa.c
+    ${ZEPHYR_MBEDTLS_MODULE_DIR}/library/rsa_alt_helpers.c
+    ${ZEPHYR_MBEDTLS_MODULE_DIR}/library/pk.c
+    ${ZEPHYR_MBEDTLS_MODULE_DIR}/library/pk_wrap.c
+    ${ZEPHYR_MBEDTLS_MODULE_DIR}/library/pkparse.c
+)
+zephyr_library_include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${ZEPHYR_MBEDTLS_MODULE_DIR}/include
+    ${ZEPHYR_MBEDTLS_MODULE_DIR}/library
+)
+
 # Link RadioLib to the app
 # zephyr_library_named automatically handles some linking, 
 # but we might still need to link it to app.
