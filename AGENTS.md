@@ -11,8 +11,31 @@ This document provides foundational mandates and workflows for AI agents working
 ## 2. Development Workflow
 - **Environment:** The Zephyr/NCS workspace is isolated in `./ncs`. The Python virtual environment is in `./.venv`.
 - **Build:** Use `./build.sh`. It is optimized for 16 cores (`CMAKE_BUILD_PARALLEL_LEVEL=16`).
-- **Flash:** Use `./flash.sh`. It performs a 1200-baud auto-reset to trigger the UF2 bootloader and copies the firmware to the mounted drive.
-- **Debugging:** All logs are routed to the USB CDC ACM serial port. Always use `LOG_INF`, `LOG_ERR`, etc.
+- **Flash:** Use `./flash.sh`. It triggers a 1200-baud auto-reset, waits for the UF2 bootloader drive to mount, and copies the firmware.
+- **Debugging:** All logs are routed to the USB CDC ACM serial port (`/dev/ttyACM0`). Always use `LOG_INF`, `LOG_ERR`, etc. Use `python3 scripts/serial_log.py` to monitor and log to file.
+
+### USB Device Identities
+The device presents different USB identities depending on its state:
+
+| State | VID:PID | USB Name | /dev/sda is | /dev/ttyACM0 is |
+|-------|---------|----------|-------------|-----------------|
+| **UF2 Bootloader** (double-tap RST or 1200-baud reset) | 239a:0071 | HT-n5262 | UF2 flash drive — copy .uf2 here | Bootloader serial |
+| **Application firmware** (normal boot) | 2fe3:0001 | TinyGS Configurator | 24KB FATFS partition (config.json) — NOT for flashing | CDC ACM console log |
+
+**IMPORTANT:** When the application is running, `/dev/sda` is the FATFS config partition, NOT the bootloader flash drive. Do NOT copy .uf2 files to it.
+
+### Flash Workflow
+1. `./build.sh` — builds firmware, generates `build/zephyr/zephyr.uf2`
+2. `./flash.sh` — sends 1200-baud reset, mounts bootloader drive, copies .uf2
+3. Device auto-reboots into new firmware
+4. `python3 scripts/serial_log.py /dev/ttyACM0 115200 serial.log` — monitor output
+
+### 1200-Baud Reset (Verified Working)
+The firmware registers a CDC ACM baud rate callback. When the host sets 1200 baud
+(via `stty -F /dev/ttyACM0 1200`), the firmware writes `0x57` to GPREGRET and does
+a cold reboot, entering the UF2 bootloader. This avoids needing a physical RST double-tap.
+Note: the LOG_INF in the callback was intentionally removed — logging to USB from USB
+IRQ context would deadlock.
 
 ## 3. Memory Management (The "Squeeze" Playbook)
 The nRF52840 has 256KB RAM. The current baseline (Thread + USB MSC + mbedTLS) uses ~230KB. If RAM becomes critical (< 5KB free), apply these optimizations in order:
@@ -37,6 +60,64 @@ The nRF52840 has 256KB RAM. The current baseline (Thread + USB MSC + mbedTLS) us
 - Remote configuration changes via MQTT must be persisted back to the `config.json` file.
 
 ## 6. OTA Updates
-- Support is provided via **MCUboot**. 
-- Flash is split into two slots (~470KB each). 
-- Firmware must be signed/formatted as a `.bin` for MCUboot, but `.uf2` is used for local USB flashing.
+- OTA is deferred to Phase 3+ and will require MCUboot (flashed via SWD).
+- For Phase 1, use the Adafruit UF2 bootloader with `.uf2` files for USB flashing.
+- See PLAN.md Section 3.5 for the MCUboot migration path.
+
+## 7. Flash Partition Safety — CRITICAL
+
+### The Adafruit UF2 bootloader lives at the TOP of flash, NOT at 0x0.
+
+The nRF52840 flash layout with Adafruit bootloader (verified via SWD recovery log):
+
+```
+Address    Region                      Size     Protection
+────────────────────────────────────────────────────────────
+0x00000    MBR + SoftDevice S140       152KB    read-only (DTS)
+0x26000    Application code            792KB    code_partition
+0xEC000    FATFS storage (USB MSC)     24KB     tinygs_storage
+0xF2000    NVS settings (OpenThread)   8KB      storage_partition
+0xF4000    Adafruit Bootloader code    38KB     read-only (DTS) ← PROTECTED
+0xFDC00    Bootloader config           2KB      ← PROTECTED
+0xFE000    MBR params page             4KB      ← PROTECTED
+0xFF000    Bootloader settings         4KB      ← PROTECTED
+0x100000   End of flash
+```
+
+### MANDATORY RULES — violating these BRICKS the device:
+
+1. **NEVER place any writable partition at or above 0xF4000.** The bootloader, its
+   config, MBR params, and settings pages occupy 0xF4000-0x100000. Writing to ANY
+   address in this range destroys the bootloader and requires SWD to recover.
+
+2. **NEVER set CONFIG_FLASH_LOAD_SIZE such that FLASH_LOAD_OFFSET + FLASH_LOAD_SIZE > 0xEC000.**
+   The application must not extend into the FATFS region or beyond.
+
+3. **NEVER move any writable partition above 0xEC000** except NVS at 0xF2000-0xF4000.
+   FATFS (24KB) must stay within 0xEC000-0xF2000. NVS (8KB) within 0xF2000-0xF4000.
+
+4. **Always verify the partition map after ANY change to app.overlay or prj.conf:**
+   - Build the project
+   - Check `build/zephyr/zephyr.dts` for the merged partition layout
+   - Confirm NO partition overlaps with 0xF4000-0x100000
+   - Confirm the UF2 start address in build output matches 0x26000
+
+5. **The `boot_partition` at 0x0 is the MBR + SoftDevice, NOT the bootloader.**
+   The actual bootloader code is `bootloader_partition` at 0xF4000. Both must be
+   marked `read-only` in the DTS overlay.
+
+6. **CONFIG_BOOTLOADER_MCUBOOT must remain `n`.** Enabling it generates MCUboot
+   child images that overwrite the UF2 bootloader when flashed via UF2.
+
+### How the bootloader was bricked (twice):
+- A FATFS partition was placed at 0xF8000 (inside the bootloader region)
+- `fs_mkfs()` erased flash pages from 0xF8000 to 0x100000
+- This destroyed the bootloader binary, config, MBR params, and settings
+- Device became completely unresponsive on USB (no bootloader = no DFU)
+- Recovery required SWD probe + full reflash of bootloader + SoftDevice
+
+### Reference:
+- Adafruit bootloader linker: https://github.com/adafruit/Adafruit_nRF52_Bootloader/blob/master/linker/nrf52840.ld
+- Bootloader code: FLASH ORIGIN=0xF4000, LENGTH=38KB
+- MBR params: 0xFE000 (4KB)
+- Bootloader settings: 0xFF000 (4KB)

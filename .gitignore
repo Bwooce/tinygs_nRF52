@@ -10,4 +10,5 @@ __pycache__/
 # Ignore everything in parent directory except the app folder itself?
 # Standard T2 topology handles this since Zephyr sits *outside* the repo, or we can make the repo an isolated workspace.
 ncs/
-setup.log
+*.log
+*.uf2

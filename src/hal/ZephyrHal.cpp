@@ -3,10 +3,37 @@
 
 LOG_MODULE_REGISTER(ZephyrHal, LOG_LEVEL_DBG);
 
+ZephyrHal* ZephyrHal::_instance = nullptr;
+
+void zephyr_gpio_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins);
+
+// Global mapping for ISRs (logical pin to callback)
+static void (*isr_callbacks[MAX_HAL_PINS])(void) = {nullptr};
+
+void zephyr_gpio_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins) {
+    if (ZephyrHal::_instance == nullptr) return;
+
+    // Find which logical pin triggered by matching the cb pointer
+    for (int i = 0; i < MAX_HAL_PINS; i++) {
+        if (&ZephyrHal::_instance->_callbacks[i] == cb) {
+            if (isr_callbacks[i] != nullptr) {
+                isr_callbacks[i](); 
+            }
+            return;
+        }
+    }
+}
+
 ZephyrHal::ZephyrHal(const struct device* spi_dev, struct spi_config* spi_cfg)
   : RadioLibHal(HAL_PIN_INPUT, HAL_PIN_OUTPUT, HAL_PIN_LOW, HAL_PIN_HIGH, HAL_PIN_RISING, HAL_PIN_FALLING),
-    _spi_dev(spi_dev), _spi_cfg(spi_cfg) {
+    _spi_dev(spi_dev) {
     
+    // Clone the SPI config so we can modify it
+    _spi_cfg = *spi_cfg;
+    // Disable CS in the cloned config to allow RadioLib to handle it manually
+    _spi_cfg.cs.gpio.port = nullptr;
+
+    _instance = this;
     for (int i = 0; i < MAX_HAL_PINS; i++) {
         _pins[i] = nullptr;
     }
@@ -41,39 +68,30 @@ void ZephyrHal::pinMode(uint32_t pin, uint32_t mode) {
     const struct gpio_dt_spec* dt = getGpio(pin);
     if (!dt) return;
 
-    zephyr_gpio_dir_t dir = (mode == HAL_PIN_OUTPUT) ? GPIO_OUTPUT : GPIO_INPUT;
-    gpio_pin_configure_dt(dt, dir);
+    /*
+     * Use gpio_pin_configure (not _dt) to avoid applying DTS active-low flags.
+     * RadioLib expects raw physical pin levels — it handles CS/reset polarity
+     * internally. Applying GPIO_ACTIVE_LOW would invert the logic and break
+     * SPI chip select and reset signaling.
+     */
+    gpio_flags_t dir = (mode == HAL_PIN_OUTPUT) ? GPIO_OUTPUT : GPIO_INPUT;
+    gpio_pin_configure(dt->port, dt->pin, dir);
 }
 
 void ZephyrHal::digitalWrite(uint32_t pin, uint32_t value) {
     const struct gpio_dt_spec* dt = getGpio(pin);
     if (!dt) return;
 
-    gpio_pin_set_dt(dt, value == HAL_PIN_HIGH ? 1 : 0);
+    /* Raw physical level — RadioLib manages polarity internally */
+    gpio_pin_set_raw(dt->port, dt->pin, value == HAL_PIN_HIGH ? 1 : 0);
 }
 
 uint32_t ZephyrHal::digitalRead(uint32_t pin) {
     const struct gpio_dt_spec* dt = getGpio(pin);
     if (!dt) return HAL_PIN_LOW;
 
-    return gpio_pin_get_dt(dt) > 0 ? HAL_PIN_HIGH : HAL_PIN_LOW;
-}
-
-// Global mapping for ISRs (since Zephyr ISRs need user_data, but RadioLib expects void(*)(void))
-// We'll store a static array of callbacks. Not thread-safe if multiple radios, but works for one.
-static void (*isr_callbacks[MAX_HAL_PINS])(void) = {nullptr};
-
-static void zephyr_gpio_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins) {
-    // Find which logical pin triggered by matching the cb pointer
-    // In a real implementation, we'd calculate offset.
-    // For now, let's just run all active matching callbacks.
-    for (int i = 0; i < MAX_HAL_PINS; i++) {
-        if (isr_callbacks[i] != nullptr) {
-            // Check if this callback matches the pin that fired
-            // (Simplified for PoC)
-            isr_callbacks[i](); 
-        }
-    }
+    /* Raw physical level — RadioLib manages polarity internally */
+    return gpio_pin_get_raw(dt->port, dt->pin) > 0 ? HAL_PIN_HIGH : HAL_PIN_LOW;
 }
 
 void ZephyrHal::attachInterrupt(uint32_t interruptNum, void (*interruptCb)(void), uint32_t mode) {
@@ -89,10 +107,10 @@ void ZephyrHal::attachInterrupt(uint32_t interruptNum, void (*interruptCb)(void)
         flags = GPIO_INT_EDGE_BOTH;
     }
 
-    gpio_pin_interrupt_configure_dt(dt, flags);
+    gpio_pin_interrupt_configure(dt->port, dt->pin, flags);
     gpio_init_callback(&_callbacks[interruptNum], zephyr_gpio_isr, BIT(dt->pin));
     gpio_add_callback(dt->port, &_callbacks[interruptNum]);
-    
+
     isr_callbacks[interruptNum] = interruptCb;
 }
 
@@ -100,49 +118,84 @@ void ZephyrHal::detachInterrupt(uint32_t interruptNum) {
     const struct gpio_dt_spec* dt = getGpio(interruptNum);
     if (!dt) return;
 
-    gpio_pin_interrupt_configure_dt(dt, GPIO_INT_DISABLE);
+    gpio_pin_interrupt_configure(dt->port, dt->pin, GPIO_INT_DISABLE);
     gpio_remove_callback(dt->port, &_callbacks[interruptNum]);
     isr_callbacks[interruptNum] = nullptr;
 }
 
-void ZephyrHal::delay(unsigned long ms) {
+void ZephyrHal::delay(RadioLibTime_t ms) {
     k_msleep(ms);
 }
 
-void ZephyrHal::delayMicroseconds(unsigned long us) {
+void ZephyrHal::delayMicroseconds(RadioLibTime_t us) {
     k_busy_wait(us);
 }
 
-unsigned long ZephyrHal::millis() {
+RadioLibTime_t ZephyrHal::millis() {
     return k_uptime_get_32();
 }
 
-unsigned long ZephyrHal::micros() {
-    return k_uptime_get_32() * 1000;
+RadioLibTime_t ZephyrHal::micros() {
+    return (RadioLibTime_t)k_ticks_to_us_near64(k_uptime_ticks());
+}
+
+long ZephyrHal::pulseIn(uint32_t pin, uint32_t state, RadioLibTime_t timeout) {
+    const struct gpio_dt_spec* dt = getGpio(pin);
+    if (!dt) return 0;
+
+    RadioLibTime_t start = micros();
+    // Wait for the pulse to start
+    while (digitalRead(pin) != state) {
+        if (micros() - start > timeout) return 0;
+    }
+
+    RadioLibTime_t pulse_start = micros();
+    // Wait for the pulse to end
+    while (digitalRead(pin) == state) {
+        if (micros() - pulse_start > timeout) return 0;
+    }
+
+    return (long)(micros() - pulse_start);
+}
+
+void ZephyrHal::yield() {
+    k_yield();
 }
 
 void ZephyrHal::spiBegin() {
-    // Zephyr handles SPI init automatically at boot
 }
 
 void ZephyrHal::spiBeginTransaction() {
-    // Zephyr uses the spi_config struct per transaction
 }
 
 void ZephyrHal::spiTransfer(uint8_t* out, size_t len, uint8_t* in) {
+    /* Use dummy buffers for unused direction — some SPI drivers
+     * don't handle nullptr spi_buf_set correctly. */
+    uint8_t dummy_tx[len];
+    uint8_t dummy_rx[len];
+
+    if (!out) {
+        memset(dummy_tx, 0x00, len);
+        out = dummy_tx;
+    }
+    if (!in) {
+        in = dummy_rx;
+    }
+
     const struct spi_buf tx_buf = { .buf = out, .len = len };
     const struct spi_buf_set tx = { .buffers = &tx_buf, .count = 1 };
-    
+
     struct spi_buf rx_buf = { .buf = in, .len = len };
     const struct spi_buf_set rx = { .buffers = &rx_buf, .count = 1 };
 
-    // If out is NULL, Zephyr will just clock out dummy bytes (0x00).
-    // If in is NULL, Zephyr will discard incoming bytes.
-    int ret = spi_transceive(_spi_dev, _spi_cfg, 
-                             out ? &tx : nullptr, 
-                             in ? &rx : nullptr);
+    int ret = spi_transceive(_spi_dev, &_spi_cfg, &tx, &rx);
     if (ret != 0) {
-        LOG_ERR("SPI transfer failed: %d", ret);
+        LOG_ERR("SPI transfer failed: %d (len=%u)", ret, (unsigned)len);
+    }
+
+    if (IS_ENABLED(CONFIG_LOG) && len <= 16) {
+        LOG_HEXDUMP_DBG(out, len, "SPI TX:");
+        LOG_HEXDUMP_DBG(in, len, "SPI RX:");
     }
 }
 

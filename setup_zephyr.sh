@@ -17,10 +17,17 @@ echo "Updating west modules (this will take a while)..."
 west update
 west zephyr-export
 
+echo "Setting up Python virtual environment..."
+cd /home/bruce/dev/tinygs_nRF52
+python3 -m venv .venv
+source .venv/bin/activate
+
 echo "Installing python dependencies..."
-pip3 install -r zephyr/scripts/requirements.txt
-pip3 install -r nrf/scripts/requirements.txt
-pip3 install -r bootloader/mcuboot/scripts/requirements.txt
+pip install west
+cd "$WORKSPACE_DIR"
+pip install -r zephyr/scripts/requirements.txt
+pip install -r nrf/scripts/requirements.txt
+pip install -r bootloader/mcuboot/scripts/requirements.txt
 
 # Install Zephyr SDK if not present
 cd /home/bruce

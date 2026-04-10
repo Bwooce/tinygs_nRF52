@@ -35,11 +35,17 @@ class ZephyrHal : public RadioLibHal {
     void detachInterrupt(uint32_t interruptNum) override;
     
     /* Timing */
-    void delay(unsigned long ms) override;
-    void delayMicroseconds(unsigned long us) override;
-    unsigned long millis() override;
-    unsigned long micros() override;
+    void delay(RadioLibTime_t ms) override;
+    void delayMicroseconds(RadioLibTime_t us) override;
+    RadioLibTime_t millis() override;
+    RadioLibTime_t micros() override;
     
+    /* GPIO extra */
+    long pulseIn(uint32_t pin, uint32_t state, RadioLibTime_t timeout) override;
+
+    /* Scheduling */
+    void yield() override;
+
     /* SPI */
     void spiBegin() override;
     void spiBeginTransaction() override;
@@ -49,7 +55,7 @@ class ZephyrHal : public RadioLibHal {
 
   private:
     const struct device* _spi_dev;
-    struct spi_config* _spi_cfg;
+    struct spi_config _spi_cfg; // Store by value to allow local modification
 
     /* Logical pin to Zephyr gpio_dt_spec mapping */
     const struct gpio_dt_spec* _pins[MAX_HAL_PINS];
@@ -57,6 +63,13 @@ class ZephyrHal : public RadioLibHal {
     uint32_t _pin_count = 0;
 
     const struct gpio_dt_spec* getGpio(uint32_t pin);
+    
+    // To allow static ISR to find the instance and pin
+    static ZephyrHal* _instance;
+    friend void zephyr_gpio_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins);
 };
+
+// Prototype for friend (not static in header to match friend declaration)
+void zephyr_gpio_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins);
 
 #endif // ZEPHYR_HAL_H

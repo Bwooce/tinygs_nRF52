@@ -1,18 +1,148 @@
 / {
     chosen {
         zephyr,console = &cdc_acm_uart0;
+        zephyr,code-partition = &code_partition;
     };
 
+    /* 24KB FATFS Partition for USB MSC (config.json + index.html) */
     msc_disk0 {
         compatible = "zephyr,flash-disk";
-        partition = <&storage_partition>;
+        partition = <&tinygs_storage>;
         disk-name = "NAND";
         cache-size = <4096>;
     };
+
+    aliases {
+        vext = &vext_pin;
+        lora0 = &sx1262;
+    };
+
+    leds {
+        compatible = "gpio-leds";
+        vext_pin: vext_pin {
+            gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>;
+            label = "Vext Power Control";
+        };
+    };
+};
+
+/*
+ * Flash Partition Map — Heltec T114 (nRF52840, 1MB flash)
+ *
+ * Verified against Adafruit bootloader linker script (nrf52840.ld)
+ * and SWD recovery flash log. See AGENTS.md Section 7 for details.
+ *
+ * 0x00000  +-------------------------------+
+ *          | MBR + SoftDevice S140 (152KB) |  read-only
+ * 0x26000  +-------------------------------+
+ *          | Application (792KB)           |  code_partition
+ * 0xEC000  +-------------------------------+
+ *          | FATFS Storage (24KB)          |  tinygs_storage (config.json)
+ * 0xF2000  +-------------------------------+
+ *          | NVS Settings (8KB)            |  storage_partition (OpenThread)
+ * 0xF4000  +-------------------------------+
+ *          | Adafruit Bootloader (38KB)    |  read-only — DO NOT TOUCH
+ * 0xFDC00  | Bootloader config (2KB)       |
+ * 0xFE000  | MBR params page (4KB)         |
+ * 0xFF000  | Bootloader settings (4KB)     |
+ * 0x100000 +-------------------------------+
+ *
+ * CRITICAL: Everything at 0xF4000+ is the Adafruit UF2 bootloader.
+ * Writing to this region BRICKS THE DEVICE (requires SWD to recover).
+ */
+&flash0 {
+    partitions {
+        /* Remove base nrf52840dk DTS partitions that conflict with our layout */
+        /delete-node/ partition@c000;   /* MCUboot slot0 */
+        /delete-node/ partition@82000;  /* MCUboot slot1 */
+        /delete-node/ partition@f8000;  /* base storage — sits inside bootloader! */
+
+        /* MBR + SoftDevice (0x0 -> 0x26000) 152KB */
+        boot_partition: partition@0 {
+            label = "softdevice";
+            reg = <0x00000000 0x00026000>;
+            read-only;
+        };
+
+        /* Application (0x26000 -> 0xEC000) 792KB */
+        code_partition: partition@26000 {
+            label = "code_slot";
+            reg = <0x00026000 0x000c6000>;
+        };
+
+        /* FATFS Storage (0xEC000 -> 0xF2000) 24KB — config.json, index.html */
+        tinygs_storage: partition@ec000 {
+            label = "tinygs_storage";
+            reg = <0x000ec000 0x00006000>;
+        };
+
+        /* NVS Settings (0xF2000 -> 0xF4000) 8KB — OpenThread credentials */
+        storage_partition: partition@f2000 {
+            label = "storage";
+            reg = <0x000f2000 0x00002000>;
+        };
+
+        /*
+         * Adafruit UF2 Bootloader (0xF4000 -> 0x100000) 48KB
+         * Includes: bootloader code, config, MBR params, settings.
+         * NEVER write to this region from application code.
+         */
+        bootloader_partition: partition@f4000 {
+            label = "adafruit_bootloader";
+            reg = <0x000f4000 0x0000c000>;
+            read-only;
+        };
+
+    };
+};
+
+/* Disable QSPI — nrf52840dk defines QSPI flash on P0.17/19/20/21/22/23
+ * which conflicts with our SPI1 (SCK=19, MISO=20, MOSI=21) and
+ * SX1262 BUSY (P0.17). The T114 has no QSPI flash. */
+&qspi {
+    status = "disabled";
 };
 
 &zephyr_udc0 {
     cdc_acm_uart0: cdc_acm_uart0 {
         compatible = "zephyr,cdc-acm-uart";
+    };
+};
+
+&pinctrl {
+    spi1_default: spi1_default {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 0, 19)>,
+                    <NRF_PSEL(SPIM_MOSI, 0, 21)>,
+                    <NRF_PSEL(SPIM_MISO, 0, 20)>;
+        };
+    };
+
+    spi1_sleep: spi1_sleep {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 0, 19)>,
+                    <NRF_PSEL(SPIM_MOSI, 0, 21)>,
+                    <NRF_PSEL(SPIM_MISO, 0, 20)>;
+            low-power-enable;
+        };
+    };
+};
+
+&spi1 {
+    compatible = "nordic,nrf-spim";
+    status = "okay";
+    pinctrl-0 = <&spi1_default>;
+    pinctrl-1 = <&spi1_sleep>;
+    pinctrl-names = "default", "sleep";
+    cs-gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
+
+    sx1262: sx1262@0 {
+        compatible = "semtech,sx1262";
+        reg = <0>;
+        spi-max-frequency = <1000000>;
+        reset-gpios = <&gpio0 15 GPIO_ACTIVE_LOW>;
+        busy-gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>;
+        dio1-gpios = <&gpio0 16 GPIO_ACTIVE_HIGH>;
+        dio2-tx-enable;
     };
 };
