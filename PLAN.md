@@ -126,21 +126,25 @@ All Phase 1 objectives proven:
 *   BR requires: `firewall: false`, `br routeprf high`, ip6tables MASQUERADE for Thread ULA→public IPv6.
 *   UF2 file size limit ~1MB — build/flash scripts check and refuse oversized firmware.
 
-### Phase 2: Core TinyGS Porting — IN PROGRESS
-1.  **State Machine & Polling:** Port the TinyGS state machine to Zephyr threads/workqueues.
-2.  **Protocol Emulation:** Ensure the JSON payloads and MQTT topic structures match the ESP32 version exactly. Study ESP32 TinyGS source (PubSubClient + WiFiClientSecure).
-3.  **Interrupt-driven LoRa RX:** Use `k_work` workqueue attached to DIO1 GPIO callback. SX1262 init working — implement packet reception.
-4.  **NVS Config Persistence:** MQTT config changes saved to NVS (wear-leveled). FATFS config.json regenerated on reboot only.
-5.  **Power Management:** Implement connect/disconnect MQTT pattern based on measured timeout data. Thread SED mode for sleep (disabled in Phase 1 due to poll timing issues).
-6.  **Battery Voltage (ADC):** Read actual Vbat via the T114 ADC pin (currently hardcoded 3700mV). Wire into welcome/ping payloads. Identify the correct ADC channel and voltage divider ratio from the T114 schematic.
-7.  **Ongoing: RAM reduction** toward 240KB target (currently 253KB). Opportunities: picolibc, stack shrinking, OpenThread log level reduction.
+### Phase 2: Core TinyGS Porting — COMPLETE
+1.  **[DONE] State Machine & Polling:** MQTT state machine with Thread join → DNS → TLS → MQTT connect → subscriptions → satellite tracking.
+2.  **[DONE] Protocol Emulation:** All 23 MQTT commands handled. JSON payloads match ESP32 types. Welcome, ping, RX, status messages verified. modem_conf needs JSON escaping (TODO).
+3.  **[DONE] Interrupt-driven LoRa RX:** DIO1 ISR → readData → base64 → MQTT publish pipeline working. Full radio param parsing (freq, sf, bw, cr, sw, pl, iIQ, crc) from begine commands.
+4.  **[DONE] NVS Config Persistence:** Zephyr Settings on shared NVS partition. Location, station, credentials loaded from NVS. config.json bidirectional sync (read at boot, regenerated from runtime values).
+5.  **[DEFERRED] Power Management:** 600s keepalive confirmed working. SED latency toggling deferred to Phase 3.
+6.  **[DONE] Battery Voltage (ADC):** P0.04 (AIN2) with GPIO6 bias enable. 100k:390k divider, real mV readings in welcome/ping.
+7.  **[DONE] FATFS:** 64KB partition with auto-format, LFN enabled, corruption detection via boot sector signature check.
+8.  **[DONE] Auto-tune:** Weblogin URL mechanism discovered and implemented. Server assigns satellites via begine commands (~1/min).
+9.  **Remaining:** JSON escaping for modem_conf echo. RAM at 97% (255KB/256KB).
 
-### Phase 3: Peripherals & Polish
-1.  **Display (Optional):** The T114 has an optional TFT/OLED display. Implement low-power support:
-    - Display on at boot, show status (Thread state, satellite, RSSI, last RX)
-    - Turn off after 30s inactivity to save power
-    - Wake on BOOT button press (GPIO interrupt)
-    - Show brief flash on LoRa packet reception
+### Phase 3: Peripherals & Polish — IN PROGRESS
+1.  **Display (Optional):** ST7789V 240x135 TFT on SPI0. DTS and driver configured.
+    - **[DONE]** Hardware init, graceful headless mode, backlight control
+    - **[DONE]** Multi-page module (tinygs_display.cpp) with page cycling
+    - **[TODO]** Bitmap font rendering (text currently placeholder)
+    - **[TODO]** 3 pages: station info, satellite tracking, system health
+    - **[TODO]** Auto-off after 30s, wake on BOOT button press
+    - **[TODO]** Flash on LoRa packet reception
 2.  **RGB LEDs:** The T114 has two RGB LEDs. Define purpose:
     - LED1: Connection status (solid = connected, slow blink = joining, fast blink = error)
     - LED2: LoRa activity (flash on packet RX)
