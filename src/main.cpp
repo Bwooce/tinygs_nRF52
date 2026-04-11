@@ -893,6 +893,10 @@ static void init_radio(void)
     uint32_t busy = radio_hal.addPin(&lora_busy);
     uint32_t dio1 = radio_hal.addPin(&lora_dio1);
 
+    /* Run HAL smoke tests before radio init */
+    extern int zephyr_hal_run_tests(ZephyrHal *hal);
+    zephyr_hal_run_tests(&radio_hal);
+
     radio_mod = new Module(&radio_hal, cs, dio1, rst, busy);
     radio = new SX1262(radio_mod);
 

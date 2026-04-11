@@ -136,9 +136,24 @@ All Phase 1 objectives proven:
 7.  **Ongoing: RAM reduction** toward 240KB target (currently 253KB). Opportunities: picolibc, stack shrinking, OpenThread log level reduction.
 
 ### Phase 3: Peripherals & Polish
-1.  **Display (Optional):** Implement low-power updating of the TFT/OLED (only turning on upon user button press via GPIO interrupt).
-2.  **Firmware Updates:** USB-only via UF2 drag-and-drop. OTA over Thread was evaluated and dropped due to power cost (see Section 6.3).
-3.  **Commissioning Mode:** Extended wake window (15-30 min) for unprovisioned devices.
+1.  **Display (Optional):** The T114 has an optional TFT/OLED display. Implement low-power support:
+    - Display on at boot, show status (Thread state, satellite, RSSI, last RX)
+    - Turn off after 30s inactivity to save power
+    - Wake on BOOT button press (GPIO interrupt)
+    - Show brief flash on LoRa packet reception
+2.  **RGB LEDs:** The T114 has two RGB LEDs. Define purpose:
+    - LED1: Connection status (solid = connected, slow blink = joining, fast blink = error)
+    - LED2: LoRa activity (flash on packet RX)
+    - Both OFF when display is off (power saving mode), with optional slow pulse (~1/30s) as heartbeat
+3.  **Power Saving Review:** Before Phase 3 is complete, do a full power audit:
+    - Measure current draw in each state (Thread join, MQTT connected idle, LoRa RX, deep sleep)
+    - Identify and disable unnecessary peripherals (QSPI, unused GPIOs, USB when not needed)
+    - Profile SED poll period vs. power draw
+    - Target: <1mA average active, <50uA Thread idle, <11uA deep sleep
+    - Implement SED latency toggling (per nrf-thread-switch pattern)
+4.  **Firmware Updates:** USB-only via UF2 drag-and-drop. OTA over Thread was evaluated and dropped due to power cost (see Section 6.3).
+5.  **Commissioning Mode:** Extended wake window (15-30 min) for unprovisioned devices.
+6.  **Hardware Watchdog:** nRF52840 has one WDT (WDT0). Feed on MQTT PINGRESP; if no PINGRESP within 2x keepalive, watchdog reboots the device.
 
 ## 5. Limitations & Requirements for Users
 *   **Infrastructure:** Requires the user to have a standard Thread Border Router (e.g., Apple TV 4K, HomePod Mini, or Home Assistant SkyConnect) on their network.

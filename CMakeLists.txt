@@ -21,6 +21,7 @@ zephyr_library_include_directories(lib/RadioLib/src)
 target_sources(app PRIVATE
     src/main.cpp
     src/hal/ZephyrHal.cpp
+    src/hal/test_ZephyrHal.cpp
     src/tinygs_protocol.cpp
 )
 
