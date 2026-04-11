@@ -43,6 +43,19 @@ only used by the MQTT broker for session management and does not appear in topic
 
 Where `{user}` is the MQTT username and `{station}` is the dashboard-configured station name (NOT the MAC-derived client ID).
 
+### 2.3 Enabling Auto-Tune (Satellite Assignment)
+
+The server only assigns satellites to stations with auto-tune enabled. This is a
+server-side setting toggled via the TinyGS web dashboard, NOT an MQTT field.
+
+To enable: the device publishes `1` to `tinygs/{user}/{station}/tele/get_weblogin`.
+The server responds on `tinygs/{user}/{station}/cmnd/weblogin` with a one-time login
+URL (e.g., `https://tinygs.com?loginToken=...&userId=...`). Open this URL in a browser
+to access the station's Operator settings, where "Auto Tune" can be toggled ON.
+
+Once enabled, the server sends `begine` commands to the station-specific cmnd topic
+with satellite frequency, modulation parameters, and satellite name.
+
 ### 2.2 Published Topics (Telemetry)
 
 | Topic | When | Purpose |
