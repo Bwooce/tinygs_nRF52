@@ -26,6 +26,8 @@
 #include <zephyr/drivers/adc.h>
 #include <zephyr/dt-bindings/adc/nrf-adc.h>
 #include <zephyr/sys/base64.h>
+#include <zephyr/net/sntp.h>
+#include <time.h>
 #include "tinygs_display.h"
 #include <hal/nrf_power.h>
 #include <hal/nrf_ficr.h>
@@ -1071,6 +1073,60 @@ SX1262 *radio = nullptr;  /* non-static — accessed from MQTT callback */
 static volatile bool lora_packet_received = false;
 
 /* -------------------------------------------------------------------------- */
+/* SNTP Time Sync                                                              */
+/* -------------------------------------------------------------------------- */
+
+static int64_t sntp_epoch_offset = 0; /* seconds: real_epoch = uptime_s + offset */
+static bool time_synced = false;
+
+static int64_t get_utc_epoch(void)
+{
+    if (!time_synced) return 0;
+    return (int64_t)(k_uptime_get_32() / 1000) + sntp_epoch_offset;
+}
+
+/**
+ * Sync time via SNTP. Uses the same NAT64-resolved address as MQTT.
+ * Called once after MQTT connects (we know NAT64 path works at that point).
+ */
+static void sntp_sync(void)
+{
+    /* Can't use sntp_simple() — it uses getaddrinfo which doesn't work
+     * over OpenThread DNS. Use sntp_query with a pre-resolved NAT64 address.
+     * time.google.com = 216.239.35.0 → nat64.net: 2a00:1098:2c::d8ef:2300 */
+    struct sntp_ctx ctx;
+    struct sockaddr_in6 addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin6_family = AF_INET6;
+    addr.sin6_port = htons(123);
+    /* 216.239.35.0 via nat64.net well-known prefix */
+    addr.sin6_addr.s6_addr[0] = 0x2a; addr.sin6_addr.s6_addr[1] = 0x00;
+    addr.sin6_addr.s6_addr[2] = 0x10; addr.sin6_addr.s6_addr[3] = 0x98;
+    addr.sin6_addr.s6_addr[4] = 0x00; addr.sin6_addr.s6_addr[5] = 0x2c;
+    /* bytes 6-11 = 0 */
+    addr.sin6_addr.s6_addr[12] = 216; addr.sin6_addr.s6_addr[13] = 239;
+    addr.sin6_addr.s6_addr[14] = 35;  addr.sin6_addr.s6_addr[15] = 0;
+
+    int ret = sntp_init(&ctx, (struct sockaddr *)&addr, sizeof(addr));
+    if (ret < 0) {
+        LOG_WRN("SNTP: init failed (%d)", ret);
+        return;
+    }
+
+    struct sntp_time ts;
+    ret = sntp_query(&ctx, 5000, &ts);
+    sntp_close(&ctx);
+    if (ret == 0) {
+        uint32_t uptime_s = k_uptime_get_32() / 1000;
+        sntp_epoch_offset = (int64_t)ts.seconds - (int64_t)uptime_s;
+        time_synced = true;
+        LOG_INF("SNTP: time synced, epoch=%lld", (long long)ts.seconds);
+    } else {
+        LOG_WRN("SNTP: sync failed (%d)", ret);
+    }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Doppler Compensation (P13 satellite propagator)                             */
 /* -------------------------------------------------------------------------- */
 
@@ -1098,20 +1154,49 @@ static void doppler_update(void)
      * ESP32 uses NTP over WiFi. We could use Zephyr's SNTP client via
      * the same NAT64 path as MQTT. Without real time, Doppler prediction
      * produces incorrect results. For now, disabled until SNTP is added. */
-    /* Disabled until SNTP time sync is implemented.
-     * Doppler requires accurate UTC time for orbit prediction.
-     * Plan: add CONFIG_SNTP (203 lines), query time.cloudflare.com
-     * via NAT64 on MQTT connect, then enable this function.
-     *
-     * When enabled, this function will:
-     * 1. Create P13DateTime from SNTP-synced clock
-     * 2. Create P13Observer from station lat/lon/alt
-     * 3. Create P13Satellite_tGS from tinygs_radio.tle (34 bytes)
-     * 4. Predict satellite position, compute Doppler shift
-     * 5. Apply with hysteresis (doppler_tol = 1200 Hz)
-     * 6. Retune radio: freq + freqOffset + freqDoppler
-     */
-    (void)0; /* placeholder */
+    if (!time_synced) {
+        return; /* No SNTP time yet — can't predict orbits */
+    }
+
+    int64_t epoch = get_utc_epoch();
+    /* Convert epoch to Y/M/D H:M:S */
+    /* Simple conversion — good enough for satellite tracking */
+    time_t t = (time_t)epoch;
+    struct tm *utc = gmtime(&t);
+    if (!utc) return;
+
+    P13DateTime dt(utc->tm_year + 1900, utc->tm_mon + 1, utc->tm_mday,
+                   utc->tm_hour, utc->tm_min, utc->tm_sec);
+    P13Observer obs("GS", (double)tinygs_station_lat,
+                    (double)tinygs_station_lon,
+                    (double)tinygs_station_alt);
+    P13Satellite_tGS sat(tinygs_radio.tle);
+
+    sat.predict(dt);
+
+    /* Get elevation to check if satellite is above horizon */
+    double elevation = 0.0, azimuth = 0.0;
+    sat.elaz(obs, elevation, azimuth);
+
+    if (elevation <= 0.0) {
+        return; /* Below horizon — no Doppler needed */
+    }
+
+    /* Compute Doppler — doppler() takes MHz, returns shifted MHz */
+    double rx_freq_mhz = (double)tinygs_radio.frequency;
+    double doppler_freq_mhz = sat.doppler(rx_freq_mhz, P13_FRX);
+    float new_doppler = (float)((doppler_freq_mhz - rx_freq_mhz) * 1e6);
+
+    /* Hysteresis — only retune if change exceeds tolerance */
+    if (fabsf(new_doppler - tinygs_radio.freq_doppler) > tinygs_radio.doppler_tol) {
+        tinygs_radio.freq_doppler = new_doppler;
+        float effective_freq = tinygs_radio.frequency +
+                              (tinygs_radio.freq_offset + tinygs_radio.freq_doppler) / 1e6f;
+        radio->setFrequency(effective_freq);
+        radio->startReceive();
+        LOG_INF("Doppler: %.0f Hz → %.6f MHz (el=%.1f°)",
+                (double)new_doppler, (double)effective_freq, elevation);
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1133,8 +1218,9 @@ static void init_radio(void)
     uint32_t dio1 = radio_hal.addPin(&lora_dio1);
 
     /* Run HAL smoke tests before radio init */
-    extern int zephyr_hal_run_tests(ZephyrHal *hal);
-    zephyr_hal_run_tests(&radio_hal);
+    /* HAL smoke tests disabled for production — saves ~1KB flash
+     * extern int zephyr_hal_run_tests(ZephyrHal *hal);
+     * zephyr_hal_run_tests(&radio_hal); */
 
     radio_mod = new Module(&radio_hal, cs, dio1, rst, busy);
     radio = new SX1262(radio_mod);
@@ -1347,6 +1433,11 @@ int main(void)
         case STATE_MQTT_CONNECTED: {
             log_heap_usage("mqtt_connected");
             LOG_INF("=== MQTT-TLS CONNECTION SUCCESSFUL ===");
+
+            /* Sync time via SNTP — needed for Doppler compensation */
+            if (!time_synced) {
+                sntp_sync();
+            }
 
             /* TinyGS main loop — process MQTT, LoRa RX, and pings */
             uint32_t last_ping_ms = k_uptime_get_32();
