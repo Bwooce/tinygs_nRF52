@@ -28,11 +28,13 @@ static const struct device *disp_dev = NULL;
 static bool display_active = false;
 static int current_page = 0;
 static uint32_t last_page_switch_ms = 0;
+static uint32_t last_activity_ms = 0;
 
 #define PAGE_COUNT       3
 #define PAGE_INTERVAL_MS 5000
 #define DISP_W           240
 #define DISP_H           135
+#define DISPLAY_TIMEOUT_MS 30000 /* Auto-off after 30s */
 
 /* RGB565 colors */
 #define COL_BLACK   0x0000
@@ -49,6 +51,27 @@ static const struct gpio_dt_spec backlight = {
     .pin = 15,
     .dt_flags = GPIO_ACTIVE_HIGH,
 };
+
+/* BOOT button — P1.10, active low with internal pull-up */
+static const struct gpio_dt_spec button = {
+    .port = DEVICE_DT_GET(DT_NODELABEL(gpio1)),
+    .pin = 10,
+    .dt_flags = GPIO_ACTIVE_LOW,
+};
+static struct gpio_callback button_cb_data;
+
+static void button_pressed(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+{
+    /* Wake display on button press */
+    if (!display_active && disp_dev) {
+        display_blanking_off(disp_dev);
+        if (device_is_ready(backlight.port)) gpio_pin_set_dt(&backlight, 1);
+        display_active = true;
+        current_page = 0;
+    }
+    last_activity_ms = k_uptime_get_32();
+    last_page_switch_ms = last_activity_ms;
+}
 
 /* Line buffer for rendering — one row of FONT_H pixels */
 static uint16_t line_buf[DISP_W];
@@ -166,16 +189,36 @@ bool tinygs_display_init(void)
     clear_screen();
     display_active = true;
     last_page_switch_ms = k_uptime_get_32();
+    last_activity_ms = last_page_switch_ms;
 
-    LOG_INF("Display: ST7789V 240x135 ready");
+    /* Set up BOOT button for display wake */
+    if (device_is_ready(button.port)) {
+        gpio_pin_configure_dt(&button, GPIO_INPUT | GPIO_PULL_UP);
+        gpio_pin_interrupt_configure_dt(&button, GPIO_INT_EDGE_TO_ACTIVE);
+        gpio_init_callback(&button_cb_data, button_pressed, BIT(button.pin));
+        gpio_add_callback(button.port, &button_cb_data);
+    }
+
+    LOG_INF("Display: ST7789V 240x135 ready (auto-off %ds)", DISPLAY_TIMEOUT_MS / 1000);
     return true;
 }
 
 void tinygs_display_update(void)
 {
-    if (!disp_dev || !display_active) return;
+    if (!disp_dev) return;
 
     uint32_t now = k_uptime_get_32();
+
+    /* Auto-off after inactivity */
+    if (display_active && (now - last_activity_ms) >= DISPLAY_TIMEOUT_MS) {
+        display_blanking_on(disp_dev);
+        if (device_is_ready(backlight.port)) gpio_pin_set_dt(&backlight, 0);
+        display_active = false;
+        return;
+    }
+
+    if (!display_active) return;
+
     if ((now - last_page_switch_ms) >= PAGE_INTERVAL_MS) {
         current_page = (current_page + 1) % PAGE_COUNT;
         last_page_switch_ms = now;

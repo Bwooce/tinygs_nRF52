@@ -700,14 +700,13 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 
                     radio->startReceive();
 
-                    LOG_INF("  → %s (NORAD %u) %.4fMHz SF%d BW%.1f CR%d iIQ=%s",
+                    LOG_INF("  → %s %.4fMHz SF%d BW%.1f%s%s",
                             tinygs_radio.satellite,
-                            (unsigned)tinygs_radio.norad,
                             (double)tinygs_radio.frequency,
                             tinygs_radio.sf,
                             (double)tinygs_radio.bw,
-                            tinygs_radio.cr,
-                            iiq ? "T" : "F");
+                            tinygs_radio.tle_valid ? " TLE" : "",
+                            tinygs_radio.filter[0] ? " FLT" : "");
                 }
             } else if (strcmp(cmnd, "freq") == 0) {
                 /* Direct frequency set (MHz as number) */
