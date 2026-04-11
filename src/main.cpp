@@ -641,15 +641,9 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     if (conf_len < sizeof(tinygs_radio.modem_conf)) {
                         memcpy(tinygs_radio.modem_conf, rx_payload, conf_len + 1);
                     }
-                    /* Save to NVS only when satellite changes (avoid flash wear) */
-                    static char last_saved_sat[32] = "";
-                    if (strcmp(tinygs_radio.satellite, last_saved_sat) != 0) {
-                        tinygs_config_save_radio();
-                        tinygs_config_save_modem_conf(tinygs_radio.modem_conf);
-                        strncpy(last_saved_sat, tinygs_radio.satellite,
-                                sizeof(last_saved_sat) - 1);
-                        LOG_INF("  Config saved to NVS (new satellite)");
-                    }
+                    /* Don't save radio state to NVS — satellites change every
+                     * minute, which would blow out flash wear-leveling. The server
+                     * sends a fresh begine within 60s of every MQTT connect. */
                     /* Restart reception */
                     radio->startReceive();
                     LOG_INF("  Radio reconfigured, listening");
