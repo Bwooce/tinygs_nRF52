@@ -650,6 +650,22 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     p = strstr((char *)rx_payload, "\"NORAD\":");
                     if (p) tinygs_radio.norad = (uint32_t)atoi(p + 8);
 
+                    /* Parse filter from begine payload */
+                    p = strstr((char *)rx_payload, "\"filter\":[");
+                    if (p) {
+                        p += 10;
+                        tinygs_radio.filter_len = 0;
+                        while (*p && *p != ']' && tinygs_radio.filter_len < sizeof(tinygs_radio.filter)) {
+                            while (*p == ' ' || *p == ',') p++;
+                            if (*p == ']') break;
+                            tinygs_radio.filter[tinygs_radio.filter_len++] = (uint8_t)atoi(p);
+                            while (*p && *p != ',' && *p != ']') p++;
+                        }
+                    } else {
+                        tinygs_radio.filter_len = 0;
+                        tinygs_radio.filter[0] = 0;
+                    }
+
                     /* Parse TLE (base64-encoded 34-byte binary) */
                     /* TLE is sent as "tlx" (not "tle") in the ESP32 protocol */
                     p = strstr((char *)rx_payload, "\"tlx\":\"");
