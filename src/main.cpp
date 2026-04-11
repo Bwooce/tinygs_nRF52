@@ -434,24 +434,43 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 
     case MQTT_EVT_PUBLISH: {
         const struct mqtt_publish_param *pub = &evt->param.publish;
-        /* Read topic */
         static char rx_topic[128];
-        static uint8_t rx_payload[512];
+        static uint8_t rx_payload[768];
         uint32_t topic_len = MIN(pub->message.topic.topic.size, sizeof(rx_topic) - 1);
         memcpy(rx_topic, pub->message.topic.topic.utf8, topic_len);
         rx_topic[topic_len] = '\0';
 
-        /* Read payload from the MQTT input buffer */
         uint32_t payload_len = MIN(pub->message.payload.len, sizeof(rx_payload) - 1);
         int ret = mqtt_read_publish_payload(client, rx_payload, payload_len);
-        if (ret >= 0) {
-            rx_payload[ret] = '\0';
-            LOG_INF("MQTT RX [%s]: %s", rx_topic, (char *)rx_payload);
-        } else {
+        if (ret < 0) {
             LOG_ERR("MQTT payload read error: %d", ret);
+            break;
+        }
+        rx_payload[ret] = '\0';
+
+        LOG_INF("MQTT RX [%s] (%d bytes)", rx_topic, ret);
+        if (ret < 200) {
+            LOG_INF("  payload: %s", (char *)rx_payload);
         }
 
-        /* Acknowledge if QoS 1 */
+        /* Extract command name from topic:
+         * tinygs/global/cmnd/XXX or tinygs/user/station/cmnd/XXX */
+        const char *cmnd = strstr(rx_topic, "/cmnd/");
+        if (cmnd) {
+            cmnd += 6;  /* skip "/cmnd/" */
+            LOG_INF("  command: %s", cmnd);
+
+            /* TODO: dispatch commands — for now just log them */
+            if (strcmp(cmnd, "batch_conf") == 0 ||
+                strcmp(cmnd, "begine") == 0) {
+                LOG_INF("  → Radio config command received (not yet applied)");
+            } else if (strcmp(cmnd, "status") == 0) {
+                LOG_INF("  → Status request received");
+            } else if (strcmp(cmnd, "log") == 0) {
+                LOG_INF("  → Server log: %s", (char *)rx_payload);
+            }
+        }
+
         if (pub->message.topic.qos == MQTT_QOS_1_AT_LEAST_ONCE) {
             struct mqtt_puback_param ack = { .message_id = pub->message_id };
             mqtt_publish_qos1_ack(client, &ack);
