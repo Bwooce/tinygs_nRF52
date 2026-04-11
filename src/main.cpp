@@ -623,12 +623,12 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         tinygs_radio.norad = (uint32_t)atoi(p + 8);
                         LOG_INF("  NORAD: %u", (unsigned)tinygs_radio.norad);
                     }
-                    /* Store raw payload as modem_conf for welcome echo */
-                    size_t conf_len = strlen((char *)rx_payload);
-                    if (conf_len < sizeof(tinygs_radio.modem_conf)) {
-                        memcpy(tinygs_radio.modem_conf, rx_payload, conf_len + 1);
-                    }
-                    /* Don't save radio state to NVS — satellites change every
+                    /* Don't store raw begine JSON as modem_conf — it contains
+                     * unescaped quotes that break our snprintf JSON serialization.
+                     * modem_conf stays as "{}" until we have proper JSON escaping.
+                     * TODO: escape quotes or use a JSON library for welcome payload.
+                     *
+                     * Don't save radio state to NVS — satellites change every
                      * minute, which would blow out flash wear-leveling. The server
                      * sends a fresh begine within 60s of every MQTT connect. */
                     /* Restart reception */
@@ -740,68 +740,6 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 /* MQTT-TLS Connection                                                         */
 /* -------------------------------------------------------------------------- */
 
-/*
- * TLS socket test — connect directly to mqtt.tinygs.com via public NAT64.
- * Google NAT64 prefix: 64:ff9b::/96
- * mqtt.tinygs.com = 159.195.74.23 → 64:ff9b::9fc3:4a17
- */
-static int test_tls_nat64(void)
-{
-    struct sockaddr_in6 dest;
-    memset(&dest, 0, sizeof(dest));
-    dest.sin6_family = AF_INET6;
-    dest.sin6_port = htons(8883);
-
-    /* 64:ff9b::9fc3:4a17 (mqtt.tinygs.com via Google NAT64) */
-    otIp6Address nat64;
-    memset(&nat64, 0, sizeof(nat64));
-    nat64.mFields.m16[0] = htons(0x0064);
-    nat64.mFields.m16[1] = htons(0xff9b);
-    /* m16[2..5] = 0 */
-    nat64.mFields.m8[12] = 159;
-    nat64.mFields.m8[13] = 195;
-    nat64.mFields.m8[14] = 74;
-    nat64.mFields.m8[15] = 23;
-    memcpy(&dest.sin6_addr, &nat64, 16);
-
-    char addr_str[INET6_ADDRSTRLEN];
-    net_addr_ntop(AF_INET6, &dest.sin6_addr, addr_str, sizeof(addr_str));
-
-    /* Test 1: Plain TCP to public NAT64 address */
-    LOG_INF("NAT64 test: TCP to [%s]:8883 ...", addr_str);
-    int sock = zsock_socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-    if (sock >= 0) {
-        int ret = zsock_connect(sock, (struct sockaddr *)&dest, sizeof(dest));
-        if (ret == 0) {
-            LOG_INF("=== NAT64 TCP SUCCEEDED! ===");
-        } else {
-            LOG_ERR("NAT64 TCP connect failed: errno=%d", errno);
-        }
-        zsock_close(sock);
-    }
-
-    /* Test 2: TLS socket to same address */
-    LOG_INF("NAT64 test: TLS to [%s]:8883 ...", addr_str);
-    sock = zsock_socket(AF_INET6, SOCK_STREAM, IPPROTO_TLS_1_2);
-    if (sock >= 0) {
-        int peer_verify = TLS_PEER_VERIFY_NONE;
-        zsock_setsockopt(sock, SOL_TLS, TLS_PEER_VERIFY,
-                          &peer_verify, sizeof(peer_verify));
-
-        int ret = zsock_connect(sock, (struct sockaddr *)&dest, sizeof(dest));
-        if (ret == 0) {
-            LOG_INF("=== NAT64 TLS SUCCEEDED! ===");
-        } else {
-            LOG_ERR("NAT64 TLS connect failed: errno=%d", errno);
-        }
-        zsock_close(sock);
-    } else {
-        LOG_ERR("NAT64 TLS socket() failed: errno=%d", errno);
-    }
-
-    return 0;
-}
-
 static int mqtt_tls_connect(void)
 {
     LOG_INF("Connecting MQTT to [%s]:%d ...", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
@@ -903,8 +841,6 @@ static int mqtt_tls_connect(void)
 /* -------------------------------------------------------------------------- */
 
 static FATFS fat_fs;
-static int boot_index_exists = 0;
-static int boot_index_size = -1;
 static struct fs_mount_t mp = {
     .type = FS_FATFS,
     .mnt_point = "/NAND:",
@@ -990,33 +926,16 @@ static void setup_usb_storage(void)
     LOG_INF("FATFS mount: %d", res);
 
     if (res == 0) {
-        /* Check if index.html exists, write if not */
-        int stat_ret = fs_stat("/NAND:/index.html", &entry);
-        /* Store pre-write stat result for deferred logging */
-        int pre_stat = stat_ret;
-        int pre_size = (stat_ret == 0) ? (int)entry.size : -1;
-        int open_ret = -999, write_ret = -999;
-
-        if (stat_ret != 0) {
+        /* Write index.html if it doesn't exist */
+        if (fs_stat("/NAND:/index.html", &entry) != 0) {
             fs_file_t_init(&file);
-            open_ret = fs_open(&file, "/NAND:/index.html", FS_O_CREATE | FS_O_WRITE);
-            if (open_ret == 0) {
-                write_ret = (int)fs_write(&file, html_content, strlen(html_content));
+            if (fs_open(&file, "/NAND:/index.html", FS_O_CREATE | FS_O_WRITE) == 0) {
+                fs_write(&file, html_content, strlen(html_content));
                 fs_sync(&file);
                 fs_close(&file);
             }
         }
 
-        /* Verify after write attempt */
-        stat_ret = fs_stat("/NAND:/index.html", &entry);
-        boot_index_exists = (stat_ret == 0);
-        boot_index_size = boot_index_exists ? (int)entry.size : -1;
-
-        /* Pack debug info into boot_index_size for deferred logging.
-         * If file missing: encode pre_stat, open_ret, write_ret */
-        LOG_ERR("FATFS: stat=%d open=%d write=%d verify=%d",
-                pre_stat, open_ret, write_ret,
-                boot_index_exists ? boot_index_size : -999);
         /* Read config.json if it exists — station location, name, etc.
          * This is the only time we can read FATFS (before USB MSC takes over). */
         {
@@ -1243,8 +1162,6 @@ int main(void)
     }
 
     LOG_INF("=== TinyGS nRF52 Phase 2: MQTT-TLS over Thread ===");
-    LOG_INF("FATFS: index.html %s (size=%d)",
-            boot_index_exists ? "exists" : "MISSING", boot_index_size);
     log_heap_usage("boot");
     init_openthread();
 
@@ -1267,8 +1184,6 @@ int main(void)
         case STATE_WAIT_THREAD:
             if (thread_attached) {
                 log_heap_usage("thread_attached");
-                LOG_INF("FATFS boot: index.html %s (size=%d)",
-                        boot_index_exists ? "EXISTS" : "MISSING", boot_index_size);
                 LOG_INF("--- Thread attached, waiting 5s for routing to stabilize ---");
                 k_msleep(5000);
                 app_state = STATE_DNS_RESOLVE;

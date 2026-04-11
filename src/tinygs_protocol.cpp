@@ -27,7 +27,7 @@ struct tinygs_radio_state tinygs_radio = {
     .cr = 5,
     .satellite = "",
     .norad = 0,
-    .modem_conf = "{}",
+    .modem_conf = "{}", /* Must be valid JSON string content — no unescaped quotes */
 };
 
 /* Shared buffers for topic and payload construction */
