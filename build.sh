@@ -1,10 +1,16 @@
 #!/bin/bash
 # TinyGS Zephyr Build Script
 # Forces Ninja to use 10+ cores to compile faster
+#
+# Usage: ./build.sh [--ram-report]
+#   --ram-report  Show top RAM consumers (BSS + data symbols) after build
 
 set -e
 
 WORKSPACE_DIR="/home/bruce/dev/tinygs_nRF52"
+SDK_DIR="/home/bruce/zephyr-sdk-0.16.8"
+NM="${SDK_DIR}/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm"
+ELF="${WORKSPACE_DIR}/build/zephyr/zephyr.elf"
 
 # Activate the virtual environment that has west installed
 source "${WORKSPACE_DIR}/.venv/bin/activate"
@@ -27,3 +33,14 @@ if [ -f "$UF2_FILE" ]; then
 fi
 
 echo "Build Completed!"
+
+# RAM report — show largest BSS/data symbols
+if [[ "$1" == "--ram-report" ]] && [ -f "$ELF" ] && [ -x "$NM" ]; then
+    echo ""
+    echo "=== RAM Report: Top 30 BSS+Data symbols ==="
+    "$NM" --size-sort -r "$ELF" | grep -i " [bBdD] " | head -30
+    echo ""
+    echo "=== RAM Report: Summary by section ==="
+    "$NM" --size-sort -r "$ELF" | grep -i " [bB] " | awk '{sum += strtonum("0x"$1)} END {printf "BSS (zero-init):  %d bytes\n", sum}'
+    "$NM" --size-sort -r "$ELF" | grep -i " [dD] " | awk '{sum += strtonum("0x"$1)} END {printf "Data (init):      %d bytes\n", sum}'
+fi
