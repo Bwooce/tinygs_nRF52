@@ -1141,7 +1141,7 @@ static uint32_t last_doppler_ms = 0;
  * Called every 4 seconds from the main loop. Requires valid TLE and time.
  *
  * NOTE: This requires real UTC time which we don't have (no NTP over Thread).
- * For now, Doppler is a placeholder — the calculation runs but produces
+ * Doppler activates automatically when begine includes TLE data and
  * incorrect results without accurate time. When TLE data arrives and we
  * implement time sync, this will produce real Doppler corrections.
  */
@@ -1151,10 +1151,7 @@ static void doppler_update(void)
         return;
     }
 
-    /* TODO: Get real UTC time via SNTP over NAT64 (time.cloudflare.com).
-     * ESP32 uses NTP over WiFi. We could use Zephyr's SNTP client via
-     * the same NAT64 path as MQTT. Without real time, Doppler prediction
-     * produces incorrect results. For now, disabled until SNTP is added. */
+    /* SNTP time sync via OpenThread SNTP client → Google NTP IPv6 */
     if (!time_synced) {
         return; /* No SNTP time yet — can't predict orbits */
     }

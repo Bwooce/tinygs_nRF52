@@ -127,22 +127,22 @@ All Phase 1 objectives proven:
 *   UF2 file size limit ~1MB — build/flash scripts check and refuse oversized firmware.
 
 ### Phase 2: Core TinyGS Porting — COMPLETE
-1.  **[DONE] State Machine & Polling:** MQTT state machine with Thread join → DNS → TLS → MQTT connect → subscriptions → satellite tracking.
-2.  **[DONE] Protocol Emulation:** All 23 MQTT commands handled. JSON payloads match ESP32 types. Welcome, ping, RX, status messages verified. modem_conf needs JSON escaping (TODO).
-3.  **[DONE] Interrupt-driven LoRa RX:** DIO1 ISR → readData → base64 → MQTT publish pipeline working. Full radio param parsing (freq, sf, bw, cr, sw, pl, iIQ, crc) from begine commands.
-4.  **[DONE] NVS Config Persistence:** Zephyr Settings on shared NVS partition. Location, station, credentials loaded from NVS. config.json bidirectional sync (read at boot, regenerated from runtime values).
-5.  **[DEFERRED] Power Management:** 600s keepalive confirmed working. SED latency toggling deferred to Phase 3.
-6.  **[DONE] Battery Voltage (ADC):** P0.04 (AIN2) with GPIO6 bias enable. 100k:390k divider, real mV readings in welcome/ping.
-7.  **[DONE] FATFS:** 64KB partition with auto-format, LFN enabled, corruption detection via boot sector signature check.
-8.  **[DONE] Auto-tune:** Weblogin URL mechanism discovered and implemented. Server assigns satellites via begine commands (~1/min).
-9.  **Remaining:** JSON escaping for modem_conf echo. RAM at 97% (255KB/256KB).
+1.  **[DONE] State Machine & Polling:** MQTT state machine with Thread join → DNS → TLS → MQTT → satellite tracking.
+2.  **[DONE] Protocol Emulation:** All 23 MQTT commands handled. JSON escaping for modem_conf. foff and filter implemented.
+3.  **[DONE] Interrupt-driven LoRa RX:** Full radio param parsing (freq, sf, bw, cr, sw, pl, iIQ, crc) + packet filter.
+4.  **[DONE] NVS Config Persistence:** Zephyr Settings on shared NVS partition. config.json bidirectional sync.
+5.  **[DONE] Doppler Compensation:** P13 propagator ported from ESP32. TLE parsing from begine. SNTP time sync via OT SNTP client (Google NTP IPv6). 4s update interval, 1200 Hz hysteresis. Activates when server sends TLE data.
+6.  **[DONE] Battery Voltage (ADC):** Real mV readings in welcome/ping/display.
+7.  **[DONE] FATFS:** 64KB partition, auto-format, LFN, corruption detection.
+8.  **[DONE] Auto-tune:** Weblogin URL for server-side toggle. Satellites assigned ~1/min.
+9.  **[DONE] RAM Optimization:** 162KB used (62%) — down from 255KB (97%). 8KB system + 40KB mbedTLS heaps.
 
 ### Phase 3: Peripherals & Polish — IN PROGRESS
-1.  **Display (Optional):** ST7789V 240x135 TFT on SPI0. DTS and driver configured.
+1.  **Display (Optional):** ST7789V 240x135 TFT on SPI0. Custom 8x16 bitmap font renderer.
     - **[DONE]** Hardware init, graceful headless mode, backlight control
-    - **[DONE]** Multi-page module (tinygs_display.cpp) with page cycling
-    - **[TODO]** Bitmap font rendering (text currently placeholder)
-    - **[TODO]** 3 pages: station info, satellite tracking, system health
+    - **[DONE]** Multi-page module with 3 color-coded pages cycling every 5s
+    - **[DONE]** Custom 8x16 font renderer (4.6KB flash vs 114KB LVGL)
+    - **[TODO]** World map XBM + satellite position dot (from sat_pos_oled command)
     - **[TODO]** Auto-off after 30s, wake on BOOT button press
     - **[TODO]** Flash on LoRa packet reception
 2.  **RGB LEDs:** The T114 has two RGB LEDs. Define purpose:
