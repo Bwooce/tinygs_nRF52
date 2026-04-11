@@ -97,6 +97,12 @@ void ZephyrHal::attachInterrupt(uint32_t interruptNum, void (*interruptCb)(void)
         flags = GPIO_INT_EDGE_BOTH;
     }
 
+    // Unregister any previous interrupt on this pin
+    if (_irqs[interruptNum].fn != nullptr) {
+        gpio_pin_interrupt_configure(dt->port, dt->pin, GPIO_INT_DISABLE);
+        gpio_remove_callback(dt->port, &_irqs[interruptNum].cb);
+    }
+
     gpio_pin_interrupt_configure(dt->port, dt->pin, flags);
     gpio_init_callback(&_irqs[interruptNum].cb, zephyr_gpio_isr, BIT(dt->pin));
     gpio_add_callback(dt->port, &_irqs[interruptNum].cb);
@@ -108,9 +114,11 @@ void ZephyrHal::detachInterrupt(uint32_t interruptNum) {
     const struct gpio_dt_spec* dt = getGpio(interruptNum);
     if (!dt) return;
 
-    gpio_pin_interrupt_configure(dt->port, dt->pin, GPIO_INT_DISABLE);
-    gpio_remove_callback(dt->port, &_irqs[interruptNum].cb);
-    _irqs[interruptNum].fn = nullptr;
+    if (_irqs[interruptNum].fn != nullptr) {
+        gpio_pin_interrupt_configure(dt->port, dt->pin, GPIO_INT_DISABLE);
+        gpio_remove_callback(dt->port, &_irqs[interruptNum].cb);
+        _irqs[interruptNum].fn = nullptr;
+    }
 }
 
 void ZephyrHal::delay(RadioLibTime_t ms) {
@@ -157,24 +165,11 @@ void ZephyrHal::spiBeginTransaction() {
 }
 
 void ZephyrHal::spiTransfer(uint8_t* out, size_t len, uint8_t* in) {
-    /* Fixed-size dummy buffers for unused direction — RadioLib SPI
-     * transfers are always small (register reads/writes ≤ 256 bytes). */
-    static uint8_t dummy_tx[256];
-    static uint8_t dummy_rx[256];
-
-    if (len > sizeof(dummy_tx)) {
-        LOG_ERR("SPI transfer too large: %zu > %zu", len, sizeof(dummy_tx));
-        return;
-    }
-
-    if (!out) {
-        memset(dummy_tx, 0x00, len);
-        out = dummy_tx;
-    }
-    if (!in) {
-        in = dummy_rx;
-    }
-
+    /* 
+     * In Zephyr, passing NULL to spi_buf.buf natively instructs the driver 
+     * to send dummy bytes (0x00) or discard RX data. This avoids race 
+     * conditions with static buffers in multi-threaded environments.
+     */
     const struct spi_buf tx_buf = { .buf = out, .len = len };
     const struct spi_buf_set tx = { .buffers = &tx_buf, .count = 1 };
 
@@ -187,8 +182,8 @@ void ZephyrHal::spiTransfer(uint8_t* out, size_t len, uint8_t* in) {
     }
 
     if (IS_ENABLED(CONFIG_LOG) && len <= 16) {
-        LOG_HEXDUMP_DBG(out, len, "SPI TX:");
-        LOG_HEXDUMP_DBG(in, len, "SPI RX:");
+        if (out) LOG_HEXDUMP_DBG(out, len, "SPI TX:");
+        if (in)  LOG_HEXDUMP_DBG(in, len, "SPI RX:");
     }
 }
 

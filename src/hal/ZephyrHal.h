@@ -16,7 +16,9 @@
  * - **Manual CS**: The SPI chip select is stripped from spi_config and
  *   delegated to RadioLib's own digitalWrite calls.
  * - **Multi-instance safe**: Interrupt dispatch uses CONTAINER_OF on
- *   per-pin irq structs — no global singleton required.
+ *   per-pin irq structs — no global singleton required. Uses Zephyr's
+ *   native NULL-buffer support for dummy SPI transfers to avoid race conditions
+ *   and save RAM.
  * - **Pin mapping**: Zephyr gpio_dt_spec pointers are registered via addPin()
  *   and accessed by logical index. RadioLib sees sequential pin IDs (0, 1, 2...).
  *
