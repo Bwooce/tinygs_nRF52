@@ -27,7 +27,9 @@
 #include <zephyr/dt-bindings/adc/nrf-adc.h>
 #include <zephyr/sys/base64.h>
 #include <zephyr/drivers/watchdog.h>
+#if defined(CONFIG_LED_STRIP)
 #include <zephyr/drivers/led_strip.h>
+#endif
 #include <openthread/sntp.h>
 #include <time.h>
 #include "tinygs_display.h"
@@ -168,17 +170,31 @@ static void watchdog_feed(void)
 
 static const struct gpio_dt_spec status_led = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 
+#if defined(CONFIG_LED_STRIP)
 static const struct device *led_strip = DEVICE_DT_GET_OR_NULL(DT_ALIAS(led_strip));
 static struct led_rgb leds[2] = {{0}, {0}};
+#else
+static const void *led_strip = NULL;
+#endif
 
 static void led_init(void)
 {
     if (device_is_ready(status_led.port)) {
         gpio_pin_configure_dt(&status_led, GPIO_OUTPUT_INACTIVE);
     }
-    if (led_strip && !device_is_ready(led_strip)) {
+#if defined(CONFIG_LED_STRIP)
+    if (led_strip && device_is_ready(led_strip)) {
+        struct led_rgb test[2] = {{0}, {0}};
+        if (led_strip_update_rgb(led_strip, test, 2) != 0) {
+            LOG_WRN("NeoPixel: SPI write failed — disabling");
+            led_strip = NULL;
+        } else {
+            LOG_INF("NeoPixel: 2x WS2812 ready");
+        }
+    } else {
         led_strip = NULL;
     }
+#endif
 }
 
 static void led_set(bool on)
@@ -188,14 +204,17 @@ static void led_set(bool on)
     }
 }
 
-/* Set NeoPixel colors — LED0 = status, LED1 = activity */
+/* NeoPixel functions — no-ops when LED_STRIP is disabled */
 static void neopixel_set(uint8_t r0, uint8_t g0, uint8_t b0,
                           uint8_t r1, uint8_t g1, uint8_t b1)
 {
+#if defined(CONFIG_LED_STRIP)
     if (!led_strip) return;
     leds[0].r = r0; leds[0].g = g0; leds[0].b = b0;
     leds[1].r = r1; leds[1].g = g1; leds[1].b = b1;
     led_strip_update_rgb(led_strip, leds, 2);
+#endif
+    (void)r0; (void)g0; (void)b0; (void)r1; (void)g1; (void)b1;
 }
 
 static void neopixel_off(void)
