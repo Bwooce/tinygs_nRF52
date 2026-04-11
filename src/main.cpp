@@ -25,7 +25,7 @@
 #include <zephyr/drivers/flash.h>
 #include <zephyr/drivers/adc.h>
 #include <zephyr/dt-bindings/adc/nrf-adc.h>
-#include <zephyr/drivers/display.h>
+#include "tinygs_display.h"
 #include <hal/nrf_power.h>
 #include <hal/nrf_ficr.h>
 
@@ -1035,35 +1035,6 @@ static void setup_usb_storage(void)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Display (ST7789V, optional)                                                 */
-/* -------------------------------------------------------------------------- */
-
-static const struct device *display_dev = NULL;
-static const struct gpio_dt_spec display_bl = {
-    .port = DEVICE_DT_GET(DT_NODELABEL(gpio0)),
-    .pin = 15,
-    .dt_flags = GPIO_ACTIVE_HIGH,
-};
-
-static void init_display(void)
-{
-    display_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(st7789v));
-    if (!display_dev || !device_is_ready(display_dev)) {
-        LOG_INF("Display not found — running headless");
-        display_dev = NULL;
-        return;
-    }
-
-    /* Enable backlight */
-    if (device_is_ready(display_bl.port)) {
-        gpio_pin_configure_dt(&display_bl, GPIO_OUTPUT_ACTIVE);
-        gpio_pin_set_dt(&display_bl, 1);
-    }
-
-    display_blanking_off(display_dev);
-    LOG_INF("Display: ST7789V 240x135 ready");
-}
-
 /* -------------------------------------------------------------------------- */
 /* RadioLib (SX1262)                                                           */
 /* -------------------------------------------------------------------------- */
@@ -1211,7 +1182,7 @@ int main(void)
      * config.json values are loaded first (in setup_usb_storage), then
      * NVS overrides with any previously saved values. */
     tinygs_config_init();
-    init_display();
+    tinygs_display_init();
     init_radio();
 
     int retry_count = 0;
