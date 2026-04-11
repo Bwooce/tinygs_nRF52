@@ -155,6 +155,32 @@ All Phase 1 objectives proven:
 5.  **Commissioning Mode:** Extended wake window (15-30 min) for unprovisioned devices.
 6.  **Hardware Watchdog:** nRF52840 has one WDT (WDT0). Feed on MQTT PINGRESP; if no PINGRESP within 2x keepalive, watchdog reboots the device.
 
+### Phase 4: RadioLib ZephyrHal Upstream PR
+The Zephyr HAL is functionally complete and multi-instance safe. To submit as a PR
+to [jgromes/RadioLib](https://github.com/jgromes/RadioLib), the following packaging
+work is needed (no existing RadioLib HAL has formal tests — the bar is a working
+example + clean HAL source):
+
+1.  **Create `examples/NonArduino/Zephyr/` directory** with:
+    - `main.cpp` — standalone SX1262 TX/RX example (~70 lines, matching RPi example style)
+    - `CMakeLists.txt` — Zephyr-style cmake (find_package(Zephyr), target_sources)
+    - `prj.conf` — minimal Zephyr config (SPI, GPIO, logging)
+    - `app.overlay` — DTS overlay with SPI + GPIO pin bindings for a reference board
+    - `README.md` — build instructions, tested hardware, pin mapping
+2.  **Move HAL source into RadioLib tree** — `src/hal/Zephyr/ZephyrHal.h` and `.cpp`
+    following the existing `RPi/PiHal.h` naming convention.
+3.  **Remove on-target smoke tests** from the HAL source (test_ZephyrHal.cpp stays in
+    our app, not in the RadioLib PR). The example serves as the functional test.
+4.  **Test on a second radio module** (SX1278 or SX1276) to validate generality beyond
+    SX1262. At minimum, confirm `begin()` succeeds and a register read returns expected
+    values.
+5.  **Test on a second Zephyr board** (e.g., nRF52840 DK or nRF5340 DK) to confirm
+    the HAL isn't T114-specific. The DTS overlay should be board-agnostic.
+6.  **Review RadioLib contribution guidelines** and open a PR with:
+    - Description of the HAL and what it enables (Zephyr RTOS support)
+    - List of tested hardware + Zephyr/NCS versions
+    - Note that it's been running in production on a TinyGS ground station
+
 ## 5. Limitations & Requirements for Users
 *   **Infrastructure:** Requires the user to have a standard Thread Border Router (e.g., Apple TV 4K, HomePod Mini, or Home Assistant SkyConnect) on their network.
 
