@@ -1,12 +1,27 @@
 #include "tinygs_protocol.h"
+#include <RadioLib.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "tinygs_config.h"
+#include <zephyr/sys/heap_listener.h>
 
 extern int read_vbat_mv(void);
+extern SX1262 *radio;
+
+static uint32_t get_free_heap(void)
+{
+#ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
+    extern struct k_heap _system_heap;
+    struct sys_memory_stats stats;
+    if (sys_heap_runtime_stats_get(&_system_heap.heap, &stats) == 0) {
+        return (uint32_t)stats.free_bytes;
+    }
+#endif
+    return 0;
+}
 #include <zephyr/sys/base64.h>
 #include <zephyr/net/openthread.h>
 #include <openthread/thread.h>
@@ -153,7 +168,7 @@ int tinygs_send_welcome(struct mqtt_client *client,
                         user, station);
 
     int len = tinygs_build_welcome(payload_buf, sizeof(payload_buf),
-                                    mac, read_vbat_mv(), 81820,
+                                    mac, read_vbat_mv(), get_free_heap(),
                                     k_uptime_get_32() / 1000);
 
     struct mqtt_publish_param param;
@@ -180,7 +195,8 @@ int tinygs_send_ping(struct mqtt_client *client,
                         user, station);
 
     int len = tinygs_build_ping(payload_buf, sizeof(payload_buf),
-                                 read_vbat_mv(), 81820, 81820, 0, -120.0f);
+                                 read_vbat_mv(), get_free_heap(), get_free_heap(), 0,
+                                 radio ? radio->getRSSI() : -120.0f);
 
     struct mqtt_publish_param param;
     param.message.topic.qos = MQTT_QOS_0_AT_MOST_ONCE;
