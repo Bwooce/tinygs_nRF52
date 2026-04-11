@@ -16,6 +16,16 @@ float tinygs_station_lat = -33.8688f;
 float tinygs_station_lon = 151.2093f;
 float tinygs_station_alt = 50.0f;
 
+/* Radio state — updated by begine/batch_conf, used in send_rx/send_status */
+struct tinygs_radio_state tinygs_radio = {
+    .frequency = 436.703f,
+    .sf = 10,
+    .bw = 250.0f,
+    .cr = 5,
+    .satellite = "",
+    .norad = 0,
+};
+
 /* Shared buffers for topic and payload construction */
 static char topic_buf[128];
 static char payload_buf[512];
@@ -186,8 +196,7 @@ int tinygs_send_ping(struct mqtt_client *client,
 int tinygs_send_rx(struct mqtt_client *client,
                     const char *user, const char *station,
                     const uint8_t *data, size_t data_len,
-                    float rssi, float snr, float freq_err,
-                    float frequency, int sf, float bw, int cr)
+                    float rssi, float snr, float freq_err)
 {
     tinygs_build_topic(topic_buf, sizeof(topic_buf),
                         TINYGS_TOPIC_TELE, TINYGS_TELE_RX,
@@ -211,7 +220,7 @@ int tinygs_send_rx(struct mqtt_client *client,
         "\"mode\":\"LoRa\","
         "\"frequency\":%.4f,"
         "\"frequency_offset\":0,"
-        "\"satellite\":\"\","
+        "\"satellite\":\"%s\","
         "\"sf\":%d,"
         "\"cr\":%d,"
         "\"bw\":%.1f,"
@@ -222,20 +231,22 @@ int tinygs_send_rx(struct mqtt_client *client,
         "\"usec_time\":0,"
         "\"crc_error\":false,"
         "\"data\":\"%s\","
-        "\"NORAD\":0,"
+        "\"NORAD\":%u,"
         "\"noisy\":false,"
         "\"iIQ\":false"
         "}",
         (double)tinygs_station_lat,
         (double)tinygs_station_lon,
-        (double)frequency,
-        sf, cr,
-        (double)bw,
+        (double)tinygs_radio.frequency,
+        tinygs_radio.satellite,
+        tinygs_radio.sf, tinygs_radio.cr,
+        (double)tinygs_radio.bw,
         (double)rssi,
         (double)snr,
         (double)freq_err,
         (unsigned)(k_uptime_get_32() / 1000),
-        b64_buf
+        b64_buf,
+        (unsigned)tinygs_radio.norad
     );
 
     if (len >= (int)sizeof(payload_buf)) {
@@ -259,8 +270,7 @@ int tinygs_send_rx(struct mqtt_client *client,
 }
 
 int tinygs_send_status(struct mqtt_client *client,
-                        const char *user, const char *station,
-                        float frequency, int sf, float bw, int cr)
+                        const char *user, const char *station)
 {
     tinygs_build_topic(topic_buf, sizeof(topic_buf),
                         TINYGS_TOPIC_STAT, TINYGS_STAT_STATUS,
@@ -275,11 +285,11 @@ int tinygs_send_status(struct mqtt_client *client,
         "\"mode\":\"LoRa\","
         "\"frequency\":%.4f,"
         "\"frequency_offset\":0,"
-        "\"satellite\":\"\","
+        "\"satellite\":\"%s\","
         "\"sf\":%d,"
         "\"cr\":%d,"
         "\"bw\":%.1f,"
-        "\"NORAD\":0,"
+        "\"NORAD\":%u,"
         "\"rssi\":0,"
         "\"snr\":0,"
         "\"frequency_error\":0,"
@@ -290,9 +300,11 @@ int tinygs_send_status(struct mqtt_client *client,
         (double)tinygs_station_lon,
         (unsigned)TINYGS_VERSION,
         TINYGS_BOARD,
-        (double)frequency,
-        sf, cr,
-        (double)bw,
+        (double)tinygs_radio.frequency,
+        tinygs_radio.satellite,
+        tinygs_radio.sf, tinygs_radio.cr,
+        (double)tinygs_radio.bw,
+        (unsigned)tinygs_radio.norad,
         (unsigned)(k_uptime_get_32() / 1000)
     );
 

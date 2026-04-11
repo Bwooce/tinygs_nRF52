@@ -465,49 +465,59 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                  * Minimal parser — extract freq, sf, bw, cr, sat */
                 LOG_INF("  → Applying radio config...");
                 if (radio != nullptr) {
-                    /* Parse frequency */
-                    const char *p = strstr((char *)rx_payload, "\"freq\":");
+                    const char *p;
+                    /* Parse and apply frequency */
+                    p = strstr((char *)rx_payload, "\"freq\":");
                     if (p) {
                         float freq = strtof(p + 7, NULL);
                         if (freq > 100.0f && freq < 1000.0f) {
                             int st = radio->setFrequency(freq);
+                            tinygs_radio.frequency = freq;
                             LOG_INF("  freq=%.4f MHz (%s)", (double)freq,
                                     st == RADIOLIB_ERR_NONE ? "OK" : "FAIL");
                         }
                     }
-                    /* Parse SF */
+                    /* Parse and apply SF */
                     p = strstr((char *)rx_payload, "\"sf\":");
                     if (p) {
                         int sf = atoi(p + 5);
                         if (sf >= 5 && sf <= 12) {
                             radio->setSpreadingFactor(sf);
+                            tinygs_radio.sf = sf;
                             LOG_INF("  sf=%d", sf);
                         }
                     }
-                    /* Parse BW */
+                    /* Parse and apply BW */
                     p = strstr((char *)rx_payload, "\"bw\":");
                     if (p) {
                         float bw = strtof(p + 5, NULL);
                         radio->setBandwidth(bw);
+                        tinygs_radio.bw = bw;
                         LOG_INF("  bw=%.1f kHz", (double)bw);
                     }
-                    /* Parse CR */
+                    /* Parse and apply CR */
                     p = strstr((char *)rx_payload, "\"cr\":");
                     if (p) {
                         int cr = atoi(p + 5);
                         radio->setCodingRate(cr);
+                        tinygs_radio.cr = cr;
                         LOG_INF("  cr=%d", cr);
                     }
                     /* Parse satellite name */
                     p = strstr((char *)rx_payload, "\"sat\":\"");
                     if (p) {
-                        char sat[32];
                         const char *end = strchr(p + 7, '"');
-                        if (end && (end - p - 7) < (int)sizeof(sat)) {
-                            memcpy(sat, p + 7, end - p - 7);
-                            sat[end - p - 7] = '\0';
-                            LOG_INF("  satellite: %s", sat);
+                        if (end && (end - p - 7) < (int)sizeof(tinygs_radio.satellite)) {
+                            memcpy(tinygs_radio.satellite, p + 7, end - p - 7);
+                            tinygs_radio.satellite[end - p - 7] = '\0';
+                            LOG_INF("  satellite: %s", tinygs_radio.satellite);
                         }
+                    }
+                    /* Parse NORAD */
+                    p = strstr((char *)rx_payload, "\"NORAD\":");
+                    if (p) {
+                        tinygs_radio.norad = (uint32_t)atoi(p + 8);
+                        LOG_INF("  NORAD: %u", (unsigned)tinygs_radio.norad);
                     }
                     /* Restart reception */
                     radio->startReceive();
@@ -517,8 +527,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 tinygs_handle_set_pos((char *)rx_payload, ret);
             } else if (strcmp(cmnd, "status") == 0) {
                 extern char device_client_id[13];
-                tinygs_send_status(client, MQTT_USERNAME, device_client_id,
-                                   436.703f, 10, 250.0f, 5);
+                tinygs_send_status(client, MQTT_USERNAME, device_client_id);
             } else if (strcmp(cmnd, "log") == 0) {
                 LOG_INF("  → Server: %s", (char *)rx_payload);
             } else {
@@ -883,8 +892,7 @@ static bool lora_check_rx(void)
         if (app_state == STATE_MQTT_CONNECTED) {
             extern char device_client_id[13];
             tinygs_send_rx(&mqtt_client, MQTT_USERNAME, device_client_id,
-                           data, len, rssi, snr, freq_err,
-                           436.703f, 10, 250.0f, 5);
+                           data, len, rssi, snr, freq_err);
         }
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
         LOG_WRN("LoRa RX: CRC error, %u bytes", (unsigned)len);

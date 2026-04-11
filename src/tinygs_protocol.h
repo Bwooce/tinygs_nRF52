@@ -85,12 +85,12 @@ int tinygs_send_ping(struct mqtt_client *client,
 /*
  * Send an RX packet (LoRa received data) to the TinyGS server.
  * Data is base64-encoded in the JSON payload.
+ * Radio config (freq, sf, bw, cr, satellite) taken from tinygs_radio state.
  */
 int tinygs_send_rx(struct mqtt_client *client,
                     const char *user, const char *station,
                     const uint8_t *data, size_t data_len,
-                    float rssi, float snr, float freq_err,
-                    float frequency, int sf, float bw, int cr);
+                    float rssi, float snr, float freq_err);
 
 /*
  * Station location — used in welcome and RX payloads.
@@ -101,6 +101,20 @@ extern float tinygs_station_lon;
 extern float tinygs_station_alt;
 
 /*
+ * Current radio configuration — updated by begine/batch_conf commands.
+ * Used in send_rx and send_status to report actual radio state.
+ */
+struct tinygs_radio_state {
+    float frequency;     /* MHz */
+    int   sf;            /* Spreading factor 5-12 */
+    float bw;            /* Bandwidth kHz */
+    int   cr;            /* Coding rate 5-8 */
+    char  satellite[32]; /* Current satellite name */
+    uint32_t norad;      /* NORAD catalog number */
+};
+extern struct tinygs_radio_state tinygs_radio;
+
+/*
  * Handle set_pos_prm command from server.
  * Payload is JSON array: [lat, lon, alt] or [alt].
  */
@@ -109,9 +123,9 @@ void tinygs_handle_set_pos(const char *payload, size_t len);
 /*
  * Send status response (stat/status topic).
  * Called in response to cmnd/status from server.
+ * Radio config taken from tinygs_radio state.
  */
 int tinygs_send_status(struct mqtt_client *client,
-                        const char *user, const char *station,
-                        float frequency, int sf, float bw, int cr);
+                        const char *user, const char *station);
 
 #endif /* TINYGS_PROTOCOL_H */
