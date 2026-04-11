@@ -536,105 +536,74 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 strcmp(cmnd, "batch_conf") == 0) {
                 /* Reconfigure radio from JSON payload.
                  * Minimal parser — extract freq, sf, bw, cr, sat */
-                LOG_INF("  → Applying radio config...");
                 if (radio != nullptr) {
                     const char *p;
-                    /* Parse and apply frequency */
+                    bool iiq = false;
+                    bool crc = true;
+
                     p = strstr((char *)rx_payload, "\"freq\":");
                     if (p) {
                         float freq = strtof(p + 7, NULL);
                         if (freq > 100.0f && freq < 1000.0f) {
-                            int st = radio->setFrequency(freq);
+                            radio->setFrequency(freq);
                             tinygs_radio.frequency = freq;
-                            LOG_INF("  freq=%.4f MHz (%s)", (double)freq,
-                                    st == RADIOLIB_ERR_NONE ? "OK" : "FAIL");
                         }
                     }
-                    /* Parse and apply SF */
                     p = strstr((char *)rx_payload, "\"sf\":");
                     if (p) {
                         int sf = atoi(p + 5);
                         if (sf >= 5 && sf <= 12) {
                             radio->setSpreadingFactor(sf);
                             tinygs_radio.sf = sf;
-                            LOG_INF("  sf=%d", sf);
                         }
                     }
-                    /* Parse and apply BW */
                     p = strstr((char *)rx_payload, "\"bw\":");
                     if (p) {
                         float bw = strtof(p + 5, NULL);
                         radio->setBandwidth(bw);
                         tinygs_radio.bw = bw;
-                        LOG_INF("  bw=%.1f kHz", (double)bw);
                     }
-                    /* Parse and apply CR */
                     p = strstr((char *)rx_payload, "\"cr\":");
                     if (p) {
                         int cr = atoi(p + 5);
                         radio->setCodingRate(cr);
                         tinygs_radio.cr = cr;
-                        LOG_INF("  cr=%d", cr);
                     }
-                    /* Parse and apply sync word */
                     p = strstr((char *)rx_payload, "\"sw\":");
-                    if (p) {
-                        int sw = atoi(p + 5);
-                        radio->setSyncWord(sw);
-                        LOG_INF("  sw=%d", sw);
-                    }
-                    /* Parse and apply preamble length */
+                    if (p) radio->setSyncWord(atoi(p + 5));
                     p = strstr((char *)rx_payload, "\"pl\":");
-                    if (p) {
-                        int pl = atoi(p + 5);
-                        radio->setPreambleLength(pl);
-                        LOG_INF("  pl=%d", pl);
-                    }
-                    /* Parse and apply inverted IQ */
+                    if (p) radio->setPreambleLength(atoi(p + 5));
                     p = strstr((char *)rx_payload, "\"iIQ\":");
                     if (p) {
-                        bool iiq = (strncmp(p + 6, "true", 4) == 0);
-                        if (iiq) {
-                            radio->invertIQ(true);
-                        } else {
-                            radio->invertIQ(false);
-                        }
-                        LOG_INF("  iIQ=%s", iiq ? "true" : "false");
+                        iiq = (strncmp(p + 6, "true", 4) == 0);
+                        radio->invertIQ(iiq);
                     }
-                    /* Parse and apply CRC */
                     p = strstr((char *)rx_payload, "\"crc\":");
                     if (p) {
-                        bool crc = (strncmp(p + 6, "true", 4) == 0);
+                        crc = (strncmp(p + 6, "true", 4) == 0);
                         radio->setCRC(crc ? 2 : 0);
-                        LOG_INF("  crc=%s", crc ? "on" : "off");
                     }
-                    /* Parse satellite name */
                     p = strstr((char *)rx_payload, "\"sat\":\"");
                     if (p) {
                         const char *end = strchr(p + 7, '"');
                         if (end && (end - p - 7) < (int)sizeof(tinygs_radio.satellite)) {
                             memcpy(tinygs_radio.satellite, p + 7, end - p - 7);
                             tinygs_radio.satellite[end - p - 7] = '\0';
-                            LOG_INF("  satellite: %s", tinygs_radio.satellite);
                         }
                     }
-                    /* Parse NORAD */
                     p = strstr((char *)rx_payload, "\"NORAD\":");
-                    if (p) {
-                        tinygs_radio.norad = (uint32_t)atoi(p + 8);
-                        LOG_INF("  NORAD: %u", (unsigned)tinygs_radio.norad);
-                    }
-                    /* Don't store raw begine JSON as modem_conf — it contains
-                     * unescaped quotes that break our snprintf JSON serialization.
-                     * modem_conf stays as "{}" until we have proper JSON escaping.
-                     * TODO: escape quotes or use a JSON library for welcome payload.
-                     *
-                     * Don't save radio state to NVS — satellites change every
-                     * minute, which would blow out flash wear-leveling. The server
-                     * sends a fresh begine within 60s of every MQTT connect. */
-                    /* Restart reception */
+                    if (p) tinygs_radio.norad = (uint32_t)atoi(p + 8);
+
                     radio->startReceive();
-                    LOG_INF("  Radio reconfigured, listening");
+
+                    LOG_INF("  → %s (NORAD %u) %.4fMHz SF%d BW%.1f CR%d iIQ=%s",
+                            tinygs_radio.satellite,
+                            (unsigned)tinygs_radio.norad,
+                            (double)tinygs_radio.frequency,
+                            tinygs_radio.sf,
+                            (double)tinygs_radio.bw,
+                            tinygs_radio.cr,
+                            iiq ? "T" : "F");
                 }
             } else if (strcmp(cmnd, "freq") == 0) {
                 /* Direct frequency set (MHz as number) */
@@ -1269,6 +1238,9 @@ int main(void)
 
                 /* Check for LoRa packet reception */
                 lora_check_rx();
+
+                /* Update display (~every 100ms from poll timeout) */
+                tinygs_display_update();
 
                 /* Send TinyGS ping every 60s */
                 uint32_t now_ms = k_uptime_get_32();

@@ -1,13 +1,13 @@
 /**
  * TinyGS Display — Multi-page status display for ST7789V 240x135 TFT.
  *
+ * Uses Zephyr CFB (Character Framebuffer) for text rendering.
  * Pages cycle every 5 seconds:
  *   Page 0: Station info (name, version, uptime, vbat)
  *   Page 1: Satellite (name, freq, SF/BW/CR)
- *   Page 2: System (Thread, MQTT, heap, packets)
+ *   Page 2: System (Thread, MQTT, heap)
  *
- * Uses minimal RAM — renders text to a line buffer and pushes to display.
- * Optional — all functions are no-ops if display_dev is NULL.
+ * Optional — all functions are no-ops if no display detected.
  */
 
 #include "tinygs_display.h"
@@ -17,6 +17,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/display.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/display/cfb.h>
 #include <zephyr/logging/log.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,25 +31,9 @@ static uint32_t last_page_switch_ms = 0;
 
 #define PAGE_COUNT       3
 #define PAGE_INTERVAL_MS 5000
-#define DISP_W           240
-#define DISP_H           135
-#define LINE_H           16   /* pixels per text line */
-#define MAX_LINES        8    /* 135 / 16 = 8 lines */
-#define CHAR_W           8    /* approximate char width for simple font */
 
-/* RGB565 colors */
-#define COL_BLACK   0x0000
-#define COL_WHITE   0xFFFF
-#define COL_GREEN   0x07E0
-#define COL_YELLOW  0xFFE0
-#define COL_CYAN    0x07FF
-
-/* Simple 8x16 font — just use the display_write API to draw filled rectangles
- * for a minimal text renderer. For now, clear screen + write status lines
- * using snprintf. A proper font renderer can be added later. */
-
-/* Line buffer — one text line as RGB565 pixels */
-static uint16_t line_buf[DISP_W];
+extern int read_vbat_mv(void);
+extern char cfg_station[32];
 
 static const struct gpio_dt_spec backlight = {
     .port = DEVICE_DT_GET(DT_NODELABEL(gpio0)),
@@ -56,25 +41,49 @@ static const struct gpio_dt_spec backlight = {
     .dt_flags = GPIO_ACTIVE_HIGH,
 };
 
-static void clear_screen(uint16_t color)
+static void draw_page_station(void)
 {
-    if (!disp_dev) return;
-    for (int i = 0; i < DISP_W; i++) line_buf[i] = color;
-
-    struct display_buffer_descriptor desc = {
-        .buf_size = sizeof(line_buf),
-        .width = DISP_W,
-        .height = 1,
-        .pitch = DISP_W,
-    };
-
-    for (int y = 0; y < DISP_H; y++) {
-        display_write(disp_dev, 0, y, &desc, line_buf);
-    }
+    char buf[40];
+    cfb_print(disp_dev, "TinyGS nRF52", 0, 0);
+    snprintf(buf, sizeof(buf), "Station: %s", cfg_station);
+    cfb_print(disp_dev, buf, 0, 16);
+    snprintf(buf, sizeof(buf), "Uptime: %us", (unsigned)(k_uptime_get_32() / 1000));
+    cfb_print(disp_dev, buf, 0, 32);
+    snprintf(buf, sizeof(buf), "Vbat: %dmV", read_vbat_mv());
+    cfb_print(disp_dev, buf, 0, 48);
+    snprintf(buf, sizeof(buf), "Version: %u", (unsigned)TINYGS_VERSION);
+    cfb_print(disp_dev, buf, 0, 64);
 }
 
-/* Extern declarations for status data */
-extern int read_vbat_mv(void);
+static void draw_page_satellite(void)
+{
+    char buf[40];
+    if (tinygs_radio.satellite[0]) {
+        cfb_print(disp_dev, tinygs_radio.satellite, 0, 0);
+    } else {
+        cfb_print(disp_dev, "No satellite", 0, 0);
+    }
+    snprintf(buf, sizeof(buf), "Freq: %.4f MHz", (double)tinygs_radio.frequency);
+    cfb_print(disp_dev, buf, 0, 16);
+    snprintf(buf, sizeof(buf), "SF:%d BW:%.1f CR:%d",
+             tinygs_radio.sf, (double)tinygs_radio.bw, tinygs_radio.cr);
+    cfb_print(disp_dev, buf, 0, 32);
+    snprintf(buf, sizeof(buf), "NORAD: %u", (unsigned)tinygs_radio.norad);
+    cfb_print(disp_dev, buf, 0, 48);
+    cfb_print(disp_dev, "Listening...", 0, 64);
+}
+
+static void draw_page_system(void)
+{
+    char buf[40];
+    cfb_print(disp_dev, "System Status", 0, 0);
+    cfb_print(disp_dev, "Thread: Child", 0, 16);
+    cfb_print(disp_dev, "MQTT: Connected", 0, 32);
+    snprintf(buf, sizeof(buf), "Vbat: %dmV", read_vbat_mv());
+    cfb_print(disp_dev, buf, 0, 48);
+    snprintf(buf, sizeof(buf), "Keepalive: %ds", CONFIG_MQTT_KEEPALIVE);
+    cfb_print(disp_dev, buf, 0, 64);
+}
 
 bool tinygs_display_init(void)
 {
@@ -90,12 +99,20 @@ bool tinygs_display_init(void)
         gpio_pin_set_dt(&backlight, 1);
     }
 
+    if (cfb_framebuffer_init(disp_dev) != 0) {
+        LOG_ERR("CFB init failed");
+        disp_dev = NULL;
+        return false;
+    }
+
+    cfb_framebuffer_set_font(disp_dev, 0);
     display_blanking_off(disp_dev);
-    clear_screen(COL_BLACK);
     display_active = true;
     last_page_switch_ms = k_uptime_get_32();
 
-    LOG_INF("Display: ST7789V 240x135 ready (%d pages)", PAGE_COUNT);
+    LOG_INF("Display: ST7789V ready, CFB %dx%d",
+            cfb_get_display_parameter(disp_dev, CFB_DISPLAY_WIDTH),
+            cfb_get_display_parameter(disp_dev, CFB_DISPLAY_HEIGH));
     return true;
 }
 
@@ -109,36 +126,30 @@ void tinygs_display_update(void)
         last_page_switch_ms = now;
     }
 
-    /* For now, just clear and show page info.
-     * Full text rendering requires a font — placeholder until
-     * we integrate a bitmap font or CFB. */
-    clear_screen(COL_BLACK);
+    cfb_framebuffer_clear(disp_dev, false);
 
-    /* TODO: Render text pages when font support is added.
-     * Page 0: "TinyGS nRF52" / station name / uptime / vbat
-     * Page 1: satellite name / freq / SF BW CR
-     * Page 2: Thread:Child / MQTT:Connected / Heap:81820 */
+    switch (current_page) {
+    case 0: draw_page_station(); break;
+    case 1: draw_page_satellite(); break;
+    case 2: draw_page_system(); break;
+    }
+
+    cfb_framebuffer_finalize(disp_dev);
 }
 
 void tinygs_display_off(void)
 {
     if (!disp_dev) return;
     display_blanking_on(disp_dev);
-    if (device_is_ready(backlight.port)) {
-        gpio_pin_set_dt(&backlight, 0);
-    }
+    if (device_is_ready(backlight.port)) gpio_pin_set_dt(&backlight, 0);
     display_active = false;
-    LOG_INF("Display off");
 }
 
 void tinygs_display_on(void)
 {
     if (!disp_dev) return;
     display_blanking_off(disp_dev);
-    if (device_is_ready(backlight.port)) {
-        gpio_pin_set_dt(&backlight, 1);
-    }
+    if (device_is_ready(backlight.port)) gpio_pin_set_dt(&backlight, 1);
     display_active = true;
     last_page_switch_ms = k_uptime_get_32();
-    LOG_INF("Display on");
 }
