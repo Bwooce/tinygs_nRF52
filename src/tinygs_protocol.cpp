@@ -15,7 +15,7 @@ static char topic_buf[128];
 static char payload_buf[512];
 
 int tinygs_build_welcome(char *buf, size_t buflen,
-                          const char *mac, float vbat, uint32_t free_mem,
+                          const char *mac, int vbat_mv, uint32_t free_mem,
                           uint32_t uptime_s)
 {
     /* ESP32 sends WiFi IPv4 here. We're on Thread (IPv6 only).
@@ -25,7 +25,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
     return snprintf(buf, buflen,
         "{"
         "\"station_location\":[-33.8688,151.2093],"
-        "\"version\":\"%s\","
+        "\"version\":%u,"
         "\"git_version\":\"%s\","
         "\"chip\":\"%s\","
         "\"board\":%d,"
@@ -33,14 +33,14 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         "\"radioChip\":%d,"
         "\"Mem\":%u,"
         "\"seconds\":%u,"
-        "\"Vbat\":%.1f,"
-        "\"tx\":0,"
+        "\"Vbat\":%d,"
+        "\"tx\":false,"
         "\"sat\":\"\","
         "\"ip\":\"%s\","
         "\"idfv\":\"NCS/Zephyr\","
         "\"modem_conf\":\"{}\""
         "}",
-        TINYGS_VERSION,
+        (unsigned)TINYGS_VERSION,
         TINYGS_GIT_VERSION,
         TINYGS_CHIP,
         TINYGS_BOARD,
@@ -48,13 +48,13 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         TINYGS_RADIO_CHIP,
         (unsigned)free_mem,
         (unsigned)uptime_s,
-        (double)vbat,
+        vbat_mv,
         ip_str
     );
 }
 
 int tinygs_build_ping(char *buf, size_t buflen,
-                       float vbat, uint32_t free_mem, uint32_t min_mem,
+                       int vbat_mv, uint32_t free_mem, uint32_t min_mem,
                        int radio_error, float inst_rssi)
 {
     /* Get Thread parent RSSI if available */
@@ -68,7 +68,7 @@ int tinygs_build_ping(char *buf, size_t buflen,
 
     return snprintf(buf, buflen,
         "{"
-        "\"Vbat\":%.1f,"
+        "\"Vbat\":%d,"
         "\"Mem\":%u,"
         "\"MinMem\":%u,"
         "\"MaxBlk\":%u,"
@@ -76,7 +76,7 @@ int tinygs_build_ping(char *buf, size_t buflen,
         "\"radio\":%d,"
         "\"InstRSSI\":%.1f"
         "}",
-        (double)vbat,
+        vbat_mv,
         (unsigned)free_mem,
         (unsigned)min_mem,
         (unsigned)free_mem,
@@ -129,9 +129,9 @@ int tinygs_send_welcome(struct mqtt_client *client,
                         TINYGS_TOPIC_TELE, TINYGS_TELE_WELCOME,
                         user, station);
 
-    /* Build payload */
+    /* Build payload — Vbat in millivolts (ESP32 convention) */
     int len = tinygs_build_welcome(payload_buf, sizeof(payload_buf),
-                                    mac, 3.7f, 81820,
+                                    mac, 3700, 81820,
                                     k_uptime_get_32() / 1000);
 
     struct mqtt_publish_param param;
@@ -158,7 +158,7 @@ int tinygs_send_ping(struct mqtt_client *client,
                         user, station);
 
     int len = tinygs_build_ping(payload_buf, sizeof(payload_buf),
-                                 3.7f, 81820, 81820, 0, -120.0f);
+                                 3700, 81820, 81820, 0, -120.0f);
 
     struct mqtt_publish_param param;
     param.message.topic.qos = MQTT_QOS_0_AT_MOST_ONCE;
@@ -196,11 +196,11 @@ int tinygs_send_rx(struct mqtt_client *client,
     }
     b64_buf[b64_len] = '\0';
 
-    /* Build RX JSON payload */
+    /* Build RX JSON payload — types matched to ESP32 ArduinoJson output */
     int len = snprintf(payload_buf, sizeof(payload_buf),
         "{"
         "\"station_location\":[-33.8688,151.2093],"
-        "\"mode\":1,"
+        "\"mode\":\"LoRa\","
         "\"frequency\":%.4f,"
         "\"frequency_offset\":0,"
         "\"satellite\":\"\","
@@ -212,11 +212,11 @@ int tinygs_send_rx(struct mqtt_client *client,
         "\"frequency_error\":%.1f,"
         "\"unix_GS_time\":%u,"
         "\"usec_time\":0,"
-        "\"crc_error\":0,"
+        "\"crc_error\":false,"
         "\"data\":\"%s\","
         "\"NORAD\":0,"
-        "\"noisy\":0,"
-        "\"iIQ\":0"
+        "\"noisy\":false,"
+        "\"iIQ\":false"
         "}",
         (double)frequency,
         sf, cr,

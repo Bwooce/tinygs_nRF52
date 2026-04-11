@@ -25,11 +25,11 @@
 #define TINYGS_STAT_STATUS    "status"
 
 /* Version info for welcome message */
-#define TINYGS_VERSION        "nrf52_0.1.0"
+#define TINYGS_VERSION        2604100  /* YYMMDDR: 2026-04-10, release 0 */
 #define TINYGS_GIT_VERSION    "tinygs_nRF52"
 #define TINYGS_CHIP           "nRF52840"
 #define TINYGS_BOARD          255  /* Custom/unknown board ID */
-#define TINYGS_RADIO_CHIP     6    /* SX1262 */
+#define TINYGS_RADIO_CHIP     6    /* SX1262 (matches ESP32 Radio.h enum) */
 
 /* Ping interval */
 #define TINYGS_PING_INTERVAL_S  60
@@ -50,7 +50,7 @@ static inline int tinygs_build_topic(char *buf, size_t buflen,
  * Returns length written.
  */
 int tinygs_build_welcome(char *buf, size_t buflen,
-                          const char *mac, float vbat, uint32_t free_mem,
+                          const char *mac, int vbat_mv, uint32_t free_mem,
                           uint32_t uptime_s);
 
 /*
@@ -58,7 +58,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
  * Returns length written.
  */
 int tinygs_build_ping(char *buf, size_t buflen,
-                       float vbat, uint32_t free_mem, uint32_t min_mem,
+                       int vbat_mv, uint32_t free_mem, uint32_t min_mem,
                        int radio_error, float inst_rssi);
 
 /*

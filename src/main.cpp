@@ -386,6 +386,9 @@ static int resolve_broker(void)
 static uint32_t mqtt_connected_uptime_ms = 0;
 static uint32_t mqtt_last_pingresp_ms = 0;
 
+/* Device MAC-based client ID — ESP32 format %04X%08X */
+char device_client_id[13] = {0};
+
 /* Forward declaration — defined later in RadioLib section */
 extern SX1262 *radio;
 
@@ -399,20 +402,13 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             mqtt_connected_uptime_ms = now;
             LOG_INF("MQTT CONNECTED to %s:%d", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
 
-            /* Derive MAC from device's IEEE address */
             {
-                static char mac_str[13];
-                uint64_t dev_id = NRF_FICR->DEVICEID[0] |
-                                  ((uint64_t)NRF_FICR->DEVICEID[1] << 32);
-                snprintf(mac_str, sizeof(mac_str), "%04X%08X",
-                         (uint16_t)(dev_id >> 32), (uint32_t)dev_id);
+                /* Use device_client_id (MAC-derived) for all protocol messages */
+                extern char device_client_id[13];
 
-                /* Subscribe to TinyGS topics */
-                tinygs_subscribe(client, MQTT_USERNAME, MQTT_CLIENT_ID);
-
-                /* Send welcome message — announces us to the TinyGS server */
-                tinygs_send_welcome(client, MQTT_USERNAME, MQTT_CLIENT_ID,
-                                    mac_str);
+                tinygs_subscribe(client, MQTT_USERNAME, device_client_id);
+                tinygs_send_welcome(client, MQTT_USERNAME, device_client_id,
+                                    device_client_id);
             }
 
             app_state = STATE_MQTT_CONNECTED;
@@ -620,9 +616,16 @@ static int mqtt_tls_connect(void)
 
     mqtt_client.broker = &broker_addr;
 
-    /* Client ID and credentials */
-    mqtt_client.client_id.utf8 = (uint8_t *)MQTT_CLIENT_ID;
-    mqtt_client.client_id.size = strlen(MQTT_CLIENT_ID);
+    /* Populate device client ID if not done yet */
+    if (device_client_id[0] == '\0') {
+        uint64_t dev_id = NRF_FICR->DEVICEID[0] |
+                          ((uint64_t)NRF_FICR->DEVICEID[1] << 32);
+        snprintf(device_client_id, sizeof(device_client_id),
+                 "%04X%08X", (uint16_t)(dev_id >> 32), (uint32_t)dev_id);
+        LOG_INF("Device client ID: %s", device_client_id);
+    }
+    mqtt_client.client_id.utf8 = (uint8_t *)device_client_id;
+    mqtt_client.client_id.size = strlen(device_client_id);
 
     static struct mqtt_utf8 username = {
         .utf8 = (uint8_t *)MQTT_USERNAME,
@@ -634,6 +637,22 @@ static int mqtt_tls_connect(void)
     };
     mqtt_client.user_name = &username;
     mqtt_client.password = &password;
+
+    /* Last Will Testament — tells server we disconnected */
+    static char will_topic_str[128];
+    snprintf(will_topic_str, sizeof(will_topic_str),
+             TINYGS_TOPIC_STAT, MQTT_USERNAME, device_client_id, TINYGS_STAT_STATUS);
+    static struct mqtt_topic will_topic = {
+        .qos = MQTT_QOS_1_AT_LEAST_ONCE,
+    };
+    will_topic.topic.utf8 = (uint8_t *)will_topic_str;
+    will_topic.topic.size = strlen(will_topic_str);
+    static struct mqtt_utf8 will_msg = {
+        .utf8 = (uint8_t *)"0",
+        .size = 1,
+    };
+    mqtt_client.will_topic = &will_topic;
+    mqtt_client.will_message = &will_msg;
 
     /* Buffers */
     mqtt_client.rx_buf = mqtt_rx_buf;
@@ -858,7 +877,8 @@ static bool lora_check_rx(void)
 
         /* Publish via MQTT if connected */
         if (app_state == STATE_MQTT_CONNECTED) {
-            tinygs_send_rx(&mqtt_client, MQTT_USERNAME, MQTT_CLIENT_ID,
+            extern char device_client_id[13];
+            tinygs_send_rx(&mqtt_client, MQTT_USERNAME, device_client_id,
                            data, len, rssi, snr, freq_err,
                            436.703f, 10, 250.0f, 5);
         }
@@ -988,7 +1008,8 @@ int main(void)
                 /* Send TinyGS ping every 60s */
                 uint32_t now_ms = k_uptime_get_32();
                 if ((now_ms - last_ping_ms) >= (TINYGS_PING_INTERVAL_S * 1000)) {
-                    tinygs_send_ping(&mqtt_client, MQTT_USERNAME, MQTT_CLIENT_ID);
+                    extern char device_client_id[13];
+                    tinygs_send_ping(&mqtt_client, MQTT_USERNAME, device_client_id);
                     last_ping_ms = now_ms;
                 }
 

@@ -72,53 +72,109 @@ Where `{user}` and `{station}` are from the station's configuration.
 
 ### 3.1 Welcome (`tele/welcome`)
 
+Fields and their exact types as serialized by ESP32 ArduinoJson:
+
+| Field | JSON type | C++ source type | Example | Notes |
+|-------|-----------|-----------------|---------|-------|
+| station_location | array[float,float] | float | [-33.87, 151.21] | [lat, lon] |
+| version | number | uint32_t | 2603242 | YYMMDDR format (NOT a string) |
+| git_version | string | const char* | "abc1234" | Git commit hash |
+| chip | string | const char* | "ESP32-D0WDQ6" | Chip model |
+| board | number | uint8_t | 67 | Board index into boards[] array |
+| mac | string | char[13] | "AABBCCDDEEFF" | Device MAC, 12 hex chars |
+| radioChip | number | uint8_t | 6 | Enum: 0=SX1262, 1=SX1278, 2=SX1276, 5=SX1268, 6=SX1262, 10=LR1121 |
+| Mem | number | uint32_t | 98304 | Free heap bytes |
+| seconds | number | uint32_t | 3600 | Uptime in seconds |
+| Vbat | number | int | 4200 | Battery voltage in **millivolts** (NOT volts) |
+| tx | boolean | bool | false | Whether TX is allowed |
+| sat | string | char* | "NORAD-50465" | Current satellite name |
+| ip | string | String | "192.168.1.100" | WiFi IP (nRF52: "0.0.0.0") |
+| idfv | string | const char* | "v5.1.2" | IDF/SDK version |
+| modem_conf | string | string | "{}" | Modem startup config (JSON as string) |
+| time | number | time_t | 1712849042 | Unix timestamp (optional) |
+| lp | boolean | bool | false | Low power mode (optional) |
+| boardTemplate | string | const char* | "lilygo-t-beam" | Board template name (optional) |
+| Size | number | uint32_t | 1310720 | Sketch/firmware size (optional) |
+| MD5 | string | String | "a1b2c3d4..." | Firmware MD5 hash (optional) |
+| slot | string | const char* | "app0" | OTA partition label (optional) |
+| pSize | number | uint32_t | 1966080 | Partition size (optional) |
+
 ```json
 {
-  "station_location": [lat, lon],
-  "version": "2411220",
-  "git_version": "abc1234",
-  "chip": "ESP32-D0WDQ6",
-  "board": 67,
-  "mac": "AABBCCDDEEFF",
-  "ip": "192.168.1.100",
-  "tx": 0,
-  "lp": 0,
-  "modem_conf": { ... },
-  "boardTemplate": "...",
-  "sat": "...",
+  "station_location": [-33.8688, 151.2093],
+  "version": 2604100,
+  "git_version": "tinygs_nRF52",
+  "chip": "nRF52840",
+  "board": 255,
+  "mac": "AABB11223344",
   "radioChip": 6,
-  "Mem": 123456,
-  "Size": 1310720,
-  "MD5": "...",
-  "seconds": 0,
-  "Vbat": 3.7,
-  "slot": 0,
-  "pSize": 1310720,
-  "idfv": "v4.4"
+  "Mem": 81920,
+  "seconds": 3600,
+  "Vbat": 3700,
+  "tx": false,
+  "sat": "",
+  "ip": "0.0.0.0",
+  "idfv": "NCS/Zephyr",
+  "modem_conf": "{}"
 }
 ```
 
 ### 3.2 Ping (`tele/ping`)
 
+| Field | JSON type | C++ source type | Example | Notes |
+|-------|-----------|-----------------|---------|-------|
+| Vbat | number | int | 4200 | Battery voltage in **millivolts** |
+| Mem | number | uint32_t | 98304 | Free heap bytes |
+| MinMem | number | uint32_t | 65536 | Minimum free heap (historical) |
+| MaxBlk | number | uint32_t | 131072 | Max allocatable block |
+| RSSI | number | int32_t | -45 | WiFi/Thread parent RSSI (dBm) |
+| radio | number | int16_t | 0 | RadioLib error code (0=OK) |
+| InstRSSI | number | float | -98.5 | Instantaneous radio RSSI |
+
 ```json
 {
-  "Vbat": 3.7,
-  "Mem": 123456,
-  "MinMem": 100000,
-  "MaxBlk": 65536,
-  "RSSI": -65,
-  "radio": 1,
-  "InstRSSI": -100
+  "Vbat": 3700,
+  "Mem": 81920,
+  "MinMem": 65536,
+  "MaxBlk": 81920,
+  "RSSI": -45,
+  "radio": 0,
+  "InstRSSI": -120.0
 }
 ```
 
 ### 3.3 RX Packet (`tele/rx`)
 
+| Field | JSON type | C++ source type | Example | Notes |
+|-------|-----------|-----------------|---------|-------|
+| station_location | array[float,float] | float | [-33.87, 151.21] | [lat, lon] |
+| mode | **string** | char[8] | "LoRa" | "LoRa", "FSK", or "GMSK" (NOT a number) |
+| frequency | number | float | 436.703 | MHz |
+| frequency_offset | number | float | 0 | Hz |
+| satellite | string | char* | "NORBI" | Satellite name |
+| sf | number | uint8_t | 10 | Spreading factor (LoRa only) |
+| cr | number | uint8_t | 5 | Coding rate (LoRa only) |
+| bw | number | float | 250.0 | Bandwidth kHz (LoRa only) |
+| iIQ | **boolean** | bool | false | Inverted IQ (LoRa only) |
+| bitrate | number | float | 9600.0 | Bitrate (FSK only) |
+| freqdev | number | float | 5000.0 | Freq deviation (FSK only) |
+| rxBw | number | float | 25000.0 | RX bandwidth (FSK only) |
+| data_raw | string | char* | "AQID..." | Base64 raw bits (FSK only) |
+| rssi | number | float | -120.5 | Packet RSSI |
+| snr | number | float | -5.25 | Packet SNR |
+| frequency_error | number | float | 1234.5 | Hz |
+| unix_GS_time | number | time_t | 1700000000 | Unix timestamp at reception |
+| usec_time | number | int64_t | 123456 | Microsecond timestamp |
+| crc_error | **boolean** | bool | false | CRC check result |
+| data | string | char* | "base64..." | Base64 encoded packet |
+| NORAD | number | uint32_t | 46494 | NORAD catalog number |
+| noisy | **boolean** | bool | false | Noisy packet flag |
+
 **LoRa mode:**
 ```json
 {
-  "station_location": [lat, lon],
-  "mode": 1,
+  "station_location": [-33.8688, 151.2093],
+  "mode": "LoRa",
   "frequency": 436.703,
   "frequency_offset": 0,
   "satellite": "NORBI",
@@ -130,18 +186,18 @@ Where `{user}` and `{station}` are from the station's configuration.
   "frequency_error": 1234.5,
   "unix_GS_time": 1700000000,
   "usec_time": 123456,
-  "crc_error": 0,
+  "crc_error": false,
   "data": "base64_encoded_packet",
   "NORAD": 46494,
-  "noisy": 0,
-  "iIQ": 0
+  "noisy": false,
+  "iIQ": false
 }
 ```
 
-**FSK mode** (additional fields):
+**FSK mode** (additional/different fields):
 ```json
 {
-  "mode": 2,
+  "mode": "FSK",
   "bitrate": 9600,
   "freqdev": 5000,
   "rxBw": 25000,
