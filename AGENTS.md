@@ -20,7 +20,7 @@ The device presents different USB identities depending on its state:
 | State | VID:PID | USB Name | /dev/sda is | /dev/ttyACM0 is |
 |-------|---------|----------|-------------|-----------------|
 | **UF2 Bootloader** (double-tap RST or 1200-baud reset) | 239a:0071 | HT-n5262 | UF2 flash drive — copy .uf2 here | Bootloader serial |
-| **Application firmware** (normal boot) | 2fe3:0001 | TinyGS Configurator | 24KB FATFS partition (config.json) — NOT for flashing | CDC ACM console log |
+| **Application firmware** (normal boot) | 2fe3:0001 | TinyGS Configurator | 64KB FATFS partition (config.json) — NOT for flashing | CDC ACM console log |
 
 **IMPORTANT:** When the application is running, `/dev/sda` is the FATFS config partition, NOT the bootloader flash drive. Do NOT copy .uf2 files to it.
 
@@ -74,8 +74,8 @@ The nRF52840 flash layout with Adafruit bootloader (verified via SWD recovery lo
 Address    Region                      Size     Protection
 ────────────────────────────────────────────────────────────
 0x00000    MBR + SoftDevice S140       152KB    read-only (DTS)
-0x26000    Application code            792KB    code_partition
-0xEC000    FATFS storage (USB MSC)     24KB     tinygs_storage
+0x26000    Application code            752KB    code_partition
+0xE2000    FATFS storage (USB MSC)     64KB     tinygs_storage (min 128 sectors for FAT format)
 0xF2000    NVS settings (OpenThread)   8KB      storage_partition
 0xF4000    Adafruit Bootloader code    38KB     read-only (DTS) ← PROTECTED
 0xFDC00    Bootloader config           2KB      ← PROTECTED
@@ -90,11 +90,11 @@ Address    Region                      Size     Protection
    config, MBR params, and settings pages occupy 0xF4000-0x100000. Writing to ANY
    address in this range destroys the bootloader and requires SWD to recover.
 
-2. **NEVER set CONFIG_FLASH_LOAD_SIZE such that FLASH_LOAD_OFFSET + FLASH_LOAD_SIZE > 0xEC000.**
+2. **NEVER set CONFIG_FLASH_LOAD_SIZE such that FLASH_LOAD_OFFSET + FLASH_LOAD_SIZE > 0xE2000.**
    The application must not extend into the FATFS region or beyond.
 
-3. **NEVER move any writable partition above 0xEC000** except NVS at 0xF2000-0xF4000.
-   FATFS (24KB) must stay within 0xEC000-0xF2000. NVS (8KB) within 0xF2000-0xF4000.
+3. **NEVER move any writable partition above 0xE2000** except NVS at 0xF2000-0xF4000.
+   FATFS (64KB) must stay within 0xE2000-0xF2000. NVS (8KB) within 0xF2000-0xF4000.
 
 4. **Always verify the partition map after ANY change to app.overlay or prj.conf:**
    - Build the project

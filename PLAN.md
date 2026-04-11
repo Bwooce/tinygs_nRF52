@@ -38,7 +38,7 @@ To fit the full stack (Zephyr + OpenThread + mbedTLS + RadioLib) into 256KB RAM 
 ### 3.3 Configuration Interface: Pure USB Mass Storage (MSC)
 To achieve the absolute lowest possible static RAM footprint, we will completely eliminate the Bluetooth (BLE) stack and the WebUSB stack. The nRF52840 will be configured purely as a USB Flash Drive.
 
-1.  **USB Composite Device (MSC + CDC ACM):** When plugged into a PC or Mac via USB-C, the device registers as a Composite USB Device. It presents both a standard USB Flash Drive (mounting the 24KB FATFS partition at 0xEC000) and a Virtual COM Port (CDC ACM) simultaneously. All Zephyr `LOG_INF()` and `printk()` output is automatically routed to this COM port so the user can monitor the Thread connection and MQTT handshakes in real-time using a serial monitor (like PuTTY or `screen`).
+1.  **USB Composite Device (MSC + CDC ACM):** When plugged into a PC or Mac via USB-C, the device registers as a Composite USB Device. It presents both a standard USB Flash Drive (mounting the 64KB FATFS partition at 0xE2000) and a Virtual COM Port (CDC ACM) simultaneously. All Zephyr `LOG_INF()` and `printk()` output is automatically routed to this COM port so the user can monitor the Thread connection and MQTT handshakes in real-time using a serial monitor (like PuTTY or `screen`).
 2.  **The Setup Page:** The Zephyr firmware dynamically generates an `index.html` file on this drive. This file contains the device's EUI64 MAC address and an auto-generated Thread Joiner Password (PSKd).
 3.  **The User Workflow:**
     *   The user opens `index.html` directly from the flash drive in their web browser.
@@ -63,8 +63,8 @@ The 0x0-0x26000 region is the MBR + SoftDevice. See AGENTS.md Section 7 for full
 | Region | Address | End | Size | Protection |
 | :--- | :--- | :--- | :--- | :--- |
 | MBR + SoftDevice | 0x00000 | 0x26000 | 152KB | read-only |
-| Application | 0x26000 | 0xEC000 | 792KB | code_partition |
-| FATFS Storage | 0xEC000 | 0xF4000 | 32KB | tinygs_storage |
+| Application | 0x26000 | 0xE2000 | 752KB | code_partition |
+| FATFS Storage | 0xE2000 | 0xF2000 | 64KB | tinygs_storage |
 | Bootloader code | 0xF4000 | 0xFDC00 | 38KB | **read-only — DO NOT TOUCH** |
 | Bootloader config | 0xFDC00 | 0xFE000 | 2KB | **read-only** |
 | MBR params page | 0xFE000 | 0xFF000 | 4KB | **read-only** |
@@ -91,7 +91,7 @@ When field OTA updates are required, the bootloader must be transitioned to MCUb
     *   MCUboot: 0x00000 (48KB)
     *   Slot 0: 0x0C000 (~440KB)
     *   Slot 1: 0x7C000 (~440KB)
-    *   FATFS: 0xEC000 (32KB)
+    *   FATFS: 0xE2000 (64KB)
     *   Settings: 0xF4000 (8KB)
     *   (Exact sizes TBD based on firmware size at that point)
 6.  Flash signed application image via `west flash` or `mcumgr` over USB serial.
@@ -115,8 +115,8 @@ All Phase 1 objectives proven:
 1.  **[DONE] Thread Network:** Joiner commissioning to HA SkyConnect BR. Dataset persisted in NVS.
 2.  **[DONE] MQTT-TLS over Thread:** Native TLS handshake via nat64.net public NAT64 + DNS64. Authenticated to mqtt.tinygs.com:8883 with real credentials. TLS session caching enabled.
 3.  **[DONE] SX1262 LoRa Radio:** RadioLib `begin()` succeeds over SPI. Pin mapping verified against T114 v2 schematic.
-4.  **[DONE] RAM Budget:** FLASH 488KB/792KB (62%), RAM 253KB/256KB (98%). Tight but functional. Dedicated 60KB mbedTLS heap required for cert parsing.
-5.  **[DONE] USB MSC + CDC ACM:** FATFS at 0xEC000, NVS at 0xF2000. 1200-baud bootloader entry working.
+4.  **[DONE] RAM Budget:** FLASH 464KB/752KB (62%), RAM 253KB/256KB (98%). Tight but functional. Dedicated 60KB mbedTLS heap required for cert parsing.
+5.  **[DONE] USB MSC + CDC ACM:** FATFS at 0xE2000, NVS at 0xF2000. 1200-baud bootloader entry working.
 6.  **[OBSERVING] MQTT Connection Durability:** Logging PINGRESP intervals and disconnect events to measure NAT64/broker timeouts.
 
 **Key technical decisions from Phase 1:**
@@ -236,10 +236,10 @@ example + clean HAL source):
 
 ### 6.6 NVS/FATFS Storage Conflict — RESOLVED
 *   **The Problem:** OpenThread stores persistent credentials via Zephyr's NVS settings subsystem. FATFS stores config.json/index.html. Sharing a partition would corrupt both.
-*   **Resolution:** Split into two partitions: FATFS 24KB (0xEC000-0xF2000), NVS 8KB (0xF2000-0xF4000). Implemented in app.overlay. FATFS is also unmounted before `usb_enable()` to prevent concurrent access corruption.
+*   **Resolution:** Split into two partitions: FATFS 64KB (0xE2000-0xF2000), NVS 8KB (0xF2000-0xF4000). FATFS needs ≥128 sectors (64KB at 512B/sector) for FatFs auto-format. FATFS is unmounted before `usb_enable()` to prevent concurrent access corruption. Raw flash signature check (0x55AA) prevents FatFs from crashing on corrupted data.
 
 ### 6.7 Flash Wearout & Filesystem Durability — HIGH RISK
-*   **The Problem:** FATFS in the 24KB partition does not perform hardware wear-leveling (unlike SD cards). The nRF52840 flash is rated for ~10,000 erase cycles.
+*   **The Problem:** FATFS in the 64KB partition does not perform hardware wear-leveling (unlike SD cards). The nRF52840 flash is rated for ~10,000 erase cycles.
 *   **The Risk:** If remote MQTT config changes frequently overwrite `config.json`, the same 6 flash pages will be repeatedly erased, potentially destroying them in a matter of months.
 *   **Mitigations:**
     1.  Strictly limit runtime FATFS writes.

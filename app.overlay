@@ -64,16 +64,18 @@
             read-only;
         };
 
-        /* Application (0x26000 -> 0xEC000) 792KB */
+        /* Application (0x26000 -> 0xE2000) 752KB */
         code_partition: partition@26000 {
             label = "code_slot";
-            reg = <0x00026000 0x000c6000>;
+            reg = <0x00026000 0x000bc000>;
         };
 
-        /* FATFS Storage (0xEC000 -> 0xF2000) 24KB — config.json, index.html */
-        tinygs_storage: partition@ec000 {
+        /* FATFS Storage (0xE2000 -> 0xF2000) 64KB — config.json, index.html
+         * Must be >= 128 sectors (64KB at 512B/sector) for FatFs auto-format.
+         * Exposed to host OS over USB MSC as the "TinyGS Configurator" drive. */
+        tinygs_storage: partition@e2000 {
             label = "tinygs_storage";
-            reg = <0x000ec000 0x00006000>;
+            reg = <0x000e2000 0x00010000>;
         };
 
         /* NVS Settings (0xF2000 -> 0xF4000) 8KB — OpenThread credentials */

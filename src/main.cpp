@@ -858,25 +858,27 @@ static void setup_usb_storage(void)
     LOG_INF("Mounting FATFS...");
 
     /* Check FAT boot sector signature BEFORE mounting. FatFs will crash
-     * (HardFault) on corrupted data because it follows garbage pointers
-     * in the FAT table. Reading raw flash is safe — no FatFs involved.
-     * If invalid, erase the first sector so f_mount returns FR_NO_FILESYSTEM
-     * instead of crashing, then CONFIG_FS_FATFS_MOUNT_MKFS auto-formats. */
+     * (HardFault) on corrupted FAT data because it follows garbage pointers.
+     * Reading raw flash is safe — no FatFs code involved. If invalid,
+     * format through the disk driver (which manages the write cache). */
     {
         const struct device *flash_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_flash_controller));
         uint8_t sig[2];
-        flash_read(flash_dev, 0xEC000 + 510, sig, 2);
-        if (sig[0] != 0x55 || sig[1] != 0xAA) {
-            LOG_WRN("FATFS: no valid boot sector (0x%02X 0x%02X), erasing for reformat",
+        flash_read(flash_dev, 0xE2000 + 510, sig, 2);
+        if (sig[0] == 0xFF && sig[1] == 0xFF) {
+            /* Erased flash — fs_mount with MOUNT_MKFS will auto-format */
+            LOG_INF("FATFS: partition erased, will auto-format on mount");
+        } else if (sig[0] != 0x55 || sig[1] != 0xAA) {
+            /* Corrupted data — erase partition and reboot to avoid FatFs crash */
+            LOG_WRN("FATFS: corrupt boot sector (0x%02X 0x%02X), erasing",
                     sig[0], sig[1]);
-            /* Erase just the first page (4KB) — clears the corrupted BPB so
-             * f_mount will see 0xFF and return FR_NO_FILESYSTEM cleanly. */
-            flash_erase(flash_dev, 0xEC000, 4096);
+            flash_erase(flash_dev, 0xE2000, 0x6000);
+            LOG_INF("Partition erased, rebooting...");
+            k_msleep(100);
+            sys_reboot(SYS_REBOOT_COLD);
         }
     }
 
-    /* fs_mount initializes the disk driver. CONFIG_FS_FATFS_MOUNT_MKFS
-     * auto-formats if f_mount returns FR_NO_FILESYSTEM. */
     int res = fs_mount(&mp);
 
     if (res == 0) {
