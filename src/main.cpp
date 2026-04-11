@@ -1110,12 +1110,12 @@ int main(void)
     log_heap_usage("boot");
     init_openthread();
 
-    /* TODO: NVS settings init crashes — debug required.
-     * Likely conflict with OpenThread's settings_subsys_init() or
-     * insufficient stack for NVS operations during early boot.
-     * For now, config comes from config.json only.
-     * tinygs_config_init();
-     */
+    /* Load persistent config from NVS. Must be AFTER init_openthread()
+     * because OpenThread initializes the settings/NVS subsystem.
+     * No extra CONFIG_SETTINGS needed in prj.conf — OpenThread provides it.
+     * config.json values are loaded first (in setup_usb_storage), then
+     * NVS overrides with any previously saved values. */
+    tinygs_config_init();
 
     init_radio();
 
