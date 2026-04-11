@@ -801,7 +801,12 @@ static bool lora_check_rx(void)
                 (unsigned)len, (double)rssi, (double)snr, (double)freq_err);
         LOG_HEXDUMP_INF(data, MIN(len, 32), "Packet data:");
 
-        /* TODO: base64 encode and publish via MQTT tele/rx */
+        /* Publish via MQTT if connected */
+        if (app_state == STATE_MQTT_CONNECTED) {
+            tinygs_send_rx(&mqtt_client, MQTT_USERNAME, MQTT_CLIENT_ID,
+                           data, len, rssi, snr, freq_err,
+                           436.703f, 10, 250.0f, 5);
+        }
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
         LOG_WRN("LoRa RX: CRC error, %u bytes", (unsigned)len);
     } else {

@@ -81,4 +81,14 @@ int tinygs_send_welcome(struct mqtt_client *client,
 int tinygs_send_ping(struct mqtt_client *client,
                       const char *user, const char *station);
 
+/*
+ * Send an RX packet (LoRa received data) to the TinyGS server.
+ * Data is base64-encoded in the JSON payload.
+ */
+int tinygs_send_rx(struct mqtt_client *client,
+                    const char *user, const char *station,
+                    const uint8_t *data, size_t data_len,
+                    float rssi, float snr, float freq_err,
+                    float frequency, int sf, float bw, int cr);
+
 #endif /* TINYGS_PROTOCOL_H */
