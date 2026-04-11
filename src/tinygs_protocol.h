@@ -106,11 +106,14 @@ extern float tinygs_station_alt;
  */
 struct tinygs_radio_state {
     float frequency;       /* MHz */
+    float freq_offset;     /* Hz — applied on top of frequency from foff command */
     int   sf;              /* Spreading factor 5-12 */
     float bw;              /* Bandwidth kHz */
     int   cr;              /* Coding rate 5-8 */
     char  satellite[32];   /* Current satellite name */
     uint32_t norad;        /* NORAD catalog number */
+    uint8_t filter[8];     /* Packet filter bytes from server */
+    uint8_t filter_len;    /* Number of active filter bytes (0 = no filter) */
     char  modem_conf[384]; /* Last begine/batch_conf JSON — echoed in welcome */
 };
 extern struct tinygs_radio_state tinygs_radio;

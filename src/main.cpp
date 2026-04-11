@@ -545,8 +545,9 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     if (p) {
                         float freq = strtof(p + 7, NULL);
                         if (freq > 100.0f && freq < 1000.0f) {
-                            radio->setFrequency(freq);
                             tinygs_radio.frequency = freq;
+                            /* Apply with frequency offset (foff) */
+                            radio->setFrequency(freq + tinygs_radio.freq_offset / 1e6f);
                         }
                     }
                     p = strstr((char *)rx_payload, "\"sf\":");
@@ -594,6 +595,13 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     p = strstr((char *)rx_payload, "\"NORAD\":");
                     if (p) tinygs_radio.norad = (uint32_t)atoi(p + 8);
 
+                    /* Store raw payload as modem_conf — json_escape() in
+                     * tinygs_build_welcome handles the quote escaping. */
+                    size_t conf_len = strlen((char *)rx_payload);
+                    if (conf_len < sizeof(tinygs_radio.modem_conf)) {
+                        memcpy(tinygs_radio.modem_conf, rx_payload, conf_len + 1);
+                    }
+
                     radio->startReceive();
 
                     LOG_INF("  → %s (NORAD %u) %.4fMHz SF%d BW%.1f CR%d iIQ=%s",
@@ -609,10 +617,11 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 /* Direct frequency set (MHz as number) */
                 float freq = strtof((char *)rx_payload, NULL);
                 if (radio && freq > 100.0f && freq < 1000.0f) {
-                    radio->setFrequency(freq);
                     tinygs_radio.frequency = freq;
+                    radio->setFrequency(freq + tinygs_radio.freq_offset / 1e6f);
                     radio->startReceive();
-                    LOG_INF("  → freq=%.4f MHz", (double)freq);
+                    LOG_INF("  → freq=%.4f MHz (foff=%.0f Hz)",
+                            (double)freq, (double)tinygs_radio.freq_offset);
                 }
             } else if (strcmp(cmnd, "sat") == 0) {
                 /* Select satellite — payload is JSON string with sat name */
@@ -672,10 +681,31 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             } else if (strcmp(cmnd, "sleep") == 0 || strcmp(cmnd, "siesta") == 0) {
                 LOG_INF("  → Sleep requested (not implemented yet)");
             } else if (strcmp(cmnd, "foff") == 0) {
-                /* Frequency offset in Hz */
-                LOG_INF("  → Freq offset: %s Hz (TODO: apply)", (char *)rx_payload);
+                /* Frequency offset in Hz — applied on next begine freq set */
+                float foff = strtof((char *)rx_payload, NULL);
+                tinygs_radio.freq_offset = foff;
+                /* Apply immediately if radio is active */
+                if (radio) {
+                    radio->setFrequency(tinygs_radio.frequency +
+                                        tinygs_radio.freq_offset / 1e6f);
+                    radio->startReceive();
+                }
+                LOG_INF("  → foff=%.0f Hz", (double)foff);
             } else if (strcmp(cmnd, "filter") == 0) {
-                LOG_INF("  → Packet filter: %s (TODO: apply)", (char *)rx_payload);
+                /* Packet filter — JSON array of bytes to match in received packets.
+                 * Packets not matching the filter are silently dropped. */
+                const char *p = strchr((char *)rx_payload, '[');
+                if (p) {
+                    p++;
+                    tinygs_radio.filter_len = 0;
+                    while (*p && *p != ']' && tinygs_radio.filter_len < sizeof(tinygs_radio.filter)) {
+                        while (*p == ' ' || *p == ',') p++;
+                        if (*p == ']') break;
+                        tinygs_radio.filter[tinygs_radio.filter_len++] = (uint8_t)atoi(p);
+                        while (*p && *p != ',' && *p != ']') p++;
+                    }
+                }
+                LOG_INF("  → filter: %d bytes", tinygs_radio.filter_len);
             } else if (strcmp(cmnd, "update") == 0) {
                 LOG_INF("  → OTA update not supported (UF2 bootloader)");
             } else if (strcmp(cmnd, "weblogin") == 0) {

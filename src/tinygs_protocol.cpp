@@ -29,6 +29,27 @@ static uint32_t get_free_heap(void)
 
 LOG_MODULE_REGISTER(tinygs_proto, LOG_LEVEL_INF);
 
+/**
+ * Escape a JSON string: replace " with \" and \ with \\.
+ * Returns bytes written (excluding null), or required size if dst is NULL.
+ */
+static size_t json_escape(char *dst, size_t dstlen, const char *src)
+{
+    size_t n = 0;
+    while (*src) {
+        if (*src == '"' || *src == '\\') {
+            if (dst && n + 2 < dstlen) { dst[n] = '\\'; dst[n+1] = *src; }
+            n += 2;
+        } else {
+            if (dst && n + 1 < dstlen) { dst[n] = *src; }
+            n += 1;
+        }
+        src++;
+    }
+    if (dst && n < dstlen) dst[n] = '\0';
+    return n;
+}
+
 /* Station location — defaults to Sydney, updated by set_pos_prm */
 float tinygs_station_lat = -33.8688f;
 float tinygs_station_lon = 151.2093f;
@@ -53,9 +74,11 @@ int tinygs_build_welcome(char *buf, size_t buflen,
                           const char *mac, int vbat_mv, uint32_t free_mem,
                           uint32_t uptime_s)
 {
-    /* ESP32 sends WiFi IPv4 here. We're on Thread (IPv6 only).
-     * Send "0.0.0.0" to avoid breaking TinyGS database which expects IPv4. */
     const char *ip_str = "0.0.0.0";
+
+    /* Escape modem_conf for embedding as a JSON string value */
+    static char escaped_conf[512];
+    json_escape(escaped_conf, sizeof(escaped_conf), tinygs_radio.modem_conf);
 
     return snprintf(buf, buflen,
         "{"
@@ -87,7 +110,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         (unsigned)uptime_s,
         vbat_mv,
         ip_str,
-        tinygs_radio.modem_conf
+        escaped_conf
     );
 }
 
