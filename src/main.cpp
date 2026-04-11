@@ -588,6 +588,38 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         tinygs_radio.cr = cr;
                         LOG_INF("  cr=%d", cr);
                     }
+                    /* Parse and apply sync word */
+                    p = strstr((char *)rx_payload, "\"sw\":");
+                    if (p) {
+                        int sw = atoi(p + 5);
+                        radio->setSyncWord(sw);
+                        LOG_INF("  sw=%d", sw);
+                    }
+                    /* Parse and apply preamble length */
+                    p = strstr((char *)rx_payload, "\"pl\":");
+                    if (p) {
+                        int pl = atoi(p + 5);
+                        radio->setPreambleLength(pl);
+                        LOG_INF("  pl=%d", pl);
+                    }
+                    /* Parse and apply inverted IQ */
+                    p = strstr((char *)rx_payload, "\"iIQ\":");
+                    if (p) {
+                        bool iiq = (strncmp(p + 6, "true", 4) == 0);
+                        if (iiq) {
+                            radio->invertIQ(true);
+                        } else {
+                            radio->invertIQ(false);
+                        }
+                        LOG_INF("  iIQ=%s", iiq ? "true" : "false");
+                    }
+                    /* Parse and apply CRC */
+                    p = strstr((char *)rx_payload, "\"crc\":");
+                    if (p) {
+                        bool crc = (strncmp(p + 6, "true", 4) == 0);
+                        radio->setCRC(crc ? 2 : 0);
+                        LOG_INF("  crc=%s", crc ? "on" : "off");
+                    }
                     /* Parse satellite name */
                     p = strstr((char *)rx_payload, "\"sat\":\"");
                     if (p) {
@@ -604,11 +636,19 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         tinygs_radio.norad = (uint32_t)atoi(p + 8);
                         LOG_INF("  NORAD: %u", (unsigned)tinygs_radio.norad);
                     }
-                    /* Store raw payload as modem_conf for welcome echo + NVS */
+                    /* Store raw payload as modem_conf for welcome echo */
                     size_t conf_len = strlen((char *)rx_payload);
                     if (conf_len < sizeof(tinygs_radio.modem_conf)) {
                         memcpy(tinygs_radio.modem_conf, rx_payload, conf_len + 1);
+                    }
+                    /* Save to NVS only when satellite changes (avoid flash wear) */
+                    static char last_saved_sat[32] = "";
+                    if (strcmp(tinygs_radio.satellite, last_saved_sat) != 0) {
+                        tinygs_config_save_radio();
                         tinygs_config_save_modem_conf(tinygs_radio.modem_conf);
+                        strncpy(last_saved_sat, tinygs_radio.satellite,
+                                sizeof(last_saved_sat) - 1);
+                        LOG_INF("  Config saved to NVS (new satellite)");
                     }
                     /* Restart reception */
                     radio->startReceive();

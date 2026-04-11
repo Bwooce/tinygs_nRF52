@@ -163,3 +163,15 @@ int tinygs_config_save_modem_conf(const char *conf)
 {
     return tinygs_config_save("modem", conf, strlen(conf));
 }
+
+int tinygs_config_save_radio(void)
+{
+    int ret = 0;
+    ret |= tinygs_config_save("freq", &tinygs_radio.frequency, sizeof(tinygs_radio.frequency));
+    ret |= tinygs_config_save("sf", &tinygs_radio.sf, sizeof(tinygs_radio.sf));
+    ret |= tinygs_config_save("bw", &tinygs_radio.bw, sizeof(tinygs_radio.bw));
+    ret |= tinygs_config_save("cr", &tinygs_radio.cr, sizeof(tinygs_radio.cr));
+    ret |= tinygs_config_save("sat", tinygs_radio.satellite, strlen(tinygs_radio.satellite));
+    ret |= tinygs_config_save("norad", &tinygs_radio.norad, sizeof(tinygs_radio.norad));
+    return ret;
+}

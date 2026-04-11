@@ -65,4 +65,9 @@ int tinygs_config_save_station(const char *name);
  */
 int tinygs_config_save_modem_conf(const char *conf);
 
+/**
+ * @brief Save radio state (freq, sf, bw, cr, satellite, norad) to NVS.
+ */
+int tinygs_config_save_radio(void);
+
 #endif /* TINYGS_CONFIG_H */
