@@ -121,3 +121,44 @@ Address    Region                      Size     Protection
 - Bootloader code: FLASH ORIGIN=0xF4000, LENGTH=38KB
 - MBR params: 0xFE000 (4KB)
 - Bootloader settings: 0xFF000 (4KB)
+
+## 8. Runtime Configuration Items
+
+These values need to be user-configurable at runtime (eventually via NVS Preferences
+store with wear-levelling). Items marked **[server]** are set/updated by the TinyGS
+MQTT server. Items marked **[user]** are set locally via USB MSC config.json or
+commissioning. Items marked **[build]** are compile-time only (prj.conf).
+
+### Station Identity
+| Item | Source | Current Location | Notes |
+|------|--------|-----------------|-------|
+| MQTT username | **[user]** | mqtt_credentials.h (gitignored) | TinyGS dashboard credential |
+| MQTT password | **[user]** | mqtt_credentials.h (gitignored) | TinyGS dashboard credential |
+| Station name | **[user]** | Derived from FICR DEVICEID | MAC-based %04X%08X |
+| Station location (lat/lon) | **[user]** | Hardcoded in tinygs_protocol.cpp | Sydney placeholder |
+
+### Radio Configuration (from server)
+| Item | Source | Current Location | Notes |
+|------|--------|-----------------|-------|
+| Frequency (MHz) | **[server]** | Hardcoded 436.703 | Via begine/batch_conf MQTT command |
+| Spreading factor | **[server]** | Hardcoded 10 | 7-12 |
+| Coding rate | **[server]** | Hardcoded 5 | 5-8 |
+| Bandwidth (kHz) | **[server]** | Hardcoded 250.0 | |
+| Satellite name | **[server]** | Empty string | NORAD ID + name |
+| Sync word | **[server]** | Default 18 | |
+| CRC settings | **[server]** | Defaults | sw CRC, poly, init, etc. |
+
+### Operational Settings
+| Item | Source | Current Location | Notes |
+|------|--------|-----------------|-------|
+| MQTT keepalive (s) | **[build]** | prj.conf CONFIG_MQTT_KEEPALIVE=300 | Also sets TinyGS ping interval |
+| TX allowed | **[user]** | Hardcoded false | Currently always false |
+| Low power mode | **[user]** | Not implemented | Phase 3 SED sleep config |
+| OT log level | **[build]** | prj.conf OPENTHREAD_LOG_LEVEL_CRIT | CRIT/WARN/NOTE/INFO/DEBG |
+| App log level | **[build]** | prj.conf LOG_DEFAULT_LEVEL=3 | 0=off, 1=err, 2=wrn, 3=inf, 4=dbg |
+
+### Thread Network (managed by OpenThread)
+| Item | Source | Current Location | Notes |
+|------|--------|-----------------|-------|
+| Thread dataset | **[auto]** | NVS (0xF2000) | Obtained via Joiner commissioning |
+| Joiner PSKd | **[build]** | prj.conf OPENTHREAD_JOINER_PSKD | "TNYGS2026NRF" |

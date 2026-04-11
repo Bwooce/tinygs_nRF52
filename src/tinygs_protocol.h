@@ -31,8 +31,9 @@
 #define TINYGS_BOARD          255  /* Custom/unknown board ID */
 #define TINYGS_RADIO_CHIP     6    /* SX1262 (matches ESP32 Radio.h enum) */
 
-/* Ping interval */
-#define TINYGS_PING_INTERVAL_S  60
+/* Ping interval — tied to MQTT keepalive so pings double as keepalives.
+ * Override via CONFIG_MQTT_KEEPALIVE in prj.conf. */
+#define TINYGS_PING_INTERVAL_S  CONFIG_MQTT_KEEPALIVE
 
 /*
  * Build a topic string. Caller provides buffer.
