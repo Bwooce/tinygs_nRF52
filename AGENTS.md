@@ -135,7 +135,9 @@ commissioning. Items marked **[build]** are compile-time only (prj.conf).
 | MQTT username | **[user]** | mqtt_credentials.h (gitignored) | TinyGS dashboard credential |
 | MQTT password | **[user]** | mqtt_credentials.h (gitignored) | TinyGS dashboard credential |
 | Station name | **[user]** | Derived from FICR DEVICEID | MAC-based %04X%08X |
-| Station location (lat/lon) | **[user]** | Hardcoded in tinygs_protocol.cpp | Sydney placeholder |
+| Station latitude | **[user]** | config.json `lat` field, tinygs_station_lat | Read at boot from FATFS; default -33.8688 (Sydney) |
+| Station longitude | **[user]** | config.json `lon` field, tinygs_station_lon | Read at boot from FATFS; default 151.2093 (Sydney) |
+| Station altitude (m) | **[user/server]** | config.json `alt` field, tinygs_station_alt | Read at boot; also updated by set_pos_prm command |
 
 ### Radio Configuration (from server)
 | Item | Source | Current Location | Notes |

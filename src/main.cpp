@@ -802,24 +802,30 @@ static const char *html_content =
     "<style>body{font-family:sans-serif;max-width:600px;margin:40px auto;padding:20px;background:#f4f4f9;}"
     ".card{background:white;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}"
     "input{width:100%;padding:8px;margin:8px 0;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;}"
+    ".row{display:flex;gap:8px;} .row input{flex:1;}"
     "button{background:#5a67d8;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer;width:100%;font-size:16px;}"
     "button:hover{background:#434190;}</style>"
     "</head><body>"
     "<div class='card'>"
-    "<h1>TinyGS Setup</h1>"
-    "<p>Configure your Ground Station and join the Thread network.</p>"
+    "<h1>TinyGS nRF52 Setup</h1>"
+    "<p>Configure your Ground Station. Save config.json to this drive, then reboot.</p>"
     "<hr>"
-    "<label>Station ID:</label><input type='text' id='station' placeholder='MyTinyGS'>"
-    "<label>MQTT Password:</label><input type='password' id='pass' placeholder='Password'>"
-    "<br><br>"
-    "<button onclick='saveConfig()'>Save config.json to Drive</button>"
-    "<p style='font-size:0.8em;color:#666;'>After saving, scan the QR code in Home Assistant to finish setup.</p>"
+    "<label>Station Location (required for satellite assignment):</label>"
+    "<div class='row'>"
+    "<input type='number' step='0.0001' id='lat' placeholder='Latitude (-33.8688)'>"
+    "<input type='number' step='0.0001' id='lon' placeholder='Longitude (151.2093)'>"
+    "<input type='number' step='1' id='alt' placeholder='Alt (m)'>"
+    "</div>"
+    "<br>"
+    "<button onclick='saveConfig()'>Save config.json</button>"
+    "<p style='font-size:0.8em;color:#666;'>Location must be set here &mdash; the TinyGS website cannot change it.</p>"
     "</div>"
     "<script>"
     "function saveConfig() {"
     "  const config = {"
-    "    station: document.getElementById('station').value,"
-    "    password: document.getElementById('pass').value"
+    "    lat: parseFloat(document.getElementById('lat').value),"
+    "    lon: parseFloat(document.getElementById('lon').value),"
+    "    alt: parseFloat(document.getElementById('alt').value) || 0"
     "  };"
     "  const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });"
     "  const a = document.createElement('a');"
@@ -854,6 +860,51 @@ static void setup_usb_storage(void)
                 fs_close(&file);
             }
         }
+        /* Read config.json if it exists — station location, name, etc.
+         * This is the only time we can read FATFS (before USB MSC takes over). */
+        {
+            static char cfg_buf[512];
+            struct fs_file_t cfg;
+            fs_file_t_init(&cfg);
+            if (fs_open(&cfg, "/NAND:/config.json", FS_O_READ) == 0) {
+                ssize_t n = fs_read(&cfg, cfg_buf, sizeof(cfg_buf) - 1);
+                fs_close(&cfg);
+                if (n > 0) {
+                    cfg_buf[n] = '\0';
+                    LOG_INF("Loaded config.json (%d bytes)", (int)n);
+
+                    /* Parse latitude */
+                    const char *p = strstr(cfg_buf, "\"lat\":");
+                    if (p) {
+                        float lat = strtof(p + 6, NULL);
+                        if (lat >= -90.0f && lat <= 90.0f) {
+                            tinygs_station_lat = lat;
+                        }
+                    }
+                    /* Parse longitude */
+                    p = strstr(cfg_buf, "\"lon\":");
+                    if (p) {
+                        float lon = strtof(p + 6, NULL);
+                        if (lon >= -180.0f && lon <= 180.0f) {
+                            tinygs_station_lon = lon;
+                        }
+                    }
+                    /* Parse altitude */
+                    p = strstr(cfg_buf, "\"alt\":");
+                    if (p) {
+                        tinygs_station_alt = strtof(p + 6, NULL);
+                    }
+
+                    LOG_INF("Station location: lat=%.4f lon=%.4f alt=%.0f",
+                            (double)tinygs_station_lat,
+                            (double)tinygs_station_lon,
+                            (double)tinygs_station_alt);
+                }
+            } else {
+                LOG_INF("No config.json found — using defaults");
+            }
+        }
+
         /*
          * Unmount FATFS before enabling USB MSC.
          * Once USB is active, the host OS owns the FAT sectors.
