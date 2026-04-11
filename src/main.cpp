@@ -26,6 +26,7 @@
 #include <zephyr/drivers/adc.h>
 #include <zephyr/dt-bindings/adc/nrf-adc.h>
 #include <zephyr/sys/base64.h>
+#include <zephyr/drivers/watchdog.h>
 #include <openthread/sntp.h>
 #include <time.h>
 #include "tinygs_display.h"
@@ -112,6 +113,51 @@ static void enable_peripherals(void)
         gpio_pin_set_dt(&vext_pwr, 1);
         k_msleep(500);
         LOG_INF("Vext power enabled");
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Hardware Watchdog                                                            */
+/* -------------------------------------------------------------------------- */
+
+static const struct device *wdt_dev = DEVICE_DT_GET(DT_NODELABEL(wdt0));
+static int wdt_channel_id = -1;
+
+static void watchdog_init(void)
+{
+    if (!device_is_ready(wdt_dev)) {
+        LOG_WRN("Watchdog not available");
+        return;
+    }
+
+    struct wdt_timeout_cfg cfg = {
+        .window = {
+            .min = 0,
+            .max = CONFIG_MQTT_KEEPALIVE * 2 * 1000, /* 2x keepalive in ms */
+        },
+        .callback = NULL, /* reset on timeout */
+        .flags = WDT_FLAG_RESET_SOC,
+    };
+
+    wdt_channel_id = wdt_install_timeout(wdt_dev, &cfg);
+    if (wdt_channel_id < 0) {
+        LOG_ERR("Watchdog install failed: %d", wdt_channel_id);
+        return;
+    }
+
+    int ret = wdt_setup(wdt_dev, WDT_OPT_PAUSE_HALTED_BY_DBG);
+    if (ret < 0) {
+        LOG_ERR("Watchdog setup failed: %d", ret);
+        return;
+    }
+
+    LOG_INF("Watchdog: %ds timeout (2x keepalive)", CONFIG_MQTT_KEEPALIVE * 2);
+}
+
+static void watchdog_feed(void)
+{
+    if (wdt_channel_id >= 0) {
+        wdt_feed(wdt_dev, wdt_channel_id);
     }
 }
 
@@ -470,6 +516,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
     case MQTT_EVT_CONNACK:
         if (evt->result == 0) {
             mqtt_connected_uptime_ms = now;
+            watchdog_feed(); /* connection alive */
             LOG_INF("MQTT CONNECTED to %s:%d", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
 
             {
@@ -503,6 +550,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 
     case MQTT_EVT_PINGRESP:
         mqtt_last_pingresp_ms = now;
+        watchdog_feed();
         LOG_INF("MQTT PINGRESP (connected %us)",
                 (unsigned)(now - mqtt_connected_uptime_ms) / 1000);
         break;
@@ -524,8 +572,12 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
         rx_payload[ret] = '\0';
 
         LOG_INF("MQTT RX [%s] (%d bytes)", rx_topic, ret);
-        if (ret < 200) {
-            LOG_INF("  payload: %s", (char *)rx_payload);
+        /* Truncate long payloads for logging — full payload is still parsed */
+        if (ret > 0) {
+            char saved = 0;
+            if (ret > 200) { saved = rx_payload[200]; rx_payload[200] = '\0'; }
+            LOG_INF("  payload: %s%s", (char *)rx_payload, ret > 200 ? "..." : "");
+            if (saved) { rx_payload[200] = saved; }
         }
 
         /* Extract command name from topic:
@@ -1359,6 +1411,7 @@ int main(void)
      * NVS overrides with any previously saved values. */
     tinygs_config_init();
     tinygs_display_init();
+    watchdog_init();
     init_radio();
 
     int retry_count = 0;
