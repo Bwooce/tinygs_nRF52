@@ -17,6 +17,20 @@
 /* Maximum number of pins we support mapping */
 #define MAX_HAL_PINS 10
 
+/*
+ * RadioLib HAL for Zephyr RTOS.
+ *
+ * Singleton — only one instance may exist. The static ISR dispatcher
+ * uses _instance to route GPIO interrupts. Creating a second instance
+ * would silently steal interrupt dispatch from the first.
+ *
+ * GPIO: Uses raw pin levels (gpio_pin_set_raw / gpio_pin_get_raw)
+ * bypassing DTS active-low flags, because RadioLib manages polarity
+ * internally for CS, reset, and DIO pins.
+ *
+ * SPI: CS is stripped from the cloned spi_config so RadioLib controls
+ * chip select via its own digitalWrite calls.
+ */
 class ZephyrHal : public RadioLibHal {
   public:
     ZephyrHal(const struct device* spi_dev, struct spi_config* spi_cfg);

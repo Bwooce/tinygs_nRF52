@@ -45,15 +45,15 @@ ZephyrHal::~ZephyrHal() {
 uint32_t ZephyrHal::addPin(const struct gpio_dt_spec* dt_spec) {
     if (_pin_count >= MAX_HAL_PINS) {
         LOG_ERR("Max HAL pins exceeded!");
-        return 0xFFFFFFFF; // Error
+        return 0xFFFFFFFF;
     }
-    
-    _pins[_pin_count] = dt_spec;
-    
+
     if (!gpio_is_ready_dt(dt_spec)) {
-        LOG_ERR("GPIO %s is not ready", dt_spec->port->name);
+        LOG_ERR("GPIO %s pin %d is not ready — rejecting", dt_spec->port->name, dt_spec->pin);
+        return 0xFFFFFFFF;
     }
-    
+
+    _pins[_pin_count] = dt_spec;
     return _pin_count++;
 }
 
@@ -169,10 +169,15 @@ void ZephyrHal::spiBeginTransaction() {
 }
 
 void ZephyrHal::spiTransfer(uint8_t* out, size_t len, uint8_t* in) {
-    /* Use dummy buffers for unused direction — some SPI drivers
-     * don't handle nullptr spi_buf_set correctly. */
-    uint8_t dummy_tx[len];
-    uint8_t dummy_rx[len];
+    /* Fixed-size dummy buffers for unused direction — RadioLib SPI
+     * transfers are always small (register reads/writes ≤ 256 bytes). */
+    static uint8_t dummy_tx[256];
+    static uint8_t dummy_rx[256];
+
+    if (len > sizeof(dummy_tx)) {
+        LOG_ERR("SPI transfer too large: %zu > %zu", len, sizeof(dummy_tx));
+        return;
+    }
 
     if (!out) {
         memset(dummy_tx, 0x00, len);
