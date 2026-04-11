@@ -4,15 +4,21 @@
  * Uses a custom 8x16 bitmap font renderer with display_write() for
  * minimal flash overhead (~1.5KB font + ~200 lines code).
  *
- * Pages cycle every 5 seconds:
- *   Page 0: Station info (name, version, uptime, vbat)
- *   Page 1: Satellite (name, freq, SF/BW/CR)
- *   Page 2: System (Thread, MQTT, heap, keepalive)
+ * 8 pages matching ESP32 TinyGS display layout:
+ *   Page 0: TinyGS logo/station name (ESP32 Frame1)
+ *   Page 1: MQTT/Thread status (ESP32 Frame8)
+ *   Page 2: Satellite config (ESP32 Frame3)
+ *   Page 3: World map + sat position (ESP32 Frame5)
+ *   Page 4: Last packet info (ESP32 Frame2 - local, not remote)
+ *   Page 5: System info (ESP32 Frame4 - local, not remote)
+ *   Page 6: Reserved for server frame (ESP32 Frame6)
+ *   Page 7: Reserved for server frame (ESP32 Frame7)
  */
 
 #include "tinygs_display.h"
 #include "tinygs_protocol.h"
 #include "tinygs_config.h"
+#include "worldmap.h"
 #include "font8x16.h"
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -30,7 +36,7 @@ static int current_page = 0;
 static uint32_t last_page_switch_ms = 0;
 static uint32_t last_activity_ms = 0;
 
-#define PAGE_COUNT       3
+#define PAGE_COUNT       8  /* Match ESP32 TinyGS 8-frame display */
 #define PAGE_INTERVAL_MS 5000
 #define DISP_W           240
 #define DISP_H           135
@@ -42,9 +48,17 @@ static uint32_t last_activity_ms = 0;
 #define COL_GREEN   0x07E0
 #define COL_YELLOW  0xFFE0
 #define COL_CYAN    0x07FF
+#define COL_RED     0xF800
+#define COL_DKBLUE  0x0011  /* Dark ocean blue */
+#define COL_DKGREEN 0x0320  /* Dark land green */
 
 extern int read_vbat_mv(void);
 extern char cfg_station[32];
+
+/* Last packet info — updated by tinygs_display_packet_rx() */
+static float last_pkt_rssi = 0;
+static float last_pkt_snr = 0;
+static uint32_t last_pkt_time_ms = 0;
 
 static const struct gpio_dt_spec backlight = {
     .port = DEVICE_DT_GET(DT_NODELABEL(gpio0)),
@@ -167,6 +181,68 @@ static void draw_page_satellite(void)
     draw_string(0, 72, "Listening...", COL_GREEN, COL_BLACK);
 }
 
+/* Page 4: Last received packet info */
+static void draw_page_lastpkt(void)
+{
+    char buf[32];
+    draw_string(0, 0, "Last Packet", COL_CYAN, COL_BLACK);
+    if (last_pkt_time_ms > 0) {
+        uint32_t ago = (k_uptime_get_32() - last_pkt_time_ms) / 1000;
+        snprintf(buf, sizeof(buf), "RSSI: %.1f dBm", (double)last_pkt_rssi);
+        draw_string(0, 18, buf, COL_WHITE, COL_BLACK);
+        snprintf(buf, sizeof(buf), "SNR: %.2f dB", (double)last_pkt_snr);
+        draw_string(0, 36, buf, COL_WHITE, COL_BLACK);
+        snprintf(buf, sizeof(buf), "%us ago", (unsigned)ago);
+        draw_string(0, 54, buf, COL_GREEN, COL_BLACK);
+    } else {
+        draw_string(0, 36, "No packets yet", COL_YELLOW, COL_BLACK);
+    }
+}
+
+/* Page 3: World map with station + satellite position */
+static void draw_page_worldmap(void)
+{
+    if (!disp_dev) return;
+
+    /* Render world map: land=dark green, ocean=dark blue, one row at a time */
+    struct display_buffer_descriptor desc = {
+        .buf_size = DISP_W * sizeof(uint16_t),
+        .width = DISP_W,
+        .height = 1,
+        .pitch = DISP_W,
+    };
+
+    for (int y = 0; y < DISP_H; y++) {
+        for (int x = 0; x < DISP_W; x++) {
+            int bi = y * WORLDMAP_W + x;
+            bool land = (worldmap_bits[bi / 8] >> (bi % 8)) & 1;
+            line_buf[x] = land ? COL_DKGREEN : COL_DKBLUE;
+        }
+
+        /* Draw station location dot (3x3 yellow) */
+        int sx = (int)((180.0f + tinygs_station_lon) / 360.0f * DISP_W);
+        int sy = (int)((90.0f - tinygs_station_lat) / 180.0f * DISP_H);
+        if (y >= sy - 1 && y <= sy + 1 && sx >= 1 && sx < DISP_W - 1) {
+            for (int dx = -1; dx <= 1; dx++) {
+                line_buf[sx + dx] = COL_YELLOW;
+            }
+        }
+
+        /* Draw satellite dot (3x3 red) from Doppler position */
+        if (tinygs_radio.tle_valid) {
+            /* Use latlon2xy from AioP13 — but we can compute inline */
+            /* For now: no sat position available unless sat_pos_oled received */
+        }
+
+        display_write(disp_dev, 0, y, &desc, line_buf);
+    }
+
+    /* Overlay satellite name at bottom */
+    if (tinygs_radio.satellite[0]) {
+        draw_string(0, DISP_H - 16, tinygs_radio.satellite, COL_WHITE, COL_DKBLUE);
+    }
+}
+
 static void draw_page_system(void)
 {
     char buf[32];
@@ -235,8 +311,13 @@ void tinygs_display_update(void)
 
     switch (current_page) {
     case 0: draw_page_station(); break;
-    case 1: draw_page_satellite(); break;
-    case 2: draw_page_system(); break;
+    case 1: draw_page_system(); break;
+    case 2: draw_page_satellite(); break;
+    case 3: draw_page_worldmap(); break;
+    case 4: draw_page_lastpkt(); break;
+    case 5: draw_page_system(); break;  /* Remote frame 0 placeholder */
+    case 6: draw_page_station(); break; /* Remote frame 1 placeholder */
+    case 7: draw_page_system(); break;  /* Remote frame 2 placeholder */
     }
 }
 
@@ -255,6 +336,22 @@ void tinygs_display_on(void)
     if (device_is_ready(backlight.port)) gpio_pin_set_dt(&backlight, 1);
     display_active = true;
     last_page_switch_ms = k_uptime_get_32();
+}
+
+void tinygs_display_packet_rx(float rssi, float snr)
+{
+    last_pkt_rssi = rssi;
+    last_pkt_snr = snr;
+    last_pkt_time_ms = k_uptime_get_32();
+
+    /* Wake display briefly on packet reception */
+    if (!display_active && disp_dev) {
+        display_blanking_off(disp_dev);
+        if (device_is_ready(backlight.port)) gpio_pin_set_dt(&backlight, 1);
+        display_active = true;
+        current_page = 4;  /* Jump to last-packet page */
+    }
+    last_activity_ms = k_uptime_get_32();
 }
 
 bool tinygs_display_weblogin_requested(void)

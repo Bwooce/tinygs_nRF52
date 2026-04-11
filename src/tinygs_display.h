@@ -24,6 +24,12 @@ void tinygs_display_off(void);
 void tinygs_display_on(void);
 
 /**
+ * @brief Notify display of a received LoRa packet.
+ * Updates last-packet page and briefly flashes the display.
+ */
+void tinygs_display_packet_rx(float rssi, float snr);
+
+/**
  * @brief Check and clear the weblogin request flag.
  * Set by BOOT button press when display is active (or no display).
  * Rate-limited to once per 10 seconds.

@@ -40,6 +40,7 @@
 #include <RadioLib.h>
 #include "hal/Zephyr/ZephyrHal.h"
 #include "tinygs_protocol.h"
+#include "tinygs_json.h"
 #include "tinygs_config.h"
 
 LOG_MODULE_REGISTER(tinygs_nrf52, LOG_LEVEL_DBG);
@@ -583,10 +584,9 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 tinygs_send_welcome(client, cfg_mqtt_user, cfg_station,
                                     device_client_id);
 
-                /* Web login URL can be requested manually if needed.
-                 * Publishes to tele/get_weblogin, server responds on cmnd/weblogin
-                 * with a one-time URL for configuring auto-tune etc on tinygs.com.
-                 * TODO: trigger via button press or config.json flag */
+                /* Web login URL: press BOOT button while display is active
+                 * to publish tele/get_weblogin. Server responds on cmnd/weblogin
+                 * with a one-time URL for configuring auto-tune etc. */
             }
 
             app_state = STATE_MQTT_CONNECTED;
@@ -644,96 +644,74 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 
             if (strcmp(cmnd, "begine") == 0 ||
                 strcmp(cmnd, "batch_conf") == 0) {
-                /* Reconfigure radio from JSON payload.
-                 * Minimal parser — extract freq, sf, bw, cr, sat */
                 if (radio != nullptr) {
-                    const char *p;
-                    bool iiq = false;
-                    bool crc = true;
+                    /* Store raw payload as modem_conf before parsing
+                     * (json_obj_parse modifies the buffer in-place) */
+                    size_t conf_len = strlen((char *)rx_payload);
+                    if (conf_len < sizeof(tinygs_radio.modem_conf)) {
+                        memcpy(tinygs_radio.modem_conf, rx_payload, conf_len + 1);
+                    } else {
+                        LOG_WRN("modem_conf too large (%zu > %zu), skipped",
+                                conf_len, sizeof(tinygs_radio.modem_conf) - 1);
+                    }
 
-                    p = strstr((char *)rx_payload, "\"freq\":");
-                    if (p) {
-                        float freq = strtof(p + 7, NULL);
+                    /* Parse begine JSON via Zephyr json.h descriptors */
+                    struct tinygs_begine_msg msg;
+                    int64_t parsed = tinygs_parse_begine((char *)rx_payload, ret, &msg);
+                    if (parsed < 0) {
+                        LOG_ERR("begine parse failed");
+                    } else {
+                        /* Apply radio config from parsed struct */
+                        float freq = tinygs_begine_get_freq(&msg);
                         if (freq > 100.0f && freq < 1000.0f) {
                             tinygs_radio.frequency = freq;
-                            /* Apply with frequency offset (foff) */
                             radio->setFrequency(freq + tinygs_radio.freq_offset / 1e6f);
                         }
-                    }
-                    p = strstr((char *)rx_payload, "\"sf\":");
-                    if (p) {
-                        int sf = atoi(p + 5);
-                        if (sf >= 5 && sf <= 12) {
-                            radio->setSpreadingFactor(sf);
-                            tinygs_radio.sf = sf;
+                        float bw = tinygs_begine_get_bw(&msg);
+                        if (bw > 0.0f) {
+                            radio->setBandwidth(bw);
+                            tinygs_radio.bw = bw;
                         }
-                    }
-                    p = strstr((char *)rx_payload, "\"bw\":");
-                    if (p) {
-                        float bw = strtof(p + 5, NULL);
-                        radio->setBandwidth(bw);
-                        tinygs_radio.bw = bw;
-                    }
-                    p = strstr((char *)rx_payload, "\"cr\":");
-                    if (p) {
-                        int cr = atoi(p + 5);
-                        radio->setCodingRate(cr);
-                        tinygs_radio.cr = cr;
-                    }
-                    p = strstr((char *)rx_payload, "\"sw\":");
-                    if (p) radio->setSyncWord(atoi(p + 5));
-                    p = strstr((char *)rx_payload, "\"pl\":");
-                    if (p) radio->setPreambleLength(atoi(p + 5));
-                    p = strstr((char *)rx_payload, "\"iIQ\":");
-                    if (p) {
-                        iiq = (strncmp(p + 6, "true", 4) == 0);
-                        radio->invertIQ(iiq);
-                    }
-                    p = strstr((char *)rx_payload, "\"crc\":");
-                    if (p) {
-                        crc = (strncmp(p + 6, "true", 4) == 0);
-                        radio->setCRC(crc ? 2 : 0);
-                    }
-                    p = strstr((char *)rx_payload, "\"sat\":\"");
-                    if (p) {
-                        const char *end = strchr(p + 7, '"');
-                        if (end && (end - p - 7) < (int)sizeof(tinygs_radio.satellite)) {
-                            memcpy(tinygs_radio.satellite, p + 7, end - p - 7);
-                            tinygs_radio.satellite[end - p - 7] = '\0';
+                        if (msg.sf >= 5 && msg.sf <= 12) {
+                            radio->setSpreadingFactor(msg.sf);
+                            tinygs_radio.sf = msg.sf;
                         }
-                    }
-                    p = strstr((char *)rx_payload, "\"NORAD\":");
-                    if (p) tinygs_radio.norad = (uint32_t)atoi(p + 8);
+                        if (msg.cr >= 4 && msg.cr <= 8) {
+                            radio->setCodingRate(msg.cr);
+                            tinygs_radio.cr = msg.cr;
+                        }
+                        radio->setSyncWord(msg.sw);
+                        radio->setPreambleLength(msg.pl);
+                        radio->invertIQ(msg.iIQ);
+                        radio->setCRC(msg.crc ? 2 : 0);
 
-                    /* Parse filter from begine payload */
-                    p = strstr((char *)rx_payload, "\"filter\":[");
-                    if (p) {
-                        p += 10;
-                        tinygs_radio.filter_len = 0;
-                        while (*p && *p != ']' && tinygs_radio.filter_len < sizeof(tinygs_radio.filter)) {
-                            while (*p == ' ' || *p == ',') p++;
-                            if (*p == ']') break;
-                            tinygs_radio.filter[tinygs_radio.filter_len++] = (uint8_t)atoi(p);
-                            while (*p && *p != ',' && *p != ']') p++;
+                        if (msg.sat) {
+                            strncpy(tinygs_radio.satellite, msg.sat,
+                                    sizeof(tinygs_radio.satellite) - 1);
+                            tinygs_radio.satellite[sizeof(tinygs_radio.satellite) - 1] = '\0';
                         }
-                    } else {
-                        tinygs_radio.filter_len = 0;
-                        tinygs_radio.filter[0] = 0;
+                        tinygs_radio.norad = (uint32_t)msg.NORAD;
                     }
 
-                    /* Parse TLE (base64-encoded 34-byte binary) */
-                    /* TLE is sent as "tlx" (not "tle") in the ESP32 protocol */
-                    p = strstr((char *)rx_payload, "\"tlx\":\"");
-                    if (p) {
-                        const char *b64_start = p + 7;
+                    /* Parse filter (array — not handled by json.h descriptors) */
+                    int filt_count = tinygs_parse_filter(
+                        tinygs_radio.modem_conf, strlen(tinygs_radio.modem_conf),
+                        tinygs_radio.filter, sizeof(tinygs_radio.filter));
+                    tinygs_radio.filter_len = (filt_count > 0) ? filt_count : 0;
+                    if (filt_count <= 0) tinygs_radio.filter[0] = 0;
+
+                    /* Parse TLE base64 from modem_conf copy (original modified by json_obj_parse) */
+                    const char *tlx_p = strstr(tinygs_radio.modem_conf, "\"tlx\":\"");
+                    if (tlx_p) {
+                        const char *b64_start = tlx_p + 7;
                         const char *b64_end = strchr(b64_start, '"');
                         if (b64_end) {
-                            size_t b64_len = b64_end - b64_start;
                             size_t decoded_len = 0;
                             if (base64_decode((uint8_t *)tinygs_radio.tle,
                                               sizeof(tinygs_radio.tle),
                                               &decoded_len,
-                                              (const uint8_t *)b64_start, b64_len) == 0
+                                              (const uint8_t *)b64_start,
+                                              b64_end - b64_start) == 0
                                 && decoded_len == 34) {
                                 tinygs_radio.tle_valid = true;
                                 tinygs_radio.freq_doppler = 0.0f;
@@ -744,16 +722,6 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         }
                     } else {
                         tinygs_radio.tle_valid = false;
-                    }
-
-                    /* Store raw payload as modem_conf — json_escape() in
-                     * tinygs_build_welcome handles the quote escaping. */
-                    size_t conf_len = strlen((char *)rx_payload);
-                    if (conf_len < sizeof(tinygs_radio.modem_conf)) {
-                        memcpy(tinygs_radio.modem_conf, rx_payload, conf_len + 1);
-                    } else {
-                        LOG_WRN("modem_conf too large (%zu > %zu), skipped",
-                                conf_len, sizeof(tinygs_radio.modem_conf) - 1);
                     }
 
                     radio->startReceive();
@@ -790,35 +758,18 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             } else if (strcmp(cmnd, "set_pos_prm") == 0) {
                 tinygs_handle_set_pos((char *)rx_payload, ret);
             } else if (strcmp(cmnd, "set_name") == 0) {
-                /* Rename station: ["MAC", "new_name"]
-                 * Only apply if MAC matches our device. Needs NVS to persist. */
                 extern char device_client_id[13];
-                const char *p = strstr((char *)rx_payload, "\"");
-                if (p) {
-                    const char *end = strchr(p + 1, '"');
-                    if (end && (end - p - 1) == 12) {
-                        char mac[13];
-                        memcpy(mac, p + 1, 12);
-                        mac[12] = '\0';
-                        if (strcmp(mac, device_client_id) == 0) {
-                            p = strchr(end + 1, '"');
-                            if (p) {
-                                end = strchr(p + 1, '"');
-                                if (end) {
-                                    size_t nlen = end - p - 1;
-                                    if (nlen > 0 && nlen < sizeof(cfg_station)) {
-                                        memcpy(cfg_station, p + 1, nlen);
-                                        cfg_station[nlen] = '\0';
-                                        tinygs_config_save_station(cfg_station);
-                                        LOG_INF("  → Renamed to: %s (saved, rebooting)", cfg_station);
-                                        k_msleep(500);
-                                        sys_reboot(SYS_REBOOT_COLD);
-                                    }
-                                }
-                            }
-                        } else {
-                            LOG_DBG("  → set_name: MAC mismatch");
-                        }
+                struct tinygs_name_msg name_msg;
+                if (tinygs_parse_set_name((char *)rx_payload, ret, &name_msg) == 0) {
+                    if (strcmp(name_msg.mac, device_client_id) == 0) {
+                        strncpy(cfg_station, name_msg.name, sizeof(cfg_station) - 1);
+                        cfg_station[sizeof(cfg_station) - 1] = '\0';
+                        tinygs_config_save_station(cfg_station);
+                        LOG_INF("  → Renamed to: %s (saved, rebooting)", cfg_station);
+                        k_msleep(500);
+                        sys_reboot(SYS_REBOOT_COLD);
+                    } else {
+                        LOG_DBG("  → set_name: MAC mismatch");
                     }
                 }
             } else if (strcmp(cmnd, "status") == 0) {
@@ -845,19 +796,10 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 }
                 LOG_INF("  → foff=%.0f Hz", (double)foff);
             } else if (strcmp(cmnd, "filter") == 0) {
-                /* Packet filter — JSON array of bytes to match in received packets.
-                 * Packets not matching the filter are silently dropped. */
-                const char *p = strchr((char *)rx_payload, '[');
-                if (p) {
-                    p++;
-                    tinygs_radio.filter_len = 0;
-                    while (*p && *p != ']' && tinygs_radio.filter_len < sizeof(tinygs_radio.filter)) {
-                        while (*p == ' ' || *p == ',') p++;
-                        if (*p == ']') break;
-                        tinygs_radio.filter[tinygs_radio.filter_len++] = (uint8_t)atoi(p);
-                        while (*p && *p != ',' && *p != ']') p++;
-                    }
-                }
+                int fcount = tinygs_parse_filter((char *)rx_payload, ret,
+                                                  tinygs_radio.filter,
+                                                  sizeof(tinygs_radio.filter));
+                tinygs_radio.filter_len = (fcount > 0) ? fcount : 0;
                 LOG_INF("  → filter: %d bytes", tinygs_radio.filter_len);
             } else if (strcmp(cmnd, "update") == 0) {
                 LOG_INF("  → OTA update not supported (UF2 bootloader)");
@@ -1435,6 +1377,9 @@ static bool lora_check_rx(void)
                 return true;
             }
         }
+
+        /* Notify display of packet reception */
+        tinygs_display_packet_rx(rssi, snr);
 
         /* Publish via MQTT if connected */
         if (app_state == STATE_MQTT_CONNECTED) {

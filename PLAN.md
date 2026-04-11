@@ -166,7 +166,8 @@ All Phase 1 objectives proven:
     - **Implemented:** begine, batch_conf, freq, sat, set_pos_prm, set_name (NVS+reboot), status, reset, tx (rejected), log, foff, filter, update (rejected), weblogin
     - **Stubs:** sleep/siesta (needs power mgmt), sat_pos_oled (needs display), frame/{num} (needs display)
     - **Not implemented:** beginp (server always sends begine), begin_lora/begin_fsk (begine handles), set_adv_prm/get_adv_prm (low priority)
-11. **[TODO] Evaluate cJSON or Zephyr json.h** to replace hand-rolled snprintf/strstr JSON.
+11. **[DONE] JSON parsing refactor:** Zephyr json.h (CONFIG_JSON_LIBRARY) for begine/set_name/filter parsing. Zero-allocation descriptor-based. snprintf output kept as-is.
+12. **[TODO] Add Zephyr ztest framework** for JSON parser unit tests. Replace on-target smoke tests with proper test suite.
 12. **[DONE] Power quick wins:** DCDC converter, 32kHz crystal (was RC), PM_DEVICE for SPI sleep states.
 13. **[TODO] SED mode + power gating:** Requires commissioning mode first (see Section 6.8). Plan:
     - Enable CONFIG_OPENTHREAD_MTD_SED + poll period toggling (fast for MQTT, slow for idle)
