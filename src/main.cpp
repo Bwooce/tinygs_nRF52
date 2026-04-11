@@ -1123,7 +1123,27 @@ static bool lora_check_rx(void)
     if (state == RADIOLIB_ERR_NONE) {
         LOG_INF("LoRa RX: %u bytes, RSSI=%.1f, SNR=%.1f, FreqErr=%.1f",
                 (unsigned)len, (double)rssi, (double)snr, (double)freq_err);
-        LOG_HEXDUMP_INF(data, MIN(len, 32), "Packet data:");
+
+        /* Apply packet filter if active.
+         * filter[0] = count of bytes to match
+         * filter[1] = byte position in packet to start matching
+         * filter[2..N] = expected byte values */
+        if (tinygs_radio.filter[0] > 0) {
+            uint8_t count = tinygs_radio.filter[0];
+            uint8_t start = tinygs_radio.filter[1];
+            bool filtered = false;
+            for (uint8_t i = 0; i < count && i + 2 < sizeof(tinygs_radio.filter); i++) {
+                if (start + i >= len || data[start + i] != tinygs_radio.filter[2 + i]) {
+                    filtered = true;
+                    break;
+                }
+            }
+            if (filtered) {
+                LOG_DBG("LoRa RX: filtered out (no match at offset %d)", start);
+                radio->startReceive();
+                return true;
+            }
+        }
 
         /* Publish via MQTT if connected */
         if (app_state == STATE_MQTT_CONNECTED) {
