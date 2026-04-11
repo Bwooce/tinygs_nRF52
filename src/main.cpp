@@ -524,6 +524,11 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         tinygs_radio.norad = (uint32_t)atoi(p + 8);
                         LOG_INF("  NORAD: %u", (unsigned)tinygs_radio.norad);
                     }
+                    /* Store raw payload as modem_conf for welcome echo */
+                    size_t conf_len = strlen((char *)rx_payload);
+                    if (conf_len < sizeof(tinygs_radio.modem_conf)) {
+                        memcpy(tinygs_radio.modem_conf, rx_payload, conf_len + 1);
+                    }
                     /* Restart reception */
                     radio->startReceive();
                     LOG_INF("  Radio reconfigured, listening");

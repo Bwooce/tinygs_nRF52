@@ -24,6 +24,7 @@ struct tinygs_radio_state tinygs_radio = {
     .cr = 5,
     .satellite = "",
     .norad = 0,
+    .modem_conf = "{}",
 };
 
 /* Shared buffers for topic and payload construction */
@@ -54,7 +55,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         "\"sat\":\"\","
         "\"ip\":\"%s\","
         "\"idfv\":\"NCS/Zephyr\","
-        "\"modem_conf\":\"{}\""
+        "\"modem_conf\":\"%s\""
         "}",
         (double)tinygs_station_lat,
         (double)tinygs_station_lon,
@@ -67,7 +68,8 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         (unsigned)free_mem,
         (unsigned)uptime_s,
         vbat_mv,
-        ip_str
+        ip_str,
+        tinygs_radio.modem_conf
     );
 }
 
@@ -357,6 +359,9 @@ void tinygs_handle_set_pos(const char *payload, size_t len)
                 (double)tinygs_station_lat,
                 (double)tinygs_station_lon,
                 (double)tinygs_station_alt);
+    } else if (count == 0) {
+        /* Server sends [null] when no position is configured — not an error */
+        LOG_DBG("set_pos_prm: no position set on server (null)");
     } else {
         LOG_WRN("set_pos_prm: expected 1 or 3 values, got %d", count);
     }

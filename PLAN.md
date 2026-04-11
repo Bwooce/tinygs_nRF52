@@ -132,7 +132,7 @@ All Phase 1 objectives proven:
 3.  **Interrupt-driven LoRa RX:** Use `k_work` workqueue attached to DIO1 GPIO callback. SX1262 init working — implement packet reception.
 4.  **NVS Config Persistence:** MQTT config changes saved to NVS (wear-leveled). FATFS config.json regenerated on reboot only.
 5.  **Power Management:** Implement connect/disconnect MQTT pattern based on measured timeout data. Thread SED mode for sleep (disabled in Phase 1 due to poll timing issues).
-6.  **Solar & Battery:** Read battery voltage via the T114 ADC and manage sleep cycles based on charge levels.
+6.  **Battery Voltage (ADC):** Read actual Vbat via the T114 ADC pin (currently hardcoded 3700mV). Wire into welcome/ping payloads. Identify the correct ADC channel and voltage divider ratio from the T114 schematic.
 7.  **Ongoing: RAM reduction** toward 240KB target (currently 253KB). Opportunities: picolibc, stack shrinking, OpenThread log level reduction.
 
 ### Phase 3: Peripherals & Polish

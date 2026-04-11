@@ -105,12 +105,13 @@ extern float tinygs_station_alt;
  * Used in send_rx and send_status to report actual radio state.
  */
 struct tinygs_radio_state {
-    float frequency;     /* MHz */
-    int   sf;            /* Spreading factor 5-12 */
-    float bw;            /* Bandwidth kHz */
-    int   cr;            /* Coding rate 5-8 */
-    char  satellite[32]; /* Current satellite name */
-    uint32_t norad;      /* NORAD catalog number */
+    float frequency;       /* MHz */
+    int   sf;              /* Spreading factor 5-12 */
+    float bw;              /* Bandwidth kHz */
+    int   cr;              /* Coding rate 5-8 */
+    char  satellite[32];   /* Current satellite name */
+    uint32_t norad;        /* NORAD catalog number */
+    char  modem_conf[384]; /* Last begine/batch_conf JSON — echoed in welcome */
 };
 extern struct tinygs_radio_state tinygs_radio;
 
