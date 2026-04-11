@@ -69,7 +69,3 @@
 #define MBEDTLS_PK_PARSE_C
 #endif
 
-/* Debug: find which feature is unavailable during TLS handshake */
-#ifndef MBEDTLS_DEBUG_C
-#define MBEDTLS_DEBUG_C
-#endif
