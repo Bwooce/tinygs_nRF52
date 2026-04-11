@@ -524,12 +524,79 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     radio->startReceive();
                     LOG_INF("  Radio reconfigured, listening");
                 }
+            } else if (strcmp(cmnd, "freq") == 0) {
+                /* Direct frequency set (MHz as number) */
+                float freq = strtof((char *)rx_payload, NULL);
+                if (radio && freq > 100.0f && freq < 1000.0f) {
+                    radio->setFrequency(freq);
+                    tinygs_radio.frequency = freq;
+                    radio->startReceive();
+                    LOG_INF("  → freq=%.4f MHz", (double)freq);
+                }
+            } else if (strcmp(cmnd, "sat") == 0) {
+                /* Select satellite — payload is JSON string with sat name */
+                const char *p = strstr((char *)rx_payload, "\"");
+                if (p) {
+                    const char *end = strchr(p + 1, '"');
+                    if (end && (end - p - 1) < (int)sizeof(tinygs_radio.satellite)) {
+                        memcpy(tinygs_radio.satellite, p + 1, end - p - 1);
+                        tinygs_radio.satellite[end - p - 1] = '\0';
+                        LOG_INF("  → satellite: %s", tinygs_radio.satellite);
+                    }
+                }
             } else if (strcmp(cmnd, "set_pos_prm") == 0) {
                 tinygs_handle_set_pos((char *)rx_payload, ret);
+            } else if (strcmp(cmnd, "set_name") == 0) {
+                /* Rename station: ["MAC", "new_name"]
+                 * Only apply if MAC matches our device. Needs NVS to persist. */
+                extern char device_client_id[13];
+                const char *p = strstr((char *)rx_payload, "\"");
+                if (p) {
+                    const char *end = strchr(p + 1, '"');
+                    if (end && (end - p - 1) == 12) {
+                        char mac[13];
+                        memcpy(mac, p + 1, 12);
+                        mac[12] = '\0';
+                        if (strcmp(mac, device_client_id) == 0) {
+                            /* Find second string (new name) */
+                            p = strchr(end + 1, '"');
+                            if (p) {
+                                end = strchr(p + 1, '"');
+                                if (end) {
+                                    char name[32];
+                                    size_t nlen = end - p - 1;
+                                    if (nlen < sizeof(name)) {
+                                        memcpy(name, p + 1, nlen);
+                                        name[nlen] = '\0';
+                                        LOG_INF("  → Rename requested: %s (needs NVS persist)", name);
+                                        /* TODO: persist to NVS, reconnect with new name */
+                                    }
+                                }
+                            }
+                        } else {
+                            LOG_DBG("  → set_name: MAC mismatch (%s != %s)", mac, device_client_id);
+                        }
+                    }
+                }
             } else if (strcmp(cmnd, "status") == 0) {
                 tinygs_send_status(client, MQTT_USERNAME, MQTT_CLIENT_ID);
+            } else if (strcmp(cmnd, "reset") == 0) {
+                LOG_WRN("  → Reset requested by server");
+                k_msleep(500);
+                sys_reboot(SYS_REBOOT_COLD);
+            } else if (strcmp(cmnd, "tx") == 0) {
+                LOG_INF("  → TX not supported (tx=false)");
             } else if (strcmp(cmnd, "log") == 0) {
                 LOG_INF("  → Server: %s", (char *)rx_payload);
+            } else if (strcmp(cmnd, "sleep") == 0 || strcmp(cmnd, "siesta") == 0) {
+                LOG_INF("  → Sleep requested (not implemented yet)");
+            } else if (strcmp(cmnd, "foff") == 0) {
+                /* Frequency offset in Hz */
+                LOG_INF("  → Freq offset: %s Hz (TODO: apply)", (char *)rx_payload);
+            } else if (strcmp(cmnd, "filter") == 0) {
+                LOG_INF("  → Packet filter: %s (TODO: apply)", (char *)rx_payload);
+            } else if (strcmp(cmnd, "update") == 0) {
+                LOG_INF("  → OTA update not supported (UF2 bootloader)");
             } else {
                 LOG_INF("  → Unhandled command: %s", cmnd);
             }

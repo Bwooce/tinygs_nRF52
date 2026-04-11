@@ -144,15 +144,19 @@ commissioning. Items marked **[build]** are compile-time only (prj.conf).
 | Spreading factor | **[server]** | Hardcoded 10 | 7-12 |
 | Coding rate | **[server]** | Hardcoded 5 | 5-8 |
 | Bandwidth (kHz) | **[server]** | Hardcoded 250.0 | |
-| Satellite name | **[server]** | Empty string | NORAD ID + name |
+| Satellite name | **[server]** | tinygs_radio.satellite | Via begine/batch_conf/sat commands |
+| NORAD ID | **[server]** | tinygs_radio.norad | Catalog number from server |
+| Freq offset (Hz) | **[server]** | Not stored | Via foff command (TODO) |
 | Sync word | **[server]** | Default 18 | |
 | CRC settings | **[server]** | Defaults | sw CRC, poly, init, etc. |
+| Packet filter | **[server]** | Not stored | Via filter command (TODO) |
 | modem_conf | **[server]** | Hardcoded "{}" | Last begine/batch_conf JSON payload; echoed in welcome |
 
 ### Operational Settings
 | Item | Source | Current Location | Notes |
 |------|--------|-----------------|-------|
-| MQTT keepalive (s) | **[build]** | prj.conf CONFIG_MQTT_KEEPALIVE=300 | Also sets TinyGS ping interval |
+| Station name | **[server]** | MQTT_CLIENT_ID (hardcoded) | Via set_name command; needs NVS persist + reconnect |
+| MQTT keepalive (s) | **[build]** | prj.conf CONFIG_MQTT_KEEPALIVE=600 | Also sets TinyGS ping interval; 600s tested |
 | TX allowed | **[user]** | Hardcoded false | Currently always false |
 | Low power mode | **[user]** | Not implemented | Phase 3 SED sleep config |
 | OT log level | **[build]** | prj.conf OPENTHREAD_LOG_LEVEL_CRIT | CRIT/WARN/NOTE/INFO/DEBG |
