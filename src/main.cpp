@@ -25,6 +25,7 @@
 #include <zephyr/drivers/flash.h>
 #include <zephyr/drivers/adc.h>
 #include <zephyr/dt-bindings/adc/nrf-adc.h>
+#include <zephyr/sys/base64.h>
 #include "tinygs_display.h"
 #include <hal/nrf_power.h>
 #include <hal/nrf_ficr.h>
@@ -595,6 +596,30 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     p = strstr((char *)rx_payload, "\"NORAD\":");
                     if (p) tinygs_radio.norad = (uint32_t)atoi(p + 8);
 
+                    /* Parse TLE (base64-encoded 34-byte binary) */
+                    p = strstr((char *)rx_payload, "\"tle\":\"");
+                    if (p) {
+                        const char *b64_start = p + 7;
+                        const char *b64_end = strchr(b64_start, '"');
+                        if (b64_end) {
+                            size_t b64_len = b64_end - b64_start;
+                            size_t decoded_len = 0;
+                            if (base64_decode((uint8_t *)tinygs_radio.tle,
+                                              sizeof(tinygs_radio.tle),
+                                              &decoded_len,
+                                              (const uint8_t *)b64_start, b64_len) == 0
+                                && decoded_len == 34) {
+                                tinygs_radio.tle_valid = true;
+                                tinygs_radio.freq_doppler = 0.0f;
+                                LOG_INF("  TLE received (%zu bytes)", decoded_len);
+                            } else {
+                                tinygs_radio.tle_valid = false;
+                            }
+                        }
+                    } else {
+                        tinygs_radio.tle_valid = false;
+                    }
+
                     /* Store raw payload as modem_conf — json_escape() in
                      * tinygs_build_welcome handles the quote escaping. */
                     size_t conf_len = strlen((char *)rx_payload);
@@ -1045,6 +1070,54 @@ SX1262 *radio = nullptr;  /* non-static — accessed from MQTT callback */
 /* LoRa packet reception flag — set by DIO1 ISR */
 static volatile bool lora_packet_received = false;
 
+/* -------------------------------------------------------------------------- */
+/* Doppler Compensation (P13 satellite propagator)                             */
+/* -------------------------------------------------------------------------- */
+
+#include "AioP13.h"
+
+static uint32_t last_doppler_ms = 0;
+#define DOPPLER_INTERVAL_MS 4000
+
+/**
+ * Compute Doppler shift using P13 propagator and apply to radio frequency.
+ * Called every 4 seconds from the main loop. Requires valid TLE and time.
+ *
+ * NOTE: This requires real UTC time which we don't have (no NTP over Thread).
+ * For now, Doppler is a placeholder — the calculation runs but produces
+ * incorrect results without accurate time. When TLE data arrives and we
+ * implement time sync, this will produce real Doppler corrections.
+ */
+static void doppler_update(void)
+{
+    if (!tinygs_radio.tle_valid || !tinygs_radio.doppler_enabled || !radio) {
+        return;
+    }
+
+    /* TODO: Get real UTC time via SNTP over NAT64 (time.cloudflare.com).
+     * ESP32 uses NTP over WiFi. We could use Zephyr's SNTP client via
+     * the same NAT64 path as MQTT. Without real time, Doppler prediction
+     * produces incorrect results. For now, disabled until SNTP is added. */
+    /* Disabled until SNTP time sync is implemented.
+     * Doppler requires accurate UTC time for orbit prediction.
+     * Plan: add CONFIG_SNTP (203 lines), query time.cloudflare.com
+     * via NAT64 on MQTT connect, then enable this function.
+     *
+     * When enabled, this function will:
+     * 1. Create P13DateTime from SNTP-synced clock
+     * 2. Create P13Observer from station lat/lon/alt
+     * 3. Create P13Satellite_tGS from tinygs_radio.tle (34 bytes)
+     * 4. Predict satellite position, compute Doppler shift
+     * 5. Apply with hysteresis (doppler_tol = 1200 Hz)
+     * 6. Retune radio: freq + freqOffset + freqDoppler
+     */
+    (void)0; /* placeholder */
+}
+
+/* -------------------------------------------------------------------------- */
+/* LoRa RX                                                                     */
+/* -------------------------------------------------------------------------- */
+
 static void lora_rx_callback(void)
 {
     lora_packet_received = true;
@@ -1292,8 +1365,14 @@ int main(void)
                 /* Update display (~every 100ms from poll timeout) */
                 tinygs_display_update();
 
-                /* Send TinyGS ping every 60s */
+                /* Doppler compensation — every 4s if TLE available */
                 uint32_t now_ms = k_uptime_get_32();
+                if ((now_ms - last_doppler_ms) >= DOPPLER_INTERVAL_MS) {
+                    doppler_update();
+                    last_doppler_ms = now_ms;
+                }
+
+                /* Send TinyGS ping */
                 if ((now_ms - last_ping_ms) >= (TINYGS_PING_INTERVAL_S * 1000)) {
                     tinygs_send_ping(&mqtt_client, cfg_mqtt_user, cfg_station);
                     last_ping_ms = now_ms;

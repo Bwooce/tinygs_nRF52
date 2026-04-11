@@ -58,12 +58,20 @@ float tinygs_station_alt = 50.0f;
 /* Radio state — updated by begine/batch_conf, used in send_rx/send_status */
 struct tinygs_radio_state tinygs_radio = {
     .frequency = 436.703f,
+    .freq_offset = 0.0f,
+    .freq_doppler = 0.0f,
     .sf = 10,
     .bw = 250.0f,
     .cr = 5,
     .satellite = "",
     .norad = 0,
-    .modem_conf = "{}", /* Must be valid JSON string content — no unescaped quotes */
+    .tle = {0},
+    .tle_valid = false,
+    .doppler_enabled = true,
+    .doppler_tol = 1200.0f, /* Hz — retune when delta exceeds this */
+    .filter = {0},
+    .filter_len = 0,
+    .modem_conf = "{}",
 };
 
 /* Shared buffers for topic and payload construction */

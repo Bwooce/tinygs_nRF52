@@ -107,11 +107,16 @@ extern float tinygs_station_alt;
 struct tinygs_radio_state {
     float frequency;       /* MHz */
     float freq_offset;     /* Hz — applied on top of frequency from foff command */
+    float freq_doppler;    /* Hz — current Doppler correction */
     int   sf;              /* Spreading factor 5-12 */
     float bw;              /* Bandwidth kHz */
     int   cr;              /* Coding rate 5-8 */
     char  satellite[32];   /* Current satellite name */
     uint32_t norad;        /* NORAD catalog number */
+    uint8_t tle[34];       /* Binary TLE from server (base64-decoded) */
+    bool  tle_valid;       /* True if TLE data was received */
+    bool  doppler_enabled; /* True if Doppler compensation is active */
+    float doppler_tol;     /* Hz — hysteresis threshold (default 1200) */
     uint8_t filter[8];     /* Packet filter bytes from server */
     uint8_t filter_len;    /* Number of active filter bytes (0 = no filter) */
     char  modem_conf[384]; /* Last begine/batch_conf JSON — echoed in welcome */
