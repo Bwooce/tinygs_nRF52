@@ -15,7 +15,7 @@
 | Username | Per-station credential from TinyGS dashboard |
 | Password | Per-station credential from TinyGS dashboard |
 | Max packet size | 1000 bytes |
-| Keep-alive | Configurable (CONFIG_MQTT_KEEPALIVE, tested up to 600s) |
+| Keep-alive | Configurable via CONFIG_MQTT_KEEPALIVE. Tested: 300s and 600s both work over NAT64. 600s (10 min) is the practical maximum — longer is unnecessary since the server sends radio config updates frequently. |
 | TLS | Required. TinyGS custom CA + ISRG Root X1 (see `certs.h`) |
 
 ### 1.1 Client ID vs Station Name

@@ -145,14 +145,20 @@ All Phase 1 objectives proven:
 
 ## 6. Architectural Risks & Constraints
 
-### 6.1 Persistent TLS over Thread SED — HIGH RISK
+### 6.1 Persistent TLS over Thread SED — MEDIUM RISK (downgraded)
 *   **The Problem:** Maintaining a persistent TCP/TLS connection for MQTT over a Thread Sleepy End Device (SED).
-*   **The Risk:** The Border Router's NAT64 state tables timeout after 120-300s. MQTT brokers behind load balancers send TCP RST after 60-90s idle. The device must send MQTT PINGREQ faster than both timeouts, forcing the 802.15.4 radio to wake every 30-60s — destroying the 11µA sleep target.
+*   **Measured Results (2026-04-11):**
+    - **300s keepalive: WORKS** — confirmed with 2+ consecutive PINGRESPs via nat64.net NAT64
+    - **600s keepalive: WORKS** — confirmed with PINGRESP at 600s connected
+    - NAT64 conntrack timeout is > 600s for established TCP connections
+    - TinyGS broker does not drop idle connections at 600s
+    - CONFIG_MQTT_KEEPALIVE=600 currently deployed (configurable in prj.conf)
+*   **Risk downgraded:** The original concern was NAT64 timeouts at 120-300s. Actual measured tolerance is >600s, giving 10x fewer wakeups than the feared 60s minimum.
 *   **Mitigations:**
-    1.  **Measure during Phase 1:** Log actual NAT64 timeout and broker idle timeout by varying MQTT keep-alive intervals.
-    2.  **Connect/disconnect pattern:** Connect → publish telemetry → subscribe → wait 30s for commands → disconnect → deep sleep for N minutes. Trades latency for power. TinyGS satellite passes are predictable — wake near pass windows only.
+    1.  ~~**Measure during Phase 1:**~~ **DONE** — 600s confirmed working.
+    2.  **Connect/disconnect pattern:** Still useful for deep sleep. Connect → publish → subscribe → wait for commands → disconnect → deep sleep for N minutes. See `fgervais/project-nrf-thread-switch` for SED latency toggling reference pattern.
     3.  **TLS session resumption:** Enable `CONFIG_MBEDTLS_SSL_SESSION_TICKETS` to cache session state. Reconnection avoids the expensive full handshake (~50KB heap spike).
-    4.  **Investigate MQTT 5.0 session expiry** on mqtt.tinygs.com — lets the broker hold subscriptions across disconnects.
+    4.  ~~**Investigate MQTT 5.0 session expiry**~~ — mqtt.tinygs.com uses MQTT 3.1.1 only.
 
 ### 6.2 USB MSC + FATFS Concurrent Access — MEDIUM RISK
 *   **The Problem:** USB MSC is a block-level protocol. The host OS assumes exclusive control over FAT sectors when mounted. Writing to FATFS from firmware while the host has the drive mounted will corrupt the filesystem.
