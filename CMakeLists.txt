@@ -23,6 +23,7 @@ target_sources(app PRIVATE
     src/hal/ZephyrHal.cpp
     src/hal/test_ZephyrHal.cpp
     src/tinygs_protocol.cpp
+    src/tinygs_config.cpp
 )
 
 # App Include Directories

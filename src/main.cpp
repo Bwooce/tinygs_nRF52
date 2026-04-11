@@ -28,6 +28,7 @@
 #include <RadioLib.h>
 #include "ZephyrHal.h"
 #include "tinygs_protocol.h"
+#include "tinygs_config.h"
 
 LOG_MODULE_REGISTER(tinygs_nrf52, LOG_LEVEL_DBG);
 
@@ -76,10 +77,7 @@ static volatile bool thread_attached = false;
 #include "tinygs_ca_cert.h"   /* TinyGS server cert for TLS cipher suite config */
 #define MQTT_TLS_SEC_TAG     1
 
-/* Runtime config — defaults from mqtt_credentials.h, overridden by config.json */
-static char cfg_station[32] = "tinygs_nrf52_poc";
-static char cfg_mqtt_user[64] = MQTT_USERNAME;
-static char cfg_mqtt_pass[64] = MQTT_PASSWORD;
+/* Runtime config variables are in tinygs_config.cpp, declared in tinygs_config.h */
 
 /* MQTT client and buffers */
 static struct mqtt_client mqtt_client;
@@ -524,10 +522,11 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         tinygs_radio.norad = (uint32_t)atoi(p + 8);
                         LOG_INF("  NORAD: %u", (unsigned)tinygs_radio.norad);
                     }
-                    /* Store raw payload as modem_conf for welcome echo */
+                    /* Store raw payload as modem_conf for welcome echo + NVS */
                     size_t conf_len = strlen((char *)rx_payload);
                     if (conf_len < sizeof(tinygs_radio.modem_conf)) {
                         memcpy(tinygs_radio.modem_conf, rx_payload, conf_len + 1);
+                        tinygs_config_save_modem_conf(tinygs_radio.modem_conf);
                     }
                     /* Restart reception */
                     radio->startReceive();
@@ -1091,10 +1090,16 @@ int main(void)
         k_msleep(100);
     }
 
-    LOG_INF("=== TinyGS nRF52 Phase 1: MQTT-TLS over Thread ===");
+    LOG_INF("=== TinyGS nRF52 Phase 2: MQTT-TLS over Thread ===");
+
+    /* Load persistent config from NVS (wear-leveled flash).
+     * config.json values are loaded first (above), then NVS overrides.
+     * NVS wins over config.json for items that were saved at runtime. */
+    tinygs_config_init();
+
     log_heap_usage("boot");
     init_openthread();
-    init_radio();  /* Test SX1262 with GPIO inversion fix */
+    init_radio();
 
     int retry_count = 0;
     int mqtt_poll_fd_count = 0;

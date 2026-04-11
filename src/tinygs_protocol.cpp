@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "tinygs_config.h"
 #include <zephyr/sys/base64.h>
 #include <zephyr/net/openthread.h>
 #include <openthread/thread.h>
@@ -350,11 +351,13 @@ void tinygs_handle_set_pos(const char *payload, size_t len)
 
     if (count == 1) {
         tinygs_station_alt = vals[0];
+        tinygs_config_save_location(tinygs_station_lat, tinygs_station_lon, tinygs_station_alt);
         LOG_INF("Position updated: alt=%.1f", (double)tinygs_station_alt);
     } else if (count == 3) {
         tinygs_station_lat = vals[0];
         tinygs_station_lon = vals[1];
         tinygs_station_alt = vals[2];
+        tinygs_config_save_location(tinygs_station_lat, tinygs_station_lon, tinygs_station_alt);
         LOG_INF("Position updated: lat=%.4f lon=%.4f alt=%.1f",
                 (double)tinygs_station_lat,
                 (double)tinygs_station_lon,
