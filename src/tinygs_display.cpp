@@ -17,7 +17,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/display.h>
 #include <zephyr/drivers/gpio.h>
-#include <zephyr/display/cfb.h>
+/* CFB doesn't support RGB565 — using display_write() directly */
 #include <zephyr/logging/log.h>
 #include <stdio.h>
 #include <string.h>
@@ -41,49 +41,15 @@ static const struct gpio_dt_spec backlight = {
     .dt_flags = GPIO_ACTIVE_HIGH,
 };
 
-static void draw_page_station(void)
-{
-    char buf[40];
-    cfb_print(disp_dev, "TinyGS nRF52", 0, 0);
-    snprintf(buf, sizeof(buf), "Station: %s", cfg_station);
-    cfb_print(disp_dev, buf, 0, 16);
-    snprintf(buf, sizeof(buf), "Uptime: %us", (unsigned)(k_uptime_get_32() / 1000));
-    cfb_print(disp_dev, buf, 0, 32);
-    snprintf(buf, sizeof(buf), "Vbat: %dmV", read_vbat_mv());
-    cfb_print(disp_dev, buf, 0, 48);
-    snprintf(buf, sizeof(buf), "Version: %u", (unsigned)TINYGS_VERSION);
-    cfb_print(disp_dev, buf, 0, 64);
-}
+/* TODO: Implement text rendering for RGB565 display.
+ * CFB only supports monochrome. Options:
+ * - Simple 8x16 bitmap font renderer (~100 lines, minimal flash)
+ * - LVGL (full featured but heavy — ~50-100KB flash)
+ * For now, pages are defined but not rendered. */
 
-static void draw_page_satellite(void)
-{
-    char buf[40];
-    if (tinygs_radio.satellite[0]) {
-        cfb_print(disp_dev, tinygs_radio.satellite, 0, 0);
-    } else {
-        cfb_print(disp_dev, "No satellite", 0, 0);
-    }
-    snprintf(buf, sizeof(buf), "Freq: %.4f MHz", (double)tinygs_radio.frequency);
-    cfb_print(disp_dev, buf, 0, 16);
-    snprintf(buf, sizeof(buf), "SF:%d BW:%.1f CR:%d",
-             tinygs_radio.sf, (double)tinygs_radio.bw, tinygs_radio.cr);
-    cfb_print(disp_dev, buf, 0, 32);
-    snprintf(buf, sizeof(buf), "NORAD: %u", (unsigned)tinygs_radio.norad);
-    cfb_print(disp_dev, buf, 0, 48);
-    cfb_print(disp_dev, "Listening...", 0, 64);
-}
-
-static void draw_page_system(void)
-{
-    char buf[40];
-    cfb_print(disp_dev, "System Status", 0, 0);
-    cfb_print(disp_dev, "Thread: Child", 0, 16);
-    cfb_print(disp_dev, "MQTT: Connected", 0, 32);
-    snprintf(buf, sizeof(buf), "Vbat: %dmV", read_vbat_mv());
-    cfb_print(disp_dev, buf, 0, 48);
-    snprintf(buf, sizeof(buf), "Keepalive: %ds", CONFIG_MQTT_KEEPALIVE);
-    cfb_print(disp_dev, buf, 0, 64);
-}
+static void draw_page_station(void) { (void)disp_dev; }
+static void draw_page_satellite(void) { (void)disp_dev; }
+static void draw_page_system(void) { (void)disp_dev; }
 
 bool tinygs_display_init(void)
 {
@@ -99,20 +65,14 @@ bool tinygs_display_init(void)
         gpio_pin_set_dt(&backlight, 1);
     }
 
-    if (cfb_framebuffer_init(disp_dev) != 0) {
-        LOG_ERR("CFB init failed");
-        disp_dev = NULL;
-        return false;
-    }
-
-    cfb_framebuffer_set_font(disp_dev, 0);
+    /* CFB doesn't support RGB565 color displays. For now, just turn on
+     * the backlight and blanking. Text rendering needs a custom font
+     * renderer or LVGL. Display update is a no-op until then. */
     display_blanking_off(disp_dev);
-    display_active = true;
+    display_active = false; /* Disabled until font renderer is implemented */
     last_page_switch_ms = k_uptime_get_32();
 
-    LOG_INF("Display: ST7789V ready, CFB %dx%d",
-            cfb_get_display_parameter(disp_dev, CFB_DISPLAY_WIDTH),
-            cfb_get_display_parameter(disp_dev, CFB_DISPLAY_HEIGH));
+    LOG_INF("Display: ST7789V 240x135 ready (font rendering TODO)");
     return true;
 }
 
@@ -126,15 +86,11 @@ void tinygs_display_update(void)
         last_page_switch_ms = now;
     }
 
-    cfb_framebuffer_clear(disp_dev, false);
-
     switch (current_page) {
     case 0: draw_page_station(); break;
     case 1: draw_page_satellite(); break;
     case 2: draw_page_system(); break;
     }
-
-    cfb_framebuffer_finalize(disp_dev);
 }
 
 void tinygs_display_off(void)
