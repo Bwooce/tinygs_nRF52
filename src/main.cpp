@@ -476,6 +476,24 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 tinygs_subscribe(client, cfg_mqtt_user, cfg_station);
                 tinygs_send_welcome(client, cfg_mqtt_user, cfg_station,
                                     device_client_id);
+
+                /* Request a web login URL — lets user configure auto-tune etc
+                 * on the TinyGS website. URL arrives via cmnd/weblogin. */
+                {
+                    static char wl_topic[128];
+                    tinygs_build_topic(wl_topic, sizeof(wl_topic),
+                                       TINYGS_TOPIC_TELE, "get_weblogin",
+                                       cfg_mqtt_user, cfg_station);
+                    struct mqtt_publish_param wl = {
+                        .message = {
+                            .topic = { .qos = MQTT_QOS_0_AT_MOST_ONCE },
+                            .payload = { .data = (uint8_t *)"1", .len = 1 },
+                        },
+                    };
+                    wl.message.topic.topic.utf8 = (uint8_t *)wl_topic;
+                    wl.message.topic.topic.size = strlen(wl_topic);
+                    mqtt_publish(client, &wl);
+                }
             }
 
             app_state = STATE_MQTT_CONNECTED;
@@ -669,6 +687,9 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 LOG_INF("  → Packet filter: %s (TODO: apply)", (char *)rx_payload);
             } else if (strcmp(cmnd, "update") == 0) {
                 LOG_INF("  → OTA update not supported (UF2 bootloader)");
+            } else if (strcmp(cmnd, "weblogin") == 0) {
+                LOG_INF("  *** TinyGS Web Login URL: %s", (char *)rx_payload);
+                LOG_INF("  *** Open this URL to configure auto-tune and other settings");
             } else {
                 LOG_INF("  → Unhandled command: %s", cmnd);
             }
