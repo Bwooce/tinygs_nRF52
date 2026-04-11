@@ -27,6 +27,7 @@
 #include <zephyr/dt-bindings/adc/nrf-adc.h>
 #include <zephyr/sys/base64.h>
 #include <zephyr/drivers/watchdog.h>
+#include <zephyr/drivers/led_strip.h>
 #include <openthread/sntp.h>
 #include <time.h>
 #include "tinygs_display.h"
@@ -159,6 +160,47 @@ static void watchdog_feed(void)
     if (wdt_channel_id >= 0) {
         wdt_feed(wdt_dev, wdt_channel_id);
     }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Status LED (green, P1.03, active low)                                       */
+/* -------------------------------------------------------------------------- */
+
+static const struct gpio_dt_spec status_led = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+
+static const struct device *led_strip = DEVICE_DT_GET_OR_NULL(DT_ALIAS(led_strip));
+static struct led_rgb leds[2] = {{0}, {0}};
+
+static void led_init(void)
+{
+    if (device_is_ready(status_led.port)) {
+        gpio_pin_configure_dt(&status_led, GPIO_OUTPUT_INACTIVE);
+    }
+    if (led_strip && !device_is_ready(led_strip)) {
+        led_strip = NULL;
+    }
+}
+
+static void led_set(bool on)
+{
+    if (device_is_ready(status_led.port)) {
+        gpio_pin_set_dt(&status_led, on ? 1 : 0);
+    }
+}
+
+/* Set NeoPixel colors — LED0 = status, LED1 = activity */
+static void neopixel_set(uint8_t r0, uint8_t g0, uint8_t b0,
+                          uint8_t r1, uint8_t g1, uint8_t b1)
+{
+    if (!led_strip) return;
+    leds[0].r = r0; leds[0].g = g0; leds[0].b = b0;
+    leds[1].r = r1; leds[1].g = g1; leds[1].b = b1;
+    led_strip_update_rgb(led_strip, leds, 2);
+}
+
+static void neopixel_off(void)
+{
+    neopixel_set(0, 0, 0, 0, 0, 0);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1346,6 +1388,8 @@ static bool lora_check_rx(void)
     float freq_err = radio->getFrequencyError();
 
     if (state == RADIOLIB_ERR_NONE) {
+        /* Flash LED1 white on packet RX */
+        neopixel_set(0, 10, 0,  30, 30, 30);
         LOG_INF("LoRa RX: %u bytes, RSSI=%.1f, SNR=%.1f, FreqErr=%.1f",
                 (unsigned)len, (double)rssi, (double)snr, (double)freq_err);
 
@@ -1381,8 +1425,9 @@ static bool lora_check_rx(void)
         LOG_ERR("LoRa readData failed: %d", state);
     }
 
-    /* Restart reception */
+    /* Restart reception, turn off RX flash */
     radio->startReceive();
+    neopixel_set(0, 10, 0,  0, 0, 0); /* Back to green status, LED1 off */
     return true;
 }
 
@@ -1428,6 +1473,7 @@ int main(void)
     tinygs_config_init();
     tinygs_display_init();
     watchdog_init();
+    led_init();
     init_radio();
 
     int retry_count = 0;
@@ -1438,6 +1484,8 @@ int main(void)
         switch (app_state) {
 
         case STATE_WAIT_THREAD:
+            /* Blue blink while waiting for Thread */
+            neopixel_set(0, 0, (k_uptime_get_32() / 500) % 2 ? 20 : 0,  0, 0, 0);
             if (thread_attached) {
                 log_heap_usage("thread_attached");
                 LOG_INF("--- Thread attached, waiting 5s for routing to stabilize ---");
@@ -1500,6 +1548,8 @@ int main(void)
         case STATE_MQTT_CONNECTED: {
             log_heap_usage("mqtt_connected");
             LOG_INF("=== MQTT-TLS CONNECTION SUCCESSFUL ===");
+            neopixel_set(0, 10, 0,  0, 0, 0); /* Green = connected */
+            led_set(true);
 
             /* Sync time via SNTP — needed for Doppler compensation */
             if (!time_synced) {
@@ -1542,6 +1592,8 @@ int main(void)
         }
 
         case STATE_ERROR:
+            neopixel_set(20, 0, 0,  0, 0, 0); /* Red = error */
+            led_set(false);
             LOG_ERR("Error state. Retrying in 30s...");
             k_msleep(30000);
             app_state = thread_attached ? STATE_DNS_RESOLVE : STATE_WAIT_THREAD;
