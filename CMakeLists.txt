@@ -18,9 +18,10 @@ zephyr_library_sources(${RADIOLIB_SRCS})
 zephyr_library_include_directories(lib/RadioLib/src)
 
 # Application Sources
-target_sources(app PRIVATE 
+target_sources(app PRIVATE
     src/main.cpp
     src/hal/ZephyrHal.cpp
+    src/tinygs_protocol.cpp
 )
 
 # App Include Directories

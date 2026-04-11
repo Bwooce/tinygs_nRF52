@@ -1,0 +1,84 @@
+#ifndef TINYGS_PROTOCOL_H
+#define TINYGS_PROTOCOL_H
+
+/*
+ * TinyGS MQTT Protocol Implementation
+ * Reverse-engineered from ESP32 TinyGS source (github.com/G4lile0/tinyGS)
+ * See docs/TINYGS_MQTT_PROTOCOL.md for full specification.
+ */
+
+#include <zephyr/net/mqtt.h>
+#include <zephyr/logging/log.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Topic templates — %user% and %station% are replaced at runtime */
+#define TINYGS_TOPIC_GLOBAL   "tinygs/global/#"
+#define TINYGS_TOPIC_CMND     "tinygs/%s/%s/cmnd/#"
+#define TINYGS_TOPIC_TELE     "tinygs/%s/%s/tele/%s"
+#define TINYGS_TOPIC_STAT     "tinygs/%s/%s/stat/%s"
+
+/* Sub-topics */
+#define TINYGS_TELE_WELCOME   "welcome"
+#define TINYGS_TELE_PING      "ping"
+#define TINYGS_TELE_RX        "rx"
+#define TINYGS_STAT_STATUS    "status"
+
+/* Version info for welcome message */
+#define TINYGS_VERSION        "nrf52_0.1.0"
+#define TINYGS_GIT_VERSION    "tinygs_nRF52"
+#define TINYGS_CHIP           "nRF52840"
+#define TINYGS_BOARD          255  /* Custom/unknown board ID */
+#define TINYGS_RADIO_CHIP     6    /* SX1262 */
+
+/* Ping interval */
+#define TINYGS_PING_INTERVAL_S  60
+
+/*
+ * Build a topic string. Caller provides buffer.
+ * Returns length written (excluding null terminator).
+ */
+static inline int tinygs_build_topic(char *buf, size_t buflen,
+                                      const char *tmpl, const char *subtopic,
+                                      const char *user, const char *station)
+{
+    return snprintf(buf, buflen, tmpl, user, station, subtopic);
+}
+
+/*
+ * Build the welcome JSON payload.
+ * Returns length written.
+ */
+int tinygs_build_welcome(char *buf, size_t buflen,
+                          const char *mac, float vbat, uint32_t free_mem,
+                          uint32_t uptime_s);
+
+/*
+ * Build the ping JSON payload.
+ * Returns length written.
+ */
+int tinygs_build_ping(char *buf, size_t buflen,
+                       float vbat, uint32_t free_mem, uint32_t min_mem,
+                       int radio_error, float inst_rssi);
+
+/*
+ * Subscribe to TinyGS MQTT topics.
+ * Must be called after MQTT CONNACK.
+ */
+int tinygs_subscribe(struct mqtt_client *client,
+                      const char *user, const char *station);
+
+/*
+ * Send the welcome message.
+ */
+int tinygs_send_welcome(struct mqtt_client *client,
+                         const char *user, const char *station,
+                         const char *mac);
+
+/*
+ * Send a ping message.
+ */
+int tinygs_send_ping(struct mqtt_client *client,
+                      const char *user, const char *station);
+
+#endif /* TINYGS_PROTOCOL_H */

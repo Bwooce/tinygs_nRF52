@@ -26,6 +26,7 @@
 #include <mbedtls/debug.h>
 #include <RadioLib.h>
 #include "ZephyrHal.h"
+#include "tinygs_protocol.h"
 
 LOG_MODULE_REGISTER(tinygs_nrf52, LOG_LEVEL_DBG);
 
@@ -393,6 +394,14 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
         if (evt->result == 0) {
             mqtt_connected_uptime_ms = now;
             LOG_INF("MQTT CONNECTED to %s:%d", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
+
+            /* Subscribe to TinyGS topics */
+            tinygs_subscribe(client, MQTT_USERNAME, MQTT_CLIENT_ID);
+
+            /* Send welcome message — announces us to the TinyGS server */
+            tinygs_send_welcome(client, MQTT_USERNAME, MQTT_CLIENT_ID,
+                                MQTT_CLIENT_ID);
+
             app_state = STATE_MQTT_CONNECTED;
         } else {
             LOG_ERR("MQTT CONNACK error: %d", evt->result);
@@ -779,21 +788,31 @@ int main(void)
             }
             break;
 
-        case STATE_MQTT_CONNECTED:
+        case STATE_MQTT_CONNECTED: {
             log_heap_usage("mqtt_connected");
             LOG_INF("=== MQTT-TLS CONNECTION SUCCESSFUL ===");
-            LOG_INF("Phase 1 PoC: TLS over Thread NAT64 is working!");
 
-            /* Keep connection alive */
+            /* TinyGS main loop — process MQTT + send periodic pings */
+            uint32_t last_ping_ms = k_uptime_get_32();
+
             while (app_state == STATE_MQTT_CONNECTED) {
                 int rc = zsock_poll(&mqtt_poll_fd, mqtt_poll_fd_count, 1000);
                 if (rc > 0) {
                     mqtt_input(&mqtt_client);
                 }
                 mqtt_live(&mqtt_client);
+
+                /* Send TinyGS ping every 60s */
+                uint32_t now_ms = k_uptime_get_32();
+                if ((now_ms - last_ping_ms) >= (TINYGS_PING_INTERVAL_S * 1000)) {
+                    tinygs_send_ping(&mqtt_client, MQTT_USERNAME, MQTT_CLIENT_ID);
+                    last_ping_ms = now_ms;
+                }
+
                 k_msleep(1000);
             }
             break;
+        }
 
         case STATE_ERROR:
             LOG_ERR("Error state. Retrying in 30s...");
