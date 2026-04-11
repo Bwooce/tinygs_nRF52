@@ -28,10 +28,11 @@ target_sources(app PRIVATE
     src/tinygs_config.cpp
     src/tinygs_display.cpp
     src/font8x16.c
+    lib/AioP13/src/AioP13.cpp
 )
 
 # App Include Directories
-target_include_directories(app PRIVATE src/hal lib/RadioLib/src lib/ArduinoJson/src)
+target_include_directories(app PRIVATE src/hal lib/RadioLib/src lib/ArduinoJson/src lib/AioP13/src)
 
 # mbedTLS user config (for RSA/PKCS1 defines not exposed via NCS PSA Kconfig)
 # This must be a global include so nrf_security's mbedtls compilation can find it

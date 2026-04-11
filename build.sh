@@ -44,3 +44,17 @@ if [[ "$1" == "--ram-report" ]] && [ -f "$ELF" ] && [ -x "$NM" ]; then
     "$NM" --size-sort -r "$ELF" | grep -i " [bB] " | awk '{sum += strtonum("0x"$1)} END {printf "BSS (zero-init):  %d bytes\n", sum}'
     "$NM" --size-sort -r "$ELF" | grep -i " [dD] " | awk '{sum += strtonum("0x"$1)} END {printf "Data (init):      %d bytes\n", sum}'
 fi
+
+# Flash report — show top code and rodata consumers
+if [[ "$1" == "--flash-report" ]] && [ -f "$ELF" ] && [ -x "$NM" ]; then
+    echo ""
+    echo "=== Flash Report: Top 30 code (.text) symbols ==="
+    "$NM" --size-sort -r "$ELF" | grep -i " [tT] " | head -30
+    echo ""
+    echo "=== Flash Report: Top 30 const data (.rodata) symbols ==="
+    "$NM" --size-sort -r "$ELF" | grep -i " [rR] " | head -30
+    echo ""
+    echo "=== Flash Report: Summary by section ==="
+    "$NM" --size-sort -r "$ELF" | grep -i " [tT] " | awk '{sum += strtonum("0x"$1)} END {printf "Text (code):   %d bytes (%.0fKB)\n", sum, sum/1024}'
+    "$NM" --size-sort -r "$ELF" | grep -i " [rR] " | awk '{sum += strtonum("0x"$1)} END {printf "Rodata (const): %d bytes (%.0fKB)\n", sum, sum/1024}'
+fi
