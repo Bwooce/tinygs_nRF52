@@ -147,6 +147,7 @@ commissioning. Items marked **[build]** are compile-time only (prj.conf).
 | Satellite name | **[server]** | Empty string | NORAD ID + name |
 | Sync word | **[server]** | Default 18 | |
 | CRC settings | **[server]** | Defaults | sw CRC, poly, init, etc. |
+| modem_conf | **[server]** | Hardcoded "{}" | Last begine/batch_conf JSON payload; echoed in welcome |
 
 ### Operational Settings
 | Item | Source | Current Location | Notes |
