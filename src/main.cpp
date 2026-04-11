@@ -114,12 +114,60 @@ static void enable_peripherals(void)
 /* Battery Voltage ADC                                                         */
 /* -------------------------------------------------------------------------- */
 
-/* TODO: ADC crashes at boot — needs debugging.
- * Pin: P0.04 (AIN2), enable: GPIO6, divider: 100:390 (×4.9)
- * The DT_ALIAS(adc_ctrl) or ADC device init may be failing. */
+/* Battery ADC: P0.04 (AIN2), bias enable on P0.06 (active HIGH).
+ * Voltage divider 100k:390k → multiplier ~4.9
+ * Use direct GPIO spec instead of DT_ALIAS to avoid DTS node issues. */
+static const struct gpio_dt_spec adc_ctrl = {
+    .port = DEVICE_DT_GET(DT_NODELABEL(gpio0)),
+    .pin = 6,
+    .dt_flags = GPIO_ACTIVE_HIGH,
+};
+
 int read_vbat_mv(void)
 {
-    return 3700; /* placeholder until ADC is debugged */
+    const struct device *adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc));
+    if (!device_is_ready(adc_dev)) {
+        return 3700;
+    }
+
+    /* Enable the voltage divider bias circuit */
+    if (device_is_ready(adc_ctrl.port)) {
+        gpio_pin_configure_dt(&adc_ctrl, GPIO_OUTPUT_ACTIVE);
+        gpio_pin_set_dt(&adc_ctrl, 1);
+        k_msleep(2);
+    }
+
+    struct adc_channel_cfg ch_cfg = {
+        .gain = ADC_GAIN_1_6,
+        .reference = ADC_REF_INTERNAL,
+        .acquisition_time = ADC_ACQ_TIME_DEFAULT,
+        .channel_id = 2,
+        .input_positive = NRF_SAADC_AIN2,
+    };
+    adc_channel_setup(adc_dev, &ch_cfg);
+
+    int16_t sample = 0;
+    struct adc_sequence seq = {
+        .channels = BIT(2),
+        .buffer = &sample,
+        .buffer_size = sizeof(sample),
+        .resolution = 12,
+    };
+
+    int ret = adc_read(adc_dev, &seq);
+
+    /* Disable bias to save power */
+    if (device_is_ready(adc_ctrl.port)) {
+        gpio_pin_set_dt(&adc_ctrl, 0);
+    }
+
+    if (ret != 0 || sample < 0) {
+        LOG_WRN("ADC read failed: %d (sample=%d)", ret, sample);
+        return 3700;
+    }
+
+    /* raw * (3600mV / 4096) * 4.9 */
+    return (int)((float)sample * 3600.0f / 4096.0f * 4.9f);
 }
 
 /* -------------------------------------------------------------------------- */
