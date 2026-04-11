@@ -18,11 +18,21 @@
 #define MAX_HAL_PINS 10
 
 /*
+ * Per-pin interrupt context — embeds the Zephyr gpio_callback and the
+ * RadioLib callback pointer so the ISR can dispatch without a global
+ * singleton. Uses CONTAINER_OF to recover this struct from the
+ * gpio_callback pointer passed by the Zephyr GPIO driver.
+ */
+struct zephyr_hal_pin_irq {
+    struct gpio_callback cb;
+    void (*fn)(void);
+};
+
+/*
  * RadioLib HAL for Zephyr RTOS.
  *
- * Singleton — only one instance may exist. The static ISR dispatcher
- * uses _instance to route GPIO interrupts. Creating a second instance
- * would silently steal interrupt dispatch from the first.
+ * Multiple instances are supported — each instance owns its own pin
+ * array and interrupt callbacks. No global state is used for dispatch.
  *
  * GPIO: Uses raw pin levels (gpio_pin_set_raw / gpio_pin_get_raw)
  * bypassing DTS active-low flags, because RadioLib manages polarity
@@ -43,17 +53,17 @@ class ZephyrHal : public RadioLibHal {
     void pinMode(uint32_t pin, uint32_t mode) override;
     void digitalWrite(uint32_t pin, uint32_t value) override;
     uint32_t digitalRead(uint32_t pin) override;
-    
+
     /* Interrupts */
     void attachInterrupt(uint32_t interruptNum, void (*interruptCb)(void), uint32_t mode) override;
     void detachInterrupt(uint32_t interruptNum) override;
-    
+
     /* Timing */
     void delay(RadioLibTime_t ms) override;
     void delayMicroseconds(RadioLibTime_t us) override;
     RadioLibTime_t millis() override;
     RadioLibTime_t micros() override;
-    
+
     /* GPIO extra */
     long pulseIn(uint32_t pin, uint32_t state, RadioLibTime_t timeout) override;
 
@@ -69,21 +79,14 @@ class ZephyrHal : public RadioLibHal {
 
   private:
     const struct device* _spi_dev;
-    struct spi_config _spi_cfg; // Store by value to allow local modification
+    struct spi_config _spi_cfg;
 
     /* Logical pin to Zephyr gpio_dt_spec mapping */
     const struct gpio_dt_spec* _pins[MAX_HAL_PINS];
-    struct gpio_callback _callbacks[MAX_HAL_PINS];
+    struct zephyr_hal_pin_irq _irqs[MAX_HAL_PINS];
     uint32_t _pin_count = 0;
 
     const struct gpio_dt_spec* getGpio(uint32_t pin);
-    
-    // To allow static ISR to find the instance and pin
-    static ZephyrHal* _instance;
-    friend void zephyr_gpio_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins);
 };
-
-// Prototype for friend (not static in header to match friend declaration)
-void zephyr_gpio_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins);
 
 #endif // ZEPHYR_HAL_H

@@ -3,39 +3,29 @@
 
 LOG_MODULE_REGISTER(ZephyrHal, LOG_LEVEL_DBG);
 
-ZephyrHal* ZephyrHal::_instance = nullptr;
-
-void zephyr_gpio_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins);
-
-// Global mapping for ISRs (logical pin to callback)
-static void (*isr_callbacks[MAX_HAL_PINS])(void) = {nullptr};
-
-void zephyr_gpio_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins) {
-    if (ZephyrHal::_instance == nullptr) return;
-
-    // Find which logical pin triggered by matching the cb pointer
-    for (int i = 0; i < MAX_HAL_PINS; i++) {
-        if (&ZephyrHal::_instance->_callbacks[i] == cb) {
-            if (isr_callbacks[i] != nullptr) {
-                isr_callbacks[i](); 
-            }
-            return;
-        }
+/*
+ * GPIO ISR — recovers the per-pin irq context via CONTAINER_OF,
+ * then calls the RadioLib callback. No global singleton needed.
+ */
+static void zephyr_gpio_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins) {
+    struct zephyr_hal_pin_irq *irq = CONTAINER_OF(cb, struct zephyr_hal_pin_irq, cb);
+    if (irq->fn != nullptr) {
+        irq->fn();
     }
 }
 
 ZephyrHal::ZephyrHal(const struct device* spi_dev, struct spi_config* spi_cfg)
   : RadioLibHal(HAL_PIN_INPUT, HAL_PIN_OUTPUT, HAL_PIN_LOW, HAL_PIN_HIGH, HAL_PIN_RISING, HAL_PIN_FALLING),
     _spi_dev(spi_dev) {
-    
-    // Clone the SPI config so we can modify it
+
+    /* Clone the SPI config so we can strip CS — RadioLib manages CS
+     * manually via its own digitalWrite calls. */
     _spi_cfg = *spi_cfg;
-    // Disable CS in the cloned config to allow RadioLib to handle it manually
     _spi_cfg.cs.gpio.port = nullptr;
 
-    _instance = this;
     for (int i = 0; i < MAX_HAL_PINS; i++) {
         _pins[i] = nullptr;
+        _irqs[i].fn = nullptr;
     }
 }
 
@@ -108,10 +98,10 @@ void ZephyrHal::attachInterrupt(uint32_t interruptNum, void (*interruptCb)(void)
     }
 
     gpio_pin_interrupt_configure(dt->port, dt->pin, flags);
-    gpio_init_callback(&_callbacks[interruptNum], zephyr_gpio_isr, BIT(dt->pin));
-    gpio_add_callback(dt->port, &_callbacks[interruptNum]);
+    gpio_init_callback(&_irqs[interruptNum].cb, zephyr_gpio_isr, BIT(dt->pin));
+    gpio_add_callback(dt->port, &_irqs[interruptNum].cb);
 
-    isr_callbacks[interruptNum] = interruptCb;
+    _irqs[interruptNum].fn = interruptCb;
 }
 
 void ZephyrHal::detachInterrupt(uint32_t interruptNum) {
@@ -119,8 +109,8 @@ void ZephyrHal::detachInterrupt(uint32_t interruptNum) {
     if (!dt) return;
 
     gpio_pin_interrupt_configure(dt->port, dt->pin, GPIO_INT_DISABLE);
-    gpio_remove_callback(dt->port, &_callbacks[interruptNum]);
-    isr_callbacks[interruptNum] = nullptr;
+    gpio_remove_callback(dt->port, &_irqs[interruptNum].cb);
+    _irqs[interruptNum].fn = nullptr;
 }
 
 void ZephyrHal::delay(RadioLibTime_t ms) {
@@ -144,13 +134,11 @@ long ZephyrHal::pulseIn(uint32_t pin, uint32_t state, RadioLibTime_t timeout) {
     if (!dt) return 0;
 
     RadioLibTime_t start = micros();
-    // Wait for the pulse to start
     while (digitalRead(pin) != state) {
         if (micros() - start > timeout) return 0;
     }
 
     RadioLibTime_t pulse_start = micros();
-    // Wait for the pulse to end
     while (digitalRead(pin) == state) {
         if (micros() - pulse_start > timeout) return 0;
     }

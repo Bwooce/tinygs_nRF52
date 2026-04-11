@@ -403,11 +403,12 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             LOG_INF("MQTT CONNECTED to %s:%d", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
 
             {
-                /* Use device_client_id (MAC-derived) for all protocol messages */
+                /* Station name for topics = MQTT_CLIENT_ID (dashboard-configured).
+                 * MAC (device_client_id) is only for MQTT connect and the mac JSON field. */
                 extern char device_client_id[13];
 
-                tinygs_subscribe(client, MQTT_USERNAME, device_client_id);
-                tinygs_send_welcome(client, MQTT_USERNAME, device_client_id,
+                tinygs_subscribe(client, MQTT_USERNAME, MQTT_CLIENT_ID);
+                tinygs_send_welcome(client, MQTT_USERNAME, MQTT_CLIENT_ID,
                                     device_client_id);
             }
 
@@ -526,8 +527,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             } else if (strcmp(cmnd, "set_pos_prm") == 0) {
                 tinygs_handle_set_pos((char *)rx_payload, ret);
             } else if (strcmp(cmnd, "status") == 0) {
-                extern char device_client_id[13];
-                tinygs_send_status(client, MQTT_USERNAME, device_client_id);
+                tinygs_send_status(client, MQTT_USERNAME, MQTT_CLIENT_ID);
             } else if (strcmp(cmnd, "log") == 0) {
                 LOG_INF("  → Server: %s", (char *)rx_payload);
             } else {
@@ -654,7 +654,7 @@ static int mqtt_tls_connect(void)
     /* Last Will Testament — tells server we disconnected */
     static char will_topic_str[128];
     snprintf(will_topic_str, sizeof(will_topic_str),
-             TINYGS_TOPIC_STAT, MQTT_USERNAME, device_client_id, TINYGS_STAT_STATUS);
+             TINYGS_TOPIC_STAT, MQTT_USERNAME, MQTT_CLIENT_ID, TINYGS_STAT_STATUS);
     static struct mqtt_topic will_topic = {
         .qos = MQTT_QOS_1_AT_LEAST_ONCE,
     };
@@ -890,8 +890,7 @@ static bool lora_check_rx(void)
 
         /* Publish via MQTT if connected */
         if (app_state == STATE_MQTT_CONNECTED) {
-            extern char device_client_id[13];
-            tinygs_send_rx(&mqtt_client, MQTT_USERNAME, device_client_id,
+            tinygs_send_rx(&mqtt_client, MQTT_USERNAME, MQTT_CLIENT_ID,
                            data, len, rssi, snr, freq_err);
         }
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
@@ -1020,8 +1019,7 @@ int main(void)
                 /* Send TinyGS ping every 60s */
                 uint32_t now_ms = k_uptime_get_32();
                 if ((now_ms - last_ping_ms) >= (TINYGS_PING_INTERVAL_S * 1000)) {
-                    extern char device_client_id[13];
-                    tinygs_send_ping(&mqtt_client, MQTT_USERNAME, device_client_id);
+                    tinygs_send_ping(&mqtt_client, MQTT_USERNAME, MQTT_CLIENT_ID);
                     last_ping_ms = now_ms;
                 }
 

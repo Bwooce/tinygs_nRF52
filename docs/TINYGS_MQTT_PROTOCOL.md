@@ -11,12 +11,26 @@
 |-----------|-------|
 | Broker | mqtt.tinygs.com |
 | Port | 8883 (TLS) |
-| Client ID | 12-char hex from device MAC: `%04X%08X` |
+| Client ID | 12-char hex from device MAC: `%04X%08X` (e.g., `16EDE3EB6081`) |
 | Username | Per-station credential from TinyGS dashboard |
 | Password | Per-station credential from TinyGS dashboard |
 | Max packet size | 1000 bytes |
-| Keep-alive | Default (60s from Zephyr MQTT lib) |
+| Keep-alive | Configurable (CONFIG_MQTT_KEEPALIVE, tested up to 600s) |
 | TLS | Required. TinyGS custom CA + ISRG Root X1 (see `certs.h`) |
+
+### 1.1 Client ID vs Station Name
+
+**IMPORTANT:** The MQTT client ID and the station name in topic paths are different:
+
+| Concept | Source | Used for | Example |
+|---------|--------|----------|---------|
+| **Client ID** | Device MAC (`NRF_FICR->DEVICEID`) | MQTT `connect()` call | `16EDE3EB6081` |
+| **Station name** | TinyGS dashboard config | Topic paths, `{station}` in all topics | `tinygs_nrf52_poc` |
+| **mac field** | Device MAC | `mac` field in welcome JSON payload | `16EDE3EB6081` |
+
+The station name determines which station entry appears on the TinyGS portal. Using
+the MAC as the station name creates a new, separate station entry. The client ID is
+only used by the MQTT broker for session management and does not appear in topics.
 
 ## 2. MQTT Topics
 
@@ -27,7 +41,7 @@
 | `tinygs/global/#` | Global broadcasts (batch config, OTA, reset, status requests) |
 | `tinygs/{user}/{station}/cmnd/#` | Station-specific commands |
 
-Where `{user}` and `{station}` are from the station's configuration.
+Where `{user}` is the MQTT username and `{station}` is the dashboard-configured station name (NOT the MAC-derived client ID).
 
 ### 2.2 Published Topics (Telemetry)
 
