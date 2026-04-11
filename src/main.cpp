@@ -22,6 +22,8 @@
 #include <zephyr/drivers/spi.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/drivers/flash.h>
+#include <zephyr/drivers/adc.h>
+#include <zephyr/dt-bindings/adc/nrf-adc.h>
 #include <hal/nrf_power.h>
 #include <hal/nrf_ficr.h>
 
@@ -106,6 +108,18 @@ static void enable_peripherals(void)
         k_msleep(500);
         LOG_INF("Vext power enabled");
     }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Battery Voltage ADC                                                         */
+/* -------------------------------------------------------------------------- */
+
+/* TODO: ADC crashes at boot — needs debugging.
+ * Pin: P0.04 (AIN2), enable: GPIO6, divider: 100:390 (×4.9)
+ * The DT_ALIAS(adc_ctrl) or ADC device init may be failing. */
+int read_vbat_mv(void)
+{
+    return 3700; /* placeholder until ADC is debugged */
 }
 
 /* -------------------------------------------------------------------------- */

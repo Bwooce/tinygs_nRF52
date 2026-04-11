@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "tinygs_config.h"
+
+extern int read_vbat_mv(void);
 #include <zephyr/sys/base64.h>
 #include <zephyr/net/openthread.h>
 #include <openthread/thread.h>
@@ -150,9 +152,8 @@ int tinygs_send_welcome(struct mqtt_client *client,
                         TINYGS_TOPIC_TELE, TINYGS_TELE_WELCOME,
                         user, station);
 
-    /* Build payload — Vbat in millivolts (ESP32 convention) */
     int len = tinygs_build_welcome(payload_buf, sizeof(payload_buf),
-                                    mac, 3700, 81820,
+                                    mac, read_vbat_mv(), 81820,
                                     k_uptime_get_32() / 1000);
 
     struct mqtt_publish_param param;
@@ -179,7 +180,7 @@ int tinygs_send_ping(struct mqtt_client *client,
                         user, station);
 
     int len = tinygs_build_ping(payload_buf, sizeof(payload_buf),
-                                 3700, 81820, 81820, 0, -120.0f);
+                                 read_vbat_mv(), 81820, 81820, 0, -120.0f);
 
     struct mqtt_publish_param param;
     param.message.topic.qos = MQTT_QOS_0_AT_MOST_ONCE;

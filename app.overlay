@@ -4,7 +4,7 @@
         zephyr,code-partition = &code_partition;
     };
 
-    /* 24KB FATFS Partition for USB MSC (config.json + index.html) */
+    /* 64KB FATFS Partition for USB MSC (config.json + index.html) */
     msc_disk0 {
         compatible = "zephyr,flash-disk";
         partition = <&tinygs_storage>;
