@@ -2,6 +2,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <zephyr/sys/base64.h>
 #include <zephyr/net/openthread.h>
@@ -9,6 +10,11 @@
 #include <openthread/ip6.h>
 
 LOG_MODULE_REGISTER(tinygs_proto, LOG_LEVEL_INF);
+
+/* Station location — defaults to Sydney, updated by set_pos_prm */
+float tinygs_station_lat = -33.8688f;
+float tinygs_station_lon = 151.2093f;
+float tinygs_station_alt = 50.0f;
 
 /* Shared buffers for topic and payload construction */
 static char topic_buf[128];
@@ -24,7 +30,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
 
     return snprintf(buf, buflen,
         "{"
-        "\"station_location\":[-33.8688,151.2093],"
+        "\"station_location\":[%.4f,%.4f],"
         "\"version\":%u,"
         "\"git_version\":\"%s\","
         "\"chip\":\"%s\","
@@ -40,6 +46,8 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         "\"idfv\":\"NCS/Zephyr\","
         "\"modem_conf\":\"{}\""
         "}",
+        (double)tinygs_station_lat,
+        (double)tinygs_station_lon,
         (unsigned)TINYGS_VERSION,
         TINYGS_GIT_VERSION,
         TINYGS_CHIP,
@@ -199,7 +207,7 @@ int tinygs_send_rx(struct mqtt_client *client,
     /* Build RX JSON payload — types matched to ESP32 ArduinoJson output */
     int len = snprintf(payload_buf, sizeof(payload_buf),
         "{"
-        "\"station_location\":[-33.8688,151.2093],"
+        "\"station_location\":[%.4f,%.4f],"
         "\"mode\":\"LoRa\","
         "\"frequency\":%.4f,"
         "\"frequency_offset\":0,"
@@ -218,6 +226,8 @@ int tinygs_send_rx(struct mqtt_client *client,
         "\"noisy\":false,"
         "\"iIQ\":false"
         "}",
+        (double)tinygs_station_lat,
+        (double)tinygs_station_lon,
         (double)frequency,
         sf, cr,
         (double)bw,
@@ -246,4 +256,43 @@ int tinygs_send_rx(struct mqtt_client *client,
     LOG_INF("Publishing RX packet (%zu bytes) to %s", data_len, topic_buf);
 
     return mqtt_publish(client, &param);
+}
+
+void tinygs_handle_set_pos(const char *payload, size_t len)
+{
+    /* ESP32 format: JSON array [lat, lon, alt] or [alt]
+     * Simple parser — find numbers between brackets */
+    const char *p = strchr(payload, '[');
+    if (!p) {
+        LOG_WRN("set_pos_prm: no array found");
+        return;
+    }
+    p++;
+
+    float vals[3];
+    int count = 0;
+    while (count < 3 && *p && *p != ']') {
+        while (*p == ' ' || *p == ',') p++;
+        if (*p == ']' || *p == '\0') break;
+        char *end;
+        vals[count] = strtof(p, &end);
+        if (end == p) break;
+        p = end;
+        count++;
+    }
+
+    if (count == 1) {
+        tinygs_station_alt = vals[0];
+        LOG_INF("Position updated: alt=%.1f", (double)tinygs_station_alt);
+    } else if (count == 3) {
+        tinygs_station_lat = vals[0];
+        tinygs_station_lon = vals[1];
+        tinygs_station_alt = vals[2];
+        LOG_INF("Position updated: lat=%.4f lon=%.4f alt=%.1f",
+                (double)tinygs_station_lat,
+                (double)tinygs_station_lon,
+                (double)tinygs_station_alt);
+    } else {
+        LOG_WRN("set_pos_prm: expected 1 or 3 values, got %d", count);
+    }
 }

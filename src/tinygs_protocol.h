@@ -92,4 +92,18 @@ int tinygs_send_rx(struct mqtt_client *client,
                     float rssi, float snr, float freq_err,
                     float frequency, int sf, float bw, int cr);
 
+/*
+ * Station location — used in welcome and RX payloads.
+ * Updated by set_pos_prm server command. Defaults to Sydney.
+ */
+extern float tinygs_station_lat;
+extern float tinygs_station_lon;
+extern float tinygs_station_alt;
+
+/*
+ * Handle set_pos_prm command from server.
+ * Payload is JSON array: [lat, lon, alt] or [alt].
+ */
+void tinygs_handle_set_pos(const char *payload, size_t len);
+
 #endif /* TINYGS_PROTOCOL_H */

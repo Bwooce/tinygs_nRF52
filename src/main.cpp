@@ -513,6 +513,8 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     radio->startReceive();
                     LOG_INF("  Radio reconfigured, listening");
                 }
+            } else if (strcmp(cmnd, "set_pos_prm") == 0) {
+                tinygs_handle_set_pos((char *)rx_payload, ret);
             } else if (strcmp(cmnd, "status") == 0) {
                 LOG_INF("  → Status request (TODO: send response)");
             } else if (strcmp(cmnd, "log") == 0) {
