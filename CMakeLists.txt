@@ -10,12 +10,18 @@ set(CMAKE_CXX_STANDARD 20)
 # Add RadioLib as a Zephyr library
 zephyr_library_named(radiolib)
 
-file(GLOB_RECURSE RADIOLIB_SRCS "lib/RadioLib/src/*.cpp" "lib/RadioLib/src/*.c")
-# EXCLUDE HAL sources to avoid compiling RPi/Arduino/etc HALs
-list(FILTER RADIOLIB_SRCS EXCLUDE REGEX "lib/RadioLib/src/hal/.*")
-
-# Add the Zephyr HAL specifically
-list(APPEND RADIOLIB_SRCS "lib/RadioLib/src/hal/Zephyr/ZephyrHal.cpp")
+# RadioLib: only compile SX126x + core (saves ~85KB vs all radio modules)
+file(GLOB RADIOLIB_CORE "lib/RadioLib/src/*.cpp")
+file(GLOB RADIOLIB_SX126x "lib/RadioLib/src/modules/SX126x/*.cpp")
+file(GLOB RADIOLIB_UTILS "lib/RadioLib/src/utils/*.cpp")
+file(GLOB RADIOLIB_PHYSICAL "lib/RadioLib/src/protocols/PhysicalLayer/*.cpp")
+set(RADIOLIB_SRCS
+    ${RADIOLIB_CORE}
+    ${RADIOLIB_SX126x}
+    ${RADIOLIB_UTILS}
+    ${RADIOLIB_PHYSICAL}
+    lib/RadioLib/src/hal/Zephyr/ZephyrHal.cpp
+)
 
 zephyr_library_sources(${RADIOLIB_SRCS})
 zephyr_library_include_directories(lib/RadioLib/src)

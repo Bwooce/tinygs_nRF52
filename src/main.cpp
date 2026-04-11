@@ -651,7 +651,8 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     if (p) tinygs_radio.norad = (uint32_t)atoi(p + 8);
 
                     /* Parse TLE (base64-encoded 34-byte binary) */
-                    p = strstr((char *)rx_payload, "\"tle\":\"");
+                    /* TLE is sent as "tlx" (not "tle") in the ESP32 protocol */
+                    p = strstr((char *)rx_payload, "\"tlx\":\"");
                     if (p) {
                         const char *b64_start = p + 7;
                         const char *b64_end = strchr(b64_start, '"');
