@@ -2,7 +2,7 @@
     chosen {
         zephyr,console = &cdc_acm_uart0;
         zephyr,code-partition = &code_partition;
-        /* zephyr,display = &st7789v; — uncomment when LVGL/MCUboot available */
+        /* zephyr,display = &st7789v; — for LVGL, not needed for display_write */
     };
 
     /* 64KB FATFS Partition for USB MSC (config.json + index.html) */

@@ -27,6 +27,7 @@ target_sources(app PRIVATE
     src/tinygs_protocol.cpp
     src/tinygs_config.cpp
     src/tinygs_display.cpp
+    src/font8x16.c
 )
 
 # App Include Directories
