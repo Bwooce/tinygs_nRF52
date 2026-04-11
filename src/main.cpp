@@ -26,7 +26,7 @@
 
 #include <mbedtls/debug.h>
 #include <RadioLib.h>
-#include "ZephyrHal.h"
+#include "hal/Zephyr/ZephyrHal.h"
 #include "tinygs_protocol.h"
 #include "tinygs_config.h"
 

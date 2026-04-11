@@ -11,8 +11,11 @@ set(CMAKE_CXX_STANDARD 20)
 zephyr_library_named(radiolib)
 
 file(GLOB_RECURSE RADIOLIB_SRCS "lib/RadioLib/src/*.cpp" "lib/RadioLib/src/*.c")
-# EXCLUDE HAL sources since we use our own ZephyrHal
+# EXCLUDE HAL sources to avoid compiling RPi/Arduino/etc HALs
 list(FILTER RADIOLIB_SRCS EXCLUDE REGEX "lib/RadioLib/src/hal/.*")
+
+# Add the Zephyr HAL specifically
+list(APPEND RADIOLIB_SRCS "lib/RadioLib/src/hal/Zephyr/ZephyrHal.cpp")
 
 zephyr_library_sources(${RADIOLIB_SRCS})
 zephyr_library_include_directories(lib/RadioLib/src)
@@ -20,7 +23,6 @@ zephyr_library_include_directories(lib/RadioLib/src)
 # Application Sources
 target_sources(app PRIVATE
     src/main.cpp
-    src/hal/ZephyrHal.cpp
     src/hal/test_ZephyrHal.cpp
     src/tinygs_protocol.cpp
     src/tinygs_config.cpp

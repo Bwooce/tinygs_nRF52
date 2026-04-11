@@ -10,7 +10,7 @@
  * are assertion-based smoke tests for development.
  */
 
-#include "ZephyrHal.h"
+#include "hal/Zephyr/ZephyrHal.h"
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(hal_test, LOG_LEVEL_INF);
