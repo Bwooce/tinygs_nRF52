@@ -26,7 +26,7 @@
 #include <zephyr/drivers/adc.h>
 #include <zephyr/dt-bindings/adc/nrf-adc.h>
 #include <zephyr/sys/base64.h>
-#include <zephyr/net/sntp.h>
+#include <openthread/sntp.h>
 #include <time.h>
 #include "tinygs_display.h"
 #include <hal/nrf_power.h>
@@ -1085,44 +1085,45 @@ static int64_t get_utc_epoch(void)
     return (int64_t)(k_uptime_get_32() / 1000) + sntp_epoch_offset;
 }
 
+/* SNTP callback — called from OpenThread context */
+static void sntp_response_handler(void *aContext, uint64_t aTime, otError aResult)
+{
+    if (aResult == OT_ERROR_NONE) {
+        uint32_t uptime_s = k_uptime_get_32() / 1000;
+        sntp_epoch_offset = (int64_t)aTime - (int64_t)uptime_s;
+        time_synced = true;
+        LOG_INF("SNTP: synced, epoch=%llu", (unsigned long long)aTime);
+    } else {
+        LOG_WRN("SNTP: failed (%d)", (int)aResult);
+    }
+}
+
 /**
- * Sync time via SNTP. Uses the same NAT64-resolved address as MQTT.
- * Called once after MQTT connects (we know NAT64 path works at that point).
+ * Sync time via OpenThread SNTP client.
+ * Uses Google NTP (2001:4860:4806:8::) — native IPv6, no NAT64 needed.
  */
 static void sntp_sync(void)
 {
-    /* Can't use sntp_simple() — it uses getaddrinfo which doesn't work
-     * over OpenThread DNS. Use sntp_query with a pre-resolved NAT64 address.
-     * time.google.com = 216.239.35.0 → nat64.net: 2a00:1098:2c::d8ef:2300 */
-    struct sntp_ctx ctx;
-    struct sockaddr_in6 addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin6_family = AF_INET6;
-    addr.sin6_port = htons(123);
-    /* 216.239.35.0 via nat64.net well-known prefix */
-    addr.sin6_addr.s6_addr[0] = 0x2a; addr.sin6_addr.s6_addr[1] = 0x00;
-    addr.sin6_addr.s6_addr[2] = 0x10; addr.sin6_addr.s6_addr[3] = 0x98;
-    addr.sin6_addr.s6_addr[4] = 0x00; addr.sin6_addr.s6_addr[5] = 0x2c;
-    /* bytes 6-11 = 0 */
-    addr.sin6_addr.s6_addr[12] = 216; addr.sin6_addr.s6_addr[13] = 239;
-    addr.sin6_addr.s6_addr[14] = 35;  addr.sin6_addr.s6_addr[15] = 0;
+    struct openthread_context *ot_ctx = openthread_get_default_context();
+    if (!ot_ctx) return;
 
-    int ret = sntp_init(&ctx, (struct sockaddr *)&addr, sizeof(addr));
-    if (ret < 0) {
-        LOG_WRN("SNTP: init failed (%d)", ret);
-        return;
-    }
+    otMessageInfo msgInfo;
+    memset(&msgInfo, 0, sizeof(msgInfo));
 
-    struct sntp_time ts;
-    ret = sntp_query(&ctx, 5000, &ts);
-    sntp_close(&ctx);
-    if (ret == 0) {
-        uint32_t uptime_s = k_uptime_get_32() / 1000;
-        sntp_epoch_offset = (int64_t)ts.seconds - (int64_t)uptime_s;
-        time_synced = true;
-        LOG_INF("SNTP: time synced, epoch=%lld", (long long)ts.seconds);
-    } else {
-        LOG_WRN("SNTP: sync failed (%d)", ret);
+    /* Google NTP IPv6: 2001:4860:4806:8:: */
+    otIp6AddressFromString(OT_SNTP_DEFAULT_SERVER_IP, &msgInfo.mPeerAddr);
+    msgInfo.mPeerPort = OT_SNTP_DEFAULT_SERVER_PORT;
+
+    otSntpQuery query;
+    query.mMessageInfo = &msgInfo;
+
+    openthread_api_mutex_lock(ot_ctx);
+    otError err = otSntpClientQuery(ot_ctx->instance, &query,
+                                     sntp_response_handler, NULL);
+    openthread_api_mutex_unlock(ot_ctx);
+
+    if (err != OT_ERROR_NONE) {
+        LOG_WRN("SNTP: query failed (%d)", (int)err);
     }
 }
 
