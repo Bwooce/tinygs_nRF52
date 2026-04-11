@@ -10,6 +10,19 @@ if [ ! -f "$UF2_FILE" ]; then
     exit 1
 fi
 
+# Guard: check UF2 size before attempting to flash.
+# The Heltec T114 UF2 bootloader drive is ~1MB. Files larger than
+# this overflow the drive causing I/O errors (no bricking, but no flash).
+UF2_SIZE=$(stat -c%s "$UF2_FILE")
+UF2_MAX=1000000
+if [ "$UF2_SIZE" -gt "$UF2_MAX" ]; then
+    echo "ERROR: UF2 file too large! ${UF2_SIZE} bytes > ${UF2_MAX} limit."
+    echo "The firmware won't fit on the UF2 bootloader drive."
+    echo "Reduce firmware size (disable debug logging, CC310, etc.)"
+    exit 1
+fi
+echo "UF2 size: ${UF2_SIZE} bytes (limit: ${UF2_MAX})"
+
 # Step 1: Find the serial port (application firmware)
 TTY_PORT=$(ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null | head -n 1)
 

@@ -59,3 +59,4 @@ target_link_libraries(app PUBLIC radiolib)
 # Generate UF2 for Adafruit/Heltec bootloaders
 set_target_properties(app PROPERTIES BUILD_OUTPUT_UF2 TRUE)
 
+

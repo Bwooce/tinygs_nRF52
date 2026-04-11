@@ -110,22 +110,35 @@ RadioLib is natively designed for the Arduino ecosystem. To run it on Zephyr RTO
 
 ## 4. Phased Implementation Plan
 
-### Phase 1: High-Risk Prototyping (TLS Memory & Network)
-Before porting the state machine, we must prove the 256KB RAM budget holds up during a full TLS handshake over Thread.
-1.  **[IN PROGRESS] Zephyr Thread NAT64 Setup:** Configure Zephyr as an OpenThread MTD (Minimal Thread Device) and ensure it can synthesize NAT64 addresses to ping IPv4 internet servers. (Initial scaffolding complete).
-2.  **mbedTLS + MQTT PoC:** Establish a persistent, native MQTT-TLS connection directly to `mqtt.tinygs.com`.
-3.  **Memory Profiling:** Use Zephyr `ram_report` and Thread Analyzer to verify the heap and stack margins stay within the 222KB budget during the handshake and steady-state keep-alive phases. Ensure no memory leaks occur during disconnections/reconnections.
-4.  **RadioLib Zephyr HAL PoC:** Implement the custom `ZephyrHal` class, integrate RadioLib, and verify SX1262 SPI communication.
+### Phase 1: High-Risk Prototyping — COMPLETE
+All Phase 1 objectives proven:
+1.  **[DONE] Thread Network:** Joiner commissioning to HA SkyConnect BR. Dataset persisted in NVS.
+2.  **[DONE] MQTT-TLS over Thread:** Native TLS handshake via nat64.net public NAT64 + DNS64. Authenticated to mqtt.tinygs.com:8883 with real credentials. TLS session caching enabled.
+3.  **[DONE] SX1262 LoRa Radio:** RadioLib `begin()` succeeds over SPI. Pin mapping verified against T114 v2 schematic.
+4.  **[DONE] RAM Budget:** FLASH 488KB/792KB (62%), RAM 253KB/256KB (98%). Tight but functional. Dedicated 60KB mbedTLS heap required for cert parsing.
+5.  **[DONE] USB MSC + CDC ACM:** FATFS at 0xEC000, NVS at 0xF2000. 1200-baud bootloader entry working.
+6.  **[OBSERVING] MQTT Connection Durability:** Logging PINGRESP intervals and disconnect events to measure NAT64/broker timeouts.
 
-### Phase 2: Core TinyGS Porting
-1.  **State Machine & Polling:** Port the TinyGS state machine to Zephyr threads/workqueues. 
-2.  **Protocol Emulation:** Ensure the JSON payloads and MQTT topic structures match the ESP32 version exactly.
-3.  **Power Management:** Implement Zephyr deep sleep (System OFF or deep System ON) during idle periods. Rely on Thread SED polling for TCP keep-alives. Wake on SX1262 DIO1 interrupt (packet received).
-4.  **Solar & Battery:** Read battery voltage via the T114 ADC and manage sleep cycles based on charge levels.
+**Key technical decisions from Phase 1:**
+*   CC310 hardware crypto disabled — PSA RSA verify broken, Oberon software crypto used instead.
+*   `CONFIG_MBEDTLS_USE_PSA_CRYPTO=n` — legacy RSA verify path required for ECDHE-RSA-CHACHA20-POLY1305-SHA256.
+*   nat64.net DNS64 for hostname resolution — returns globally-routable AAAA addresses.
+*   BR requires: `firewall: false`, `br routeprf high`, ip6tables MASQUERADE for Thread ULA→public IPv6.
+*   UF2 file size limit ~1MB — build/flash scripts check and refuse oversized firmware.
+
+### Phase 2: Core TinyGS Porting — IN PROGRESS
+1.  **State Machine & Polling:** Port the TinyGS state machine to Zephyr threads/workqueues.
+2.  **Protocol Emulation:** Ensure the JSON payloads and MQTT topic structures match the ESP32 version exactly. Study ESP32 TinyGS source (PubSubClient + WiFiClientSecure).
+3.  **Interrupt-driven LoRa RX:** Use `k_work` workqueue attached to DIO1 GPIO callback. SX1262 init working — implement packet reception.
+4.  **NVS Config Persistence:** MQTT config changes saved to NVS (wear-leveled). FATFS config.json regenerated on reboot only.
+5.  **Power Management:** Implement connect/disconnect MQTT pattern based on measured timeout data. Thread SED mode for sleep (disabled in Phase 1 due to poll timing issues).
+6.  **Solar & Battery:** Read battery voltage via the T114 ADC and manage sleep cycles based on charge levels.
+7.  **Ongoing: RAM reduction** toward 240KB target (currently 253KB). Opportunities: picolibc, stack shrinking, OpenThread log level reduction.
 
 ### Phase 3: Peripherals & Polish
 1.  **Display (Optional):** Implement low-power updating of the TFT/OLED (only turning on upon user button press via GPIO interrupt).
 2.  **Firmware Updates:** USB-only via UF2 drag-and-drop. OTA over Thread was evaluated and dropped due to power cost (see Section 6.3).
+3.  **Commissioning Mode:** Extended wake window (15-30 min) for unprovisioned devices.
 
 ## 5. Limitations & Requirements for Users
 *   **Infrastructure:** Requires the user to have a standard Thread Border Router (e.g., Apple TV 4K, HomePod Mini, or Home Assistant SkyConnect) on their network.
