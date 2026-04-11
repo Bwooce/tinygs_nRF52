@@ -1091,14 +1091,16 @@ int main(void)
     }
 
     LOG_INF("=== TinyGS nRF52 Phase 2: MQTT-TLS over Thread ===");
-
-    /* Load persistent config from NVS (wear-leveled flash).
-     * config.json values are loaded first (above), then NVS overrides.
-     * NVS wins over config.json for items that were saved at runtime. */
-    tinygs_config_init();
-
     log_heap_usage("boot");
     init_openthread();
+
+    /* TODO: NVS settings init crashes — debug required.
+     * Likely conflict with OpenThread's settings_subsys_init() or
+     * insufficient stack for NVS operations during early boot.
+     * For now, config comes from config.json only.
+     * tinygs_config_init();
+     */
+
     init_radio();
 
     int retry_count = 0;

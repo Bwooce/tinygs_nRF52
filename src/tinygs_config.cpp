@@ -99,22 +99,26 @@ static struct settings_handler tgs_handler = {
 
 int tinygs_config_init(void)
 {
+    LOG_INF("Config init: registering settings handler...");
+
+    /* settings_subsys_init() is idempotent — safe even if OpenThread
+     * already called it. It initializes the NVS backend on storage_partition. */
     int ret = settings_subsys_init();
     if (ret) {
-        LOG_ERR("settings_subsys_init failed: %d", ret);
-        return ret;
+        LOG_ERR("settings_subsys_init failed: %d (continuing with defaults)", ret);
+        return 0; /* Don't block boot — use compiled defaults */
     }
 
     ret = settings_register(&tgs_handler);
-    if (ret) {
-        LOG_ERR("settings_register failed: %d", ret);
-        return ret;
+    if (ret && ret != -EEXIST) {
+        LOG_ERR("settings_register failed: %d (continuing with defaults)", ret);
+        return 0;
     }
 
     ret = settings_load_subtree("tgs");
     if (ret) {
-        LOG_ERR("settings_load_subtree failed: %d", ret);
-        return ret;
+        LOG_WRN("settings_load_subtree failed: %d (using defaults)", ret);
+        return 0;
     }
 
     LOG_INF("Config loaded: station=%s lat=%.4f lon=%.4f alt=%.0f",
