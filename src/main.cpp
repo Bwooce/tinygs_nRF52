@@ -703,6 +703,14 @@ static ZephyrHal radio_hal(lora_spi.bus, (struct spi_config *)&lora_spi.config);
 static Module *radio_mod = nullptr;
 static SX1262 *radio = nullptr;
 
+/* LoRa packet reception flag — set by DIO1 ISR */
+static volatile bool lora_packet_received = false;
+
+static void lora_rx_callback(void)
+{
+    lora_packet_received = true;
+}
+
 static void init_radio(void)
 {
     LOG_INF("Initializing SX1262...");
@@ -720,7 +728,70 @@ static void init_radio(void)
         LOG_INF("SX1262 OK");
     } else {
         LOG_ERR("SX1262 init failed: %d", state);
+        return;
     }
+
+    /* Set default LoRa config — 433MHz, SF10, BW125, CR5
+     * This will be overridden by server batch_conf commands */
+    state = radio->setFrequency(436.703);
+    if (state != RADIOLIB_ERR_NONE) {
+        LOG_ERR("setFrequency failed: %d", state);
+    }
+    radio->setSpreadingFactor(10);
+    radio->setBandwidth(250.0);
+    radio->setCodingRate(5);
+    radio->setSyncWord(0x12);
+
+    /* Register DIO1 interrupt callback and start receiving */
+    radio->setPacketReceivedAction(lora_rx_callback);
+    state = radio->startReceive();
+    if (state == RADIOLIB_ERR_NONE) {
+        LOG_INF("SX1262 listening on 436.703 MHz, SF10, BW250");
+    } else {
+        LOG_ERR("startReceive failed: %d", state);
+    }
+}
+
+/*
+ * Check for received LoRa packets and process them.
+ * Called from the main loop. Returns true if a packet was processed.
+ */
+static bool lora_check_rx(void)
+{
+    if (!lora_packet_received || radio == nullptr) {
+        return false;
+    }
+
+    lora_packet_received = false;
+
+    size_t len = radio->getPacketLength();
+    if (len == 0 || len > 255) {
+        radio->startReceive();
+        return false;
+    }
+
+    uint8_t data[256];
+    int state = radio->readData(data, len);
+
+    float rssi = radio->getRSSI();
+    float snr = radio->getSNR();
+    float freq_err = radio->getFrequencyError();
+
+    if (state == RADIOLIB_ERR_NONE) {
+        LOG_INF("LoRa RX: %u bytes, RSSI=%.1f, SNR=%.1f, FreqErr=%.1f",
+                (unsigned)len, (double)rssi, (double)snr, (double)freq_err);
+        LOG_HEXDUMP_INF(data, MIN(len, 32), "Packet data:");
+
+        /* TODO: base64 encode and publish via MQTT tele/rx */
+    } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
+        LOG_WRN("LoRa RX: CRC error, %u bytes", (unsigned)len);
+    } else {
+        LOG_ERR("LoRa readData failed: %d", state);
+    }
+
+    /* Restart reception */
+    radio->startReceive();
+    return true;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -821,15 +892,19 @@ int main(void)
             log_heap_usage("mqtt_connected");
             LOG_INF("=== MQTT-TLS CONNECTION SUCCESSFUL ===");
 
-            /* TinyGS main loop — process MQTT + send periodic pings */
+            /* TinyGS main loop — process MQTT, LoRa RX, and pings */
             uint32_t last_ping_ms = k_uptime_get_32();
 
             while (app_state == STATE_MQTT_CONNECTED) {
-                int rc = zsock_poll(&mqtt_poll_fd, mqtt_poll_fd_count, 1000);
+                /* Poll MQTT socket for incoming data */
+                int rc = zsock_poll(&mqtt_poll_fd, mqtt_poll_fd_count, 100);
                 if (rc > 0) {
                     mqtt_input(&mqtt_client);
                 }
                 mqtt_live(&mqtt_client);
+
+                /* Check for LoRa packet reception */
+                lora_check_rx();
 
                 /* Send TinyGS ping every 60s */
                 uint32_t now_ms = k_uptime_get_32();
@@ -838,7 +913,7 @@ int main(void)
                     last_ping_ms = now_ms;
                 }
 
-                k_msleep(1000);
+                k_msleep(100);  /* 100ms loop — responsive to LoRa packets */
             }
             break;
         }
