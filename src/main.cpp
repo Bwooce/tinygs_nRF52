@@ -17,6 +17,7 @@
 #include <zephyr/drivers/uart/cdc_acm.h>
 #include <zephyr/fs/fs.h>
 #include <ff.h>
+#include <zephyr/storage/disk_access.h>
 
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/spi.h>
@@ -860,6 +861,8 @@ static int mqtt_tls_connect(void)
 /* -------------------------------------------------------------------------- */
 
 static FATFS fat_fs;
+static int boot_index_exists = 0;
+static int boot_index_size = -1;
 static struct fs_mount_t mp = {
     .type = FS_FATFS,
     .mnt_point = "/NAND:",
@@ -942,15 +945,36 @@ static void setup_usb_storage(void)
     }
 
     int res = fs_mount(&mp);
+    LOG_INF("FATFS mount: %d", res);
 
     if (res == 0) {
-        fs_file_t_init(&file);
-        if (fs_stat("/NAND:/index.html", &entry) != 0) {
-            if (fs_open(&file, "/NAND:/index.html", FS_O_CREATE | FS_O_WRITE) == 0) {
-                fs_write(&file, html_content, strlen(html_content));
+        /* Check if index.html exists, write if not */
+        int stat_ret = fs_stat("/NAND:/index.html", &entry);
+        /* Store pre-write stat result for deferred logging */
+        int pre_stat = stat_ret;
+        int pre_size = (stat_ret == 0) ? (int)entry.size : -1;
+        int open_ret = -999, write_ret = -999;
+
+        if (stat_ret != 0) {
+            fs_file_t_init(&file);
+            open_ret = fs_open(&file, "/NAND:/index.html", FS_O_CREATE | FS_O_WRITE);
+            if (open_ret == 0) {
+                write_ret = (int)fs_write(&file, html_content, strlen(html_content));
+                fs_sync(&file);
                 fs_close(&file);
             }
         }
+
+        /* Verify after write attempt */
+        stat_ret = fs_stat("/NAND:/index.html", &entry);
+        boot_index_exists = (stat_ret == 0);
+        boot_index_size = boot_index_exists ? (int)entry.size : -1;
+
+        /* Pack debug info into boot_index_size for deferred logging.
+         * If file missing: encode pre_stat, open_ret, write_ret */
+        LOG_ERR("FATFS: stat=%d open=%d write=%d verify=%d",
+                pre_stat, open_ret, write_ret,
+                boot_index_exists ? boot_index_size : -999);
         /* Read config.json if it exists — station location, name, etc.
          * This is the only time we can read FATFS (before USB MSC takes over). */
         {
@@ -1031,12 +1055,12 @@ static void setup_usb_storage(void)
          * Any firmware writes to FATFS while mounted via USB will corrupt it.
          * Runtime config changes should use NVS and sync to FATFS on reboot.
          */
+        /* Force flush flashdisk cache to flash before USB MSC takes over */
+        disk_access_ioctl("NAND", DISK_IOCTL_CTRL_SYNC, NULL);
         fs_unmount(&mp);
     }
 
-    if (usb_enable(NULL) == 0) {
-        LOG_INF("USB active (MSC + CDC ACM)");
-    }
+    /* USB is already enabled in main() before this function is called */
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1160,15 +1184,25 @@ int main(void)
     }
 
     enable_peripherals();
+
+    /* FATFS operations BEFORE USB enable — mount, write, read, unmount.
+     * Must complete before USB MSC goes live to avoid concurrent access. */
     setup_usb_storage();
 
-    /* Wait briefly for serial monitor */
+    /* Enable USB composite (CDC ACM console + MSC drive) */
+    if (usb_enable(NULL) == 0) {
+        LOG_INF("USB active (MSC + CDC ACM)");
+    }
+
+    /* Wait briefly for serial monitor to connect */
     for (int i = 0; i < 30 && !dtr; i++) {
         uart_line_ctrl_get(console_dev, UART_LINE_CTRL_DTR, &dtr);
         k_msleep(100);
     }
 
     LOG_INF("=== TinyGS nRF52 Phase 2: MQTT-TLS over Thread ===");
+    LOG_INF("FATFS: index.html %s (size=%d)",
+            boot_index_exists ? "exists" : "MISSING", boot_index_size);
     log_heap_usage("boot");
     init_openthread();
 
@@ -1191,6 +1225,8 @@ int main(void)
         case STATE_WAIT_THREAD:
             if (thread_attached) {
                 log_heap_usage("thread_attached");
+                LOG_INF("FATFS boot: index.html %s (size=%d)",
+                        boot_index_exists ? "EXISTS" : "MISSING", boot_index_size);
                 LOG_INF("--- Thread attached, waiting 5s for routing to stabilize ---");
                 k_msleep(5000);
                 app_state = STATE_DNS_RESOLVE;
