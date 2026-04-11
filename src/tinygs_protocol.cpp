@@ -28,7 +28,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         "\"seconds\":%u,"
         "\"Vbat\":%.1f,"
         "\"tx\":0,"
-        "\"station_location\":[0.0,0.0]"
+        "\"station_location\":[-33.8688,151.2093]"
         "}",
         TINYGS_VERSION,
         TINYGS_GIT_VERSION,

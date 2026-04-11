@@ -22,6 +22,7 @@
 #include <zephyr/drivers/spi.h>
 #include <zephyr/sys/reboot.h>
 #include <hal/nrf_power.h>
+#include <hal/nrf_ficr.h>
 
 #include <mbedtls/debug.h>
 #include <RadioLib.h>
@@ -395,12 +396,21 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             mqtt_connected_uptime_ms = now;
             LOG_INF("MQTT CONNECTED to %s:%d", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
 
-            /* Subscribe to TinyGS topics */
-            tinygs_subscribe(client, MQTT_USERNAME, MQTT_CLIENT_ID);
+            /* Derive MAC from device's IEEE address */
+            {
+                static char mac_str[13];
+                uint64_t dev_id = NRF_FICR->DEVICEID[0] |
+                                  ((uint64_t)NRF_FICR->DEVICEID[1] << 32);
+                snprintf(mac_str, sizeof(mac_str), "%04X%08X",
+                         (uint16_t)(dev_id >> 32), (uint32_t)dev_id);
 
-            /* Send welcome message — announces us to the TinyGS server */
-            tinygs_send_welcome(client, MQTT_USERNAME, MQTT_CLIENT_ID,
-                                MQTT_CLIENT_ID);
+                /* Subscribe to TinyGS topics */
+                tinygs_subscribe(client, MQTT_USERNAME, MQTT_CLIENT_ID);
+
+                /* Send welcome message — announces us to the TinyGS server */
+                tinygs_send_welcome(client, MQTT_USERNAME, MQTT_CLIENT_ID,
+                                    mac_str);
+            }
 
             app_state = STATE_MQTT_CONNECTED;
         } else {
@@ -424,9 +434,28 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 
     case MQTT_EVT_PUBLISH: {
         const struct mqtt_publish_param *pub = &evt->param.publish;
-        LOG_INF("MQTT PUBLISH topic_len=%u payload_len=%u",
-                pub->message.topic.topic.size,
-                pub->message.payload.len);
+        /* Read topic */
+        static char rx_topic[128];
+        static uint8_t rx_payload[512];
+        uint32_t topic_len = MIN(pub->message.topic.topic.size, sizeof(rx_topic) - 1);
+        memcpy(rx_topic, pub->message.topic.topic.utf8, topic_len);
+        rx_topic[topic_len] = '\0';
+
+        /* Read payload from the MQTT input buffer */
+        uint32_t payload_len = MIN(pub->message.payload.len, sizeof(rx_payload) - 1);
+        int ret = mqtt_read_publish_payload(client, rx_payload, payload_len);
+        if (ret >= 0) {
+            rx_payload[ret] = '\0';
+            LOG_INF("MQTT RX [%s]: %s", rx_topic, (char *)rx_payload);
+        } else {
+            LOG_ERR("MQTT payload read error: %d", ret);
+        }
+
+        /* Acknowledge if QoS 1 */
+        if (pub->message.topic.qos == MQTT_QOS_1_AT_LEAST_ONCE) {
+            struct mqtt_puback_param ack = { .message_id = pub->message_id };
+            mqtt_publish_qos1_ack(client, &ack);
+        }
         break;
     }
 
