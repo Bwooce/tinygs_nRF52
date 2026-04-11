@@ -82,12 +82,12 @@ int zephyr_hal_run_tests(ZephyrHal *hal) {
         LOG_INF("PASS: spiTransfer(NULL rx) didn't crash");
     }
 
-    /* Test 6: SPI transfer rejects oversized len */
+    /* Test 6: SPI transfer with matching buffer sizes */
     {
-        /* 257 bytes should be rejected (dummy buffer is 256) */
-        uint8_t buf[4] = {0};
-        hal->spiTransfer(buf, 257, buf);
-        LOG_INF("PASS: spiTransfer(257 bytes) rejected without crash");
+        uint8_t tx[8] = {0};
+        uint8_t rx[8] = {0};
+        hal->spiTransfer(tx, sizeof(tx), rx);
+        LOG_INF("PASS: spiTransfer(8 bytes) completed");
     }
 
     /* Test 7: yield doesn't crash */

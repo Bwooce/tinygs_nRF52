@@ -21,6 +21,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/drivers/flash.h>
 #include <hal/nrf_power.h>
 #include <hal/nrf_ficr.h>
 
@@ -855,15 +856,28 @@ static void setup_usb_storage(void)
     struct fs_dirent entry;
 
     LOG_INF("Mounting FATFS...");
-    int res = fs_mount(&mp);
 
-    if (res != 0) {
-        LOG_WRN("FS not found, formatting...");
-        res = fs_mkfs(FS_FATFS, (uintptr_t)mp.mnt_point, &mp, 0);
-        if (res == 0) {
-            res = fs_mount(&mp);
+    /* Check FAT boot sector signature BEFORE mounting. FatFs will crash
+     * (HardFault) on corrupted data because it follows garbage pointers
+     * in the FAT table. Reading raw flash is safe — no FatFs involved.
+     * If invalid, erase the first sector so f_mount returns FR_NO_FILESYSTEM
+     * instead of crashing, then CONFIG_FS_FATFS_MOUNT_MKFS auto-formats. */
+    {
+        const struct device *flash_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_flash_controller));
+        uint8_t sig[2];
+        flash_read(flash_dev, 0xEC000 + 510, sig, 2);
+        if (sig[0] != 0x55 || sig[1] != 0xAA) {
+            LOG_WRN("FATFS: no valid boot sector (0x%02X 0x%02X), erasing for reformat",
+                    sig[0], sig[1]);
+            /* Erase just the first page (4KB) — clears the corrupted BPB so
+             * f_mount will see 0xFF and return FR_NO_FILESYSTEM cleanly. */
+            flash_erase(flash_dev, 0xEC000, 4096);
         }
     }
+
+    /* fs_mount initializes the disk driver. CONFIG_FS_FATFS_MOUNT_MKFS
+     * auto-formats if f_mount returns FR_NO_FILESYSTEM. */
+    int res = fs_mount(&mp);
 
     if (res == 0) {
         fs_file_t_init(&file);
