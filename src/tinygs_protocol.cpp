@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <zephyr/sys/base64.h>
+#include <zephyr/net/openthread.h>
+#include <openthread/thread.h>
+#include <openthread/ip6.h>
 
 LOG_MODULE_REGISTER(tinygs_proto, LOG_LEVEL_INF);
 
@@ -15,10 +18,13 @@ int tinygs_build_welcome(char *buf, size_t buflen,
                           const char *mac, float vbat, uint32_t free_mem,
                           uint32_t uptime_s)
 {
-    /* Minimal welcome — the server needs at minimum: version, mac, board, chip.
-     * We omit ESP32-specific fields (ip, slot, pSize, idfv) and add what we can. */
+    /* ESP32 sends WiFi IPv4 here. We're on Thread (IPv6 only).
+     * Send "0.0.0.0" to avoid breaking TinyGS database which expects IPv4. */
+    const char *ip_str = "0.0.0.0";
+
     return snprintf(buf, buflen,
         "{"
+        "\"station_location\":[-33.8688,151.2093],"
         "\"version\":\"%s\","
         "\"git_version\":\"%s\","
         "\"chip\":\"%s\","
@@ -29,7 +35,10 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         "\"seconds\":%u,"
         "\"Vbat\":%.1f,"
         "\"tx\":0,"
-        "\"station_location\":[-33.8688,151.2093]"
+        "\"sat\":\"\","
+        "\"ip\":\"%s\","
+        "\"idfv\":\"NCS/Zephyr\","
+        "\"modem_conf\":\"{}\""
         "}",
         TINYGS_VERSION,
         TINYGS_GIT_VERSION,
@@ -39,7 +48,8 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         TINYGS_RADIO_CHIP,
         (unsigned)free_mem,
         (unsigned)uptime_s,
-        (double)vbat
+        (double)vbat,
+        ip_str
     );
 }
 
@@ -47,20 +57,30 @@ int tinygs_build_ping(char *buf, size_t buflen,
                        float vbat, uint32_t free_mem, uint32_t min_mem,
                        int radio_error, float inst_rssi)
 {
+    /* Get Thread parent RSSI if available */
+    int8_t thread_rssi = 0;
+    struct openthread_context *ot_ctx = openthread_get_default_context();
+    if (ot_ctx) {
+        openthread_api_mutex_lock(ot_ctx);
+        otThreadGetParentAverageRssi(ot_ctx->instance, &thread_rssi);
+        openthread_api_mutex_unlock(ot_ctx);
+    }
+
     return snprintf(buf, buflen,
         "{"
         "\"Vbat\":%.1f,"
         "\"Mem\":%u,"
         "\"MinMem\":%u,"
         "\"MaxBlk\":%u,"
-        "\"RSSI\":0,"
+        "\"RSSI\":%d,"
         "\"radio\":%d,"
         "\"InstRSSI\":%.1f"
         "}",
         (double)vbat,
         (unsigned)free_mem,
         (unsigned)min_mem,
-        (unsigned)free_mem,  /* MaxBlk ≈ free mem on Zephyr */
+        (unsigned)free_mem,
+        (int)thread_rssi,
         radio_error,
         (double)inst_rssi
     );
