@@ -53,18 +53,30 @@ The nRF52840 has 256KB RAM. The current baseline (Thread + USB MSC + mbedTLS) us
     - Always cast `uint32_t` to `(unsigned long)` and use `%lu` or `%lX` in log statements for compatibility across ESP32/nRF52.
     - Every Zephyr thread/workqueue must feed the Task Watchdog if enabled.
 
-## 5. Configuration Architecture
+## 5. Kconfig vs Board Definition
+
+We build against `nrf52840dk_nrf52840` and override everything in `app.overlay` and `prj.conf`.
+The board Kconfig (nrf52840dk) already sets some options like `SOC_DCDC_NRF52X` and clock sources.
+
+**Rules:**
+- **prj.conf** is for application-level config (MQTT, TLS, networking, app features). Prefer this.
+- **Board Kconfig** sets hardware-level defaults (DCDC, SoC features). Don't duplicate in prj.conf.
+- If a Kconfig symbol has no prompt ("not directly user-configurable"), it's set by board/SoC Kconfig. Do NOT add it to prj.conf — it will error.
+- Before adding a new CONFIG_ option, check if the board already provides it: `grep CONFIG_NAME ncs/zephyr/boards/arm/nrf52840dk_nrf52840/Kconfig*`
+- Long-term: create a proper T114 board definition under `boards/` to replace the dk overlay hack.
+
+## 6. Configuration Architecture
 - Do NOT add BLE or Matter code.
 - Configuration is handled via a dynamic `index.html` on the USB MSC drive.
 - The device parses `config.json` from the FATFS partition at boot.
 - Remote configuration changes via MQTT must be persisted back to the `config.json` file.
 
-## 6. OTA Updates
+## 7. OTA Updates
 - OTA is deferred to Phase 3+ and will require MCUboot (flashed via SWD).
 - For Phase 1, use the Adafruit UF2 bootloader with `.uf2` files for USB flashing.
 - See PLAN.md Section 3.5 for the MCUboot migration path.
 
-## 7. Flash Partition Safety — CRITICAL
+## 8. Flash Partition Safety — CRITICAL
 
 ### The Adafruit UF2 bootloader lives at the TOP of flash, NOT at 0x0.
 
@@ -122,7 +134,7 @@ Address    Region                      Size     Protection
 - MBR params: 0xFE000 (4KB)
 - Bootloader settings: 0xFF000 (4KB)
 
-## 8. Runtime Configuration Items
+## 9. Runtime Configuration Items
 
 These values need to be user-configurable at runtime (eventually via NVS Preferences
 store with wear-levelling). Items marked **[server]** are set/updated by the TinyGS

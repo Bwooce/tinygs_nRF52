@@ -93,8 +93,8 @@ static volatile bool thread_attached = false;
 
 /* MQTT client and buffers */
 static struct mqtt_client mqtt_client;
-static uint8_t mqtt_rx_buf[256];
-static uint8_t mqtt_tx_buf[256];
+static uint8_t mqtt_rx_buf[256];  /* Streaming read: headers + topic of incoming PUBLISH */
+static uint8_t mqtt_tx_buf[128];  /* MQTT framing only: header+topic; payload sent via iovec */
 static struct sockaddr_storage broker_addr;
 
 /* -------------------------------------------------------------------------- */
@@ -184,13 +184,7 @@ static void led_init(void)
     }
 #if defined(CONFIG_LED_STRIP)
     if (led_strip && device_is_ready(led_strip)) {
-        struct led_rgb test[2] = {{0}, {0}};
-        if (led_strip_update_rgb(led_strip, test, 2) != 0) {
-            LOG_WRN("NeoPixel: SPI write failed — disabling");
-            led_strip = NULL;
-        } else {
-            LOG_INF("NeoPixel: 2x WS2812 ready");
-        }
+        LOG_INF("NeoPixel: 2x WS2812 ready");
     } else {
         led_strip = NULL;
     }
@@ -757,6 +751,9 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     size_t conf_len = strlen((char *)rx_payload);
                     if (conf_len < sizeof(tinygs_radio.modem_conf)) {
                         memcpy(tinygs_radio.modem_conf, rx_payload, conf_len + 1);
+                    } else {
+                        LOG_WRN("modem_conf too large (%zu > %zu), skipped",
+                                conf_len, sizeof(tinygs_radio.modem_conf) - 1);
                     }
 
                     radio->startReceive();
@@ -804,23 +801,23 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         memcpy(mac, p + 1, 12);
                         mac[12] = '\0';
                         if (strcmp(mac, device_client_id) == 0) {
-                            /* Find second string (new name) */
                             p = strchr(end + 1, '"');
                             if (p) {
                                 end = strchr(p + 1, '"');
                                 if (end) {
-                                    char name[32];
                                     size_t nlen = end - p - 1;
-                                    if (nlen < sizeof(name)) {
-                                        memcpy(name, p + 1, nlen);
-                                        name[nlen] = '\0';
-                                        LOG_INF("  → Rename requested: %s (needs NVS persist)", name);
-                                        /* TODO: persist to NVS, reconnect with new name */
+                                    if (nlen > 0 && nlen < sizeof(cfg_station)) {
+                                        memcpy(cfg_station, p + 1, nlen);
+                                        cfg_station[nlen] = '\0';
+                                        tinygs_config_save_station(cfg_station);
+                                        LOG_INF("  → Renamed to: %s (saved, rebooting)", cfg_station);
+                                        k_msleep(500);
+                                        sys_reboot(SYS_REBOOT_COLD);
                                     }
                                 }
                             }
                         } else {
-                            LOG_DBG("  → set_name: MAC mismatch (%s != %s)", mac, device_client_id);
+                            LOG_DBG("  → set_name: MAC mismatch");
                         }
                     }
                 }
@@ -867,6 +864,12 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             } else if (strcmp(cmnd, "weblogin") == 0) {
                 LOG_INF("  *** TinyGS Web Login URL: %s", (char *)rx_payload);
                 LOG_INF("  *** Open this URL to configure auto-tune and other settings");
+            } else if (strcmp(cmnd, "sat_pos_oled") == 0) {
+                /* Satellite position for world map display: [x, y] pixel coordinates */
+                LOG_DBG("  → sat_pos_oled: %s", (char *)rx_payload);
+            } else if (strcmp(cmnd, "frame") == 0 ||
+                       strncmp(cmnd, "frame/", 6) == 0) {
+                LOG_DBG("  → frame data (display not implemented)");
             } else {
                 LOG_INF("  → Unhandled command: %s", cmnd);
             }
@@ -1104,7 +1107,7 @@ static void setup_usb_storage(void)
          * Flow: read → parse → overwrite with current values → unmount
          */
         {
-            static char cfg_buf[512];
+            static char cfg_buf[256]; /* config.json is ~200 bytes */
             struct fs_file_t cfg;
 
             /* Read existing config.json if present */
@@ -1603,6 +1606,11 @@ int main(void)
                 if ((now_ms - last_ping_ms) >= (TINYGS_PING_INTERVAL_S * 1000)) {
                     tinygs_send_ping(&mqtt_client, cfg_mqtt_user, cfg_station);
                     last_ping_ms = now_ms;
+                }
+
+                /* Weblogin request via BOOT button */
+                if (tinygs_display_weblogin_requested()) {
+                    tinygs_send_weblogin_request(&mqtt_client, cfg_mqtt_user, cfg_station);
                 }
 
                 k_msleep(100);  /* 100ms loop — responsive to LoRa packets */

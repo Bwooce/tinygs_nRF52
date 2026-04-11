@@ -1,3 +1,28 @@
+/*
+ * Heltec Mesh Node T114 Rev 2.0 — Board Definition Overlay
+ * https://heltec.org/project/mesh-node-t114/
+ * Pinout: https://heltec.org/wp-content/uploads/2024/08/T114_v2_pin.png
+ * Schematic V2.1: https://resource.heltec.cn/download/Mesh_Node_T114/schematic/MeshNode-T114_V2.1.pdf
+ *
+ * MCU: nRF52840 (ARM Cortex-M4F, 64MHz)
+ *   - 1MB Flash, 256KB SRAM
+ *   - USB 2.0, BLE 5.0, IEEE 802.15.4
+ * Radio: SX1262 LoRa (150-960MHz)
+ * Display: ST7789V 1.14" TFT 240x135 RGB565
+ * GPS: L76K GNSS (UART1)
+ * LEDs: 1x green (P1.03), 2x WS2812 NeoPixel (P0.14, Vext-powered)
+ * Button: BOOT (P1.10)
+ * Battery: SH1.25x2 JST connector, 100k/390k divider on AIN2 (P0.04)
+ * Power: Vext (P0.21 HIGH) gates GPS, NeoPixels, I2C peripherals
+ * Connectors: P1 (7-pin), P2 (7-pin) headers, USB-C, SH1.25x2 battery
+ * Bootloader: Adafruit UF2 (0xF4000-0x100000), app at 0x26000
+ *
+ * Base board: nrf52840dk_nrf52840 (all pins overridden below)
+ * Pin assignments verified against Heltec official pinout and Meshtastic variant.h
+ */
+
+#include <zephyr/dt-bindings/led/led.h>
+
 / {
     chosen {
         zephyr,console = &cdc_acm_uart0;
@@ -28,13 +53,17 @@
             gpios = <&gpio1 3 GPIO_ACTIVE_LOW>;
             label = "Green LED";
         };
+        tft_en: tft_en {
+            gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
+            label = "TFT Power Enable";
+        };
     };
 
     aliases {
         vext = &vext_pin;
         lora0 = &sx1262;
         led0 = &green_led;
-        /* led-strip = &neopixels; — disabled, SPI2 needs SCK pin */
+        led-strip = &led_strip;
     };
 };
 
@@ -222,9 +251,44 @@
     };
 };
 
-/* WS2812 NeoPixel RGB LEDs — disabled until proper SPI2 SCK pin is assigned.
- * Without SCK, nRF SPIM times out and blocks the SPI subsystem, breaking LoRa.
- * TODO: assign an unused GPIO as dummy SCK, or use I2S/GPIO driver instead.
- *
- * &spi2 { ... neopixels: ws2812@0 { ... }; };
+/*
+ * WS2812 NeoPixel RGB LEDs — 2x GRB on P0.14 via SPI2.
+ * SPI2 is a separate SPIM instance from SPI0 (display) and SPI1 (LoRa).
+ * Dummy SCK on P0.09 (UART2 RX, not populated) — nRF SPIM requires SCK.
+ * Requires Vext (P0.21) HIGH for NeoPixel power.
  */
+&pinctrl {
+    spi2_default: spi2_default {
+        group1 {
+            psels = <NRF_PSEL(SPIM_MOSI, 0, 14)>,
+                    <NRF_PSEL(SPIM_SCK, 0, 9)>;
+        };
+    };
+    spi2_sleep: spi2_sleep {
+        group1 {
+            psels = <NRF_PSEL(SPIM_MOSI, 0, 14)>,
+                    <NRF_PSEL(SPIM_SCK, 0, 9)>;
+            low-power-enable;
+        };
+    };
+};
+
+&spi2 {
+    compatible = "nordic,nrf-spim";
+    status = "okay";
+    pinctrl-0 = <&spi2_default>;
+    pinctrl-1 = <&spi2_sleep>;
+    pinctrl-names = "default", "sleep";
+
+    led_strip: ws2812@0 {
+        compatible = "worldsemi,ws2812-spi";
+        reg = <0>;
+        spi-max-frequency = <4000000>;
+        chain-length = <2>;
+        color-mapping = <LED_COLOR_ID_GREEN
+                         LED_COLOR_ID_RED
+                         LED_COLOR_ID_BLUE>;
+        spi-one-frame = <0x70>;
+        spi-zero-frame = <0x40>;
+    };
+};

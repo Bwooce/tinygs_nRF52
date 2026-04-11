@@ -15,7 +15,8 @@
 | Username | Per-station credential from TinyGS dashboard |
 | Password | Per-station credential from TinyGS dashboard |
 | Max packet size | 1000 bytes |
-| Keep-alive | Configurable via CONFIG_MQTT_KEEPALIVE. Tested: 300s and 600s both work over NAT64. 600s (10 min) is the practical maximum — longer is unnecessary since the server sends radio config updates frequently. |
+| Keep-alive | Configurable via CONFIG_MQTT_KEEPALIVE. Tested: 300s and 600s both work over NAT64. 600s is the practical maximum. |
+| MQTT version | 3.1.1 (NOT 5.0 — server does not support MQTT 5.0) |
 | TLS | Required. TinyGS custom CA + ISRG Root X1 (see `certs.h`) |
 
 ### 1.1 Client ID vs Station Name
@@ -56,43 +57,84 @@ to access the station's Operator settings, where "Auto Tune" can be toggled ON.
 Once enabled, the server sends `begine` commands to the station-specific cmnd topic
 with satellite frequency, modulation parameters, and satellite name.
 
+### 2.6 TinyGS Website vs MQTT Control
+
+The TinyGS website (tinygs.com) provides operator controls that are NOT available via MQTT:
+
+| Setting | Where controlled | MQTT field? |
+|---------|-----------------|-------------|
+| Auto-tune on/off | Website (Operator settings via weblogin URL) | No — `remote_tune` in ESP32 config |
+| Station location | Website can override; station sends in `welcome` | `station_location` in welcome, `set_pos_prm` from server |
+| Station name | Website or `set_name` command | Yes — `cmnd/set_name` |
+| Satellite assignment | Server-controlled when auto-tune ON | `cmnd/begine` |
+| Frequency offset | Server or local | `cmnd/foff` |
+
+**Location behavior is not fully understood.** The station sends its location in the `welcome`
+payload. The server sends `set_pos_prm` back on each connect (usually `[null]`). The exact
+mechanism for how location is set and persisted on the server side is unclear — it may
+require the weblogin URL or other means not available via MQTT alone.
+
+### 2.4 Startup Sequence (observed from live server)
+
+The following messages are exchanged immediately after MQTT CONNACK:
+
+1. **Station → Server:** `SUBSCRIBE` to `tinygs/global/#` and `tinygs/{user}/{station}/cmnd/#`
+2. **Station → Server:** `PUBLISH` `tele/welcome` with station info
+3. **Server → Station:** `cmnd/set_pos_prm` with payload `[null]` — **always sent on connect**, even when the station's position is already known. Safe to log and ignore when payload is `[null]`. When the server has position data (from a previous `welcome` message or website override), the payload is a JSON array: `[lat, lon, alt]` or `[alt]`.
+   - **Location flow:** The station sends its location in the `welcome` payload (`station_location` field). The TinyGS website can also override the location manually. On each connect, the server sends `set_pos_prm` to push the authoritative location back to the station (which may differ from what the station sent if the user edited it on the website). If no location has been set, the server sends `[null]`.
+4. **Server → Station:** `cmnd/begine` — first satellite assignment with radio config (only if auto-tune is enabled)
+5. **Satellite reassignment:** `cmnd/begine` sent approximately every 60s when auto-tune is active
+
+### 2.5 Ping Timing
+
+The TinyGS ping interval (`tele/ping`) must NOT equal `CONFIG_MQTT_KEEPALIVE`. When both the TinyGS telemetry PUBLISH and the MQTT library's internal PINGREQ fire at the same instant, the combined TCP writes over NAT64 cause an EIO (-5) disconnect ~22s later. Use `keepalive - 30s` as the ping interval to avoid this collision.
+
+| Setting | Value | Notes |
+|---------|-------|-------|
+| MQTT keepalive | 600s | Tested over NAT64, reliable |
+| TinyGS ping | 570s | = keepalive - 30s, avoids PINGREQ collision |
+| MQTT PINGREQ | 600s | Sent automatically by MQTT library |
+
 ### 2.2 Published Topics (Telemetry)
 
 | Topic | When | Purpose |
 |-------|------|---------|
 | `tinygs/{user}/{station}/tele/welcome` | On connect/restart | Device info, version, config |
-| `tinygs/{user}/{station}/tele/ping` | Every 60s | Heartbeat with battery, memory, RSSI |
+| `tinygs/{user}/{station}/tele/ping` | Every keepalive-30s | Heartbeat with battery, memory, RSSI |
 | `tinygs/{user}/{station}/tele/rx` | On packet receive | LoRa/FSK received packet (base64) |
 | `tinygs/{user}/{station}/tele/get_adv_prm` | On request | Advanced parameters response |
 | `tinygs/{user}/{station}/tele/get_weblogin` | On request | Web login URL |
 
-### 2.3 Command Topics Handled (23 total)
+### 2.3 Command Topics (23 total, reverse-engineered from ESP32 source)
+
+> **Note:** This list is reverse-engineered and may be incomplete. The server may
+> send commands not listed here, or some commands may be deprecated.
 
 **Global commands** (`tinygs/global/cmnd/`):
-- `batch_conf` — Batch radio configuration
-- `update` — OTA firmware update
+- `batch_conf` — Batch radio configuration (same format as `begine`)
+- `update` — OTA firmware update URL
 - `reset` — Hard reset device
-- `status` — Request status report
-- `log` — Server log message
-- `weblogin` — Web login request
+- `status` — Request status report (station responds on `stat/status`)
+- `log` — Server log message (payload: string to display)
+- `weblogin` — Web login URL response (payload: one-time URL)
 
 **Station commands** (`tinygs/{user}/{station}/cmnd/`):
-- `freq` — Set frequency
-- `beginp` — Persist modem config
-- `begine` — Load modem config
+- `begine` — Load modem config (JSON with freq, sf, bw, cr, sat, NORAD, tlx, filter, etc.)
+- `beginp` — Persist modem config to flash
 - `begin_lora` — Quick LoRa configuration
 - `begin_fsk` — Quick FSK configuration
-- `sat` — Select satellite
+- `freq` — Set frequency (payload: float MHz as string)
+- `sat` — Select satellite (payload: JSON string with name)
+- `set_pos_prm` — Set station coordinates (payload: `[lat, lon, alt]`, `[alt]`, or `[null]`)
+- `set_name` — Rename station (payload: `["MAC","new_name"]`, apply only if MAC matches)
+- `foff` — Frequency offset in Hz (payload: float as string)
+- `filter` — Packet filter (payload: JSON array of bytes)
 - `tx` — Transmit data
-- `filter` — Packet filter
-- `sleep` — Deep sleep
-- `siesta` — Light sleep
-- `foff` — Frequency offset
+- `sleep` — Deep sleep (payload: duration)
+- `siesta` — Light sleep (payload: duration)
 - `set_adv_prm` — Set advanced parameters
 - `get_adv_prm` — Get advanced parameters
-- `set_pos_prm` — Set station coordinates
-- `set_name` — Set station name
-- `sat_pos_oled` — Display satellite position
+- `sat_pos_oled` — Satellite position for world map display (payload: `[x, y]` pixel coords)
 - `frame/{num}` — Display frame data
 
 ## 3. JSON Payload Formats
@@ -238,6 +280,43 @@ Published in response to `cmnd/status`. Contains station location, version, boar
 current modem configuration (mode, frequency, satellite, SF/CR/BW or bitrate/freqdev/rxBw),
 and last packet metrics (rssi, snr, frequency_error, crc_error, timestamps).
 
+### 3.5 begine/batch_conf Fields
+
+The `begine` (and `batch_conf`) command carries radio configuration. Key fields:
+
+| Field | Type | Example | Notes |
+|-------|------|---------|-------|
+| mode | string | "LoRa" | |
+| freq | float | 400.265 | MHz |
+| bw | float | 125 | kHz |
+| sf | int | 10 | 5-12 |
+| cr | int | 5 | 5-8 |
+| sw | int | 18 | Sync word (default 18) |
+| pwr | int | 5 | TX power |
+| cl | int | 120 | Code length |
+| pl | int | 9 | Preamble length |
+| gain | int | 0 | LNA gain |
+| crc | bool | true | CRC enable |
+| fldro | int | 1 | Force LDRO |
+| iIQ | bool | false | Inverted IQ (optional, defaults false) |
+| sat | string | "Tianqi" | Satellite name |
+| NORAD | int | 57795 | NORAD catalog number |
+| filter | int[] | [1,0,235] | Packet filter bytes (optional) |
+| **tlx** | string | "base64..." | **Binary TLE, 34 bytes, base64-encoded** |
+
+**IMPORTANT:** The TLE field is named `"tlx"` (NOT `"tle"`). This is a base64-encoded
+34-byte binary representation of the satellite's two-line element set, used for Doppler
+compensation. The decoded bytes are fed to a Plan13 (P13) satellite propagator.
+
+### 3.6 Doppler Compensation
+
+When a `begine` payload includes a `tlx` field:
+1. Decode the 34-byte binary TLE from base64
+2. Sync time via SNTP (Google NTP IPv6: `2001:4860:4806:8::`)
+3. Compute satellite position/velocity using Plan13 propagator every 4 seconds
+4. Apply Doppler frequency correction with 1200 Hz hysteresis (only retune radio when delta exceeds threshold)
+5. Radio frequency = base_freq + freq_offset(foff) + doppler_correction
+
 ## 4. Radio Configuration (ModemInfo)
 
 The modem configuration structure contains:
@@ -258,13 +337,16 @@ The modem configuration structure contains:
 
 ## 6. Timing
 
-| Operation | Interval |
-|-----------|----------|
-| MQTT ping | 60s (PubSubClient default) |
-| RX queue drain | 2 packets per loop |
-| TLE refresh display | 4000ms |
-| Reconnect base delay | 20s + random(10-20s) |
-| Max reconnect attempts | 6 (then deep sleep 4h or restart) |
+| Operation | Interval | Notes |
+|-----------|----------|-------|
+| MQTT keepalive | 600s (configurable) | Tested over NAT64, reliable |
+| TinyGS ping | keepalive - 30s | Offset avoids PINGREQ collision |
+| Satellite reassignment | ~60s | When auto-tune enabled |
+| Doppler update | 4s | When TLE available, 1200 Hz hysteresis |
+| RX queue drain | 2 packets per loop | ESP32 behavior |
+| Reconnect base delay | 20s + random(10-20s) | ESP32 behavior |
+| Max reconnect attempts | 6 | Then deep sleep 4h or restart (ESP32) |
+| SNTP sync | Once after connect | Google NTP IPv6 via OT SNTP client |
 
 ## 7. Certificates
 
@@ -274,7 +356,21 @@ The ESP32 firmware embeds two root CA certificates in `certs.h`:
 
 The nRF52 port embeds the TinyGS Intermediary CA in `src/tinygs_ca_cert.h`.
 
-## 8. ESP32 Source Reference
+## 8. Critical Field Type Gotchas
+
+These field type mismatches will cause the TinyGS server to reject data or show
+the station as offline:
+
+| Field | Correct | Wrong (breaks server) |
+|-------|---------|----------------------|
+| version | number `2604100` | string `"2604100"` |
+| Vbat | int millivolts `4130` | float volts `4.13` |
+| mode | string `"LoRa"` | number `1` |
+| board | number `255` | string `"255"` |
+| modem_conf | JSON-escaped string `"{}"` | raw JSON object `{}` |
+| TLE field | `"tlx"` | `"tle"` (wrong field name) |
+
+## 9. ESP32 Source Reference
 
 Source: [github.com/G4lile0/tinyGS](https://github.com/G4lile0/tinyGS)
 Key files:

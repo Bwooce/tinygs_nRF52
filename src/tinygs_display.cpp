@@ -60,17 +60,25 @@ static const struct gpio_dt_spec button = {
 };
 static struct gpio_callback button_cb_data;
 
+static volatile bool weblogin_requested = false;
+
 static void button_pressed(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
-    /* Wake display on button press */
+    uint32_t now = k_uptime_get_32();
+
     if (!display_active && disp_dev) {
+        /* First press wakes the display */
         display_blanking_off(disp_dev);
         if (device_is_ready(backlight.port)) gpio_pin_set_dt(&backlight, 1);
         display_active = true;
         current_page = 0;
+    } else {
+        /* Display already active (or no display): request weblogin */
+        weblogin_requested = true;
     }
-    last_activity_ms = k_uptime_get_32();
-    last_page_switch_ms = last_activity_ms;
+
+    last_activity_ms = now;
+    last_page_switch_ms = now;
 }
 
 /* Line buffer for rendering — one row of FONT_H pixels */
@@ -247,4 +255,13 @@ void tinygs_display_on(void)
     if (device_is_ready(backlight.port)) gpio_pin_set_dt(&backlight, 1);
     display_active = true;
     last_page_switch_ms = k_uptime_get_32();
+}
+
+bool tinygs_display_weblogin_requested(void)
+{
+    if (weblogin_requested) {
+        weblogin_requested = false;
+        return true;
+    }
+    return false;
 }

@@ -85,7 +85,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
     const char *ip_str = "0.0.0.0";
 
     /* Escape modem_conf for embedding as a JSON string value */
-    static char escaped_conf[512];
+    static char escaped_conf[384]; /* modem_conf(256) + escape overhead */
     json_escape(escaped_conf, sizeof(escaped_conf), tinygs_radio.modem_conf);
 
     return snprintf(buf, buflen,
@@ -212,6 +212,10 @@ int tinygs_send_welcome(struct mqtt_client *client,
     param.dup_flag = 0;
     param.retain_flag = 0;
 
+    if (len >= (int)sizeof(payload_buf)) {
+        LOG_WRN("Welcome payload truncated (%d >= %zu)", len, sizeof(payload_buf));
+    }
+
     LOG_INF("Publishing welcome to %s", topic_buf);
     LOG_INF("Payload: %s", payload_buf);
 
@@ -238,6 +242,10 @@ int tinygs_send_ping(struct mqtt_client *client,
     param.message_id = 0;
     param.dup_flag = 0;
     param.retain_flag = 0;
+
+    if (len >= (int)sizeof(payload_buf)) {
+        LOG_WRN("Ping payload truncated (%d >= %zu)", len, sizeof(payload_buf));
+    }
 
     LOG_DBG("Ping: %s", payload_buf);
 
@@ -369,6 +377,10 @@ int tinygs_send_status(struct mqtt_client *client,
     param.dup_flag = 0;
     param.retain_flag = 0;
 
+    if (len >= (int)sizeof(payload_buf)) {
+        LOG_WRN("Status payload truncated (%d >= %zu)", len, sizeof(payload_buf));
+    }
+
     LOG_INF("Publishing status to %s", topic_buf);
 
     return mqtt_publish(client, &param);
@@ -416,4 +428,37 @@ void tinygs_handle_set_pos(const char *payload, size_t len)
     } else {
         LOG_WRN("set_pos_prm: expected 1 or 3 values, got %d", count);
     }
+}
+
+int tinygs_send_weblogin_request(struct mqtt_client *client,
+                                  const char *user, const char *station)
+{
+    static uint32_t last_weblogin_ms = 0;
+    uint32_t now = k_uptime_get_32();
+
+    if ((now - last_weblogin_ms) < 10000 && last_weblogin_ms != 0) {
+        LOG_DBG("Weblogin request rate-limited (10s)");
+        return 0;
+    }
+    last_weblogin_ms = now;
+
+    tinygs_build_topic(topic_buf, sizeof(topic_buf),
+                        TINYGS_TOPIC_TELE, "get_weblogin",
+                        user, station);
+
+    const char *payload = "1";
+
+    struct mqtt_publish_param param;
+    param.message.topic.qos = MQTT_QOS_0_AT_MOST_ONCE;
+    param.message.topic.topic.utf8 = (uint8_t *)topic_buf;
+    param.message.topic.topic.size = strlen(topic_buf);
+    param.message.payload.data = (uint8_t *)payload;
+    param.message.payload.len = 1;
+    param.message_id = 0;
+    param.dup_flag = 0;
+    param.retain_flag = 0;
+
+    LOG_INF("Requesting weblogin URL...");
+
+    return mqtt_publish(client, &param);
 }

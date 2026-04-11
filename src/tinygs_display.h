@@ -23,4 +23,11 @@ void tinygs_display_off(void);
  */
 void tinygs_display_on(void);
 
+/**
+ * @brief Check and clear the weblogin request flag.
+ * Set by BOOT button press when display is active (or no display).
+ * Rate-limited to once per 10 seconds.
+ */
+bool tinygs_display_weblogin_requested(void);
+
 #endif /* TINYGS_DISPLAY_H */

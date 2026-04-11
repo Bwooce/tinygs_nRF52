@@ -115,7 +115,7 @@ All Phase 1 objectives proven:
 1.  **[DONE] Thread Network:** Joiner commissioning to HA SkyConnect BR. Dataset persisted in NVS.
 2.  **[DONE] MQTT-TLS over Thread:** Native TLS handshake via nat64.net public NAT64 + DNS64. Authenticated to mqtt.tinygs.com:8883 with real credentials. TLS session caching enabled.
 3.  **[DONE] SX1262 LoRa Radio:** RadioLib `begin()` succeeds over SPI. Pin mapping verified against T114 v2 schematic.
-4.  **[DONE] RAM Budget:** FLASH 464KB/752KB (62%), RAM 253KB/256KB (98%). Tight but functional. Dedicated 60KB mbedTLS heap required for cert parsing.
+4.  **[DONE] RAM Budget:** FLASH 453KB/752KB (59%), RAM 162KB/256KB (62%). Comfortable. Dedicated 40KB mbedTLS heap + 8KB system heap. LTO saves ~85KB flash.
 5.  **[DONE] USB MSC + CDC ACM:** FATFS at 0xE2000, NVS at 0xF2000. 1200-baud bootloader entry working.
 6.  **[OBSERVING] MQTT Connection Durability:** Logging PINGRESP intervals and disconnect events to measure NAT64/broker timeouts.
 
@@ -128,7 +128,7 @@ All Phase 1 objectives proven:
 
 ### Phase 2: Core TinyGS Porting — COMPLETE
 1.  **[DONE] State Machine & Polling:** MQTT state machine with Thread join → DNS → TLS → MQTT → satellite tracking.
-2.  **[DONE] Protocol Emulation:** All 23 MQTT commands handled. JSON escaping for modem_conf. foff and filter implemented.
+2.  **[DONE] Protocol Emulation:** 18/23 MQTT commands handled (see Phase 3 item 10 for remaining). JSON escaping for modem_conf. foff and filter implemented.
 3.  **[DONE] Interrupt-driven LoRa RX:** Full radio param parsing (freq, sf, bw, cr, sw, pl, iIQ, crc) + packet filter.
 4.  **[DONE] NVS Config Persistence:** Zephyr Settings on shared NVS partition. config.json bidirectional sync.
 5.  **[DONE] Doppler Compensation:** P13 propagator ported from ESP32. TLE parsing from begine. SNTP time sync via OT SNTP client (Google NTP IPv6). 4s update interval, 1200 Hz hysteresis. Activates when server sends TLE data.
@@ -136,30 +136,68 @@ All Phase 1 objectives proven:
 7.  **[DONE] FATFS:** 64KB partition, auto-format, LFN, corruption detection.
 8.  **[DONE] Auto-tune:** Weblogin URL for server-side toggle. Satellites assigned ~1/min.
 9.  **[DONE] RAM Optimization:** 162KB used (62%) — down from 255KB (97%). 8KB system + 40KB mbedTLS heaps.
+10. **[DONE] MQTT Stability:** TinyGS ping offset 30s before MQTT keepalive to avoid collision. TLS IN buffer 8192 for large server records. All MQTT TX buffers right-sized with overflow warnings.
 
 ### Phase 3: Peripherals & Polish — IN PROGRESS
 1.  **Display (Optional):** ST7789V 240x135 TFT on SPI0. Custom 8x16 bitmap font renderer.
     - **[DONE]** Hardware init, graceful headless mode, backlight control
     - **[DONE]** Multi-page module with 3 color-coded pages cycling every 5s
     - **[DONE]** Custom 8x16 font renderer (4.6KB flash vs 114KB LVGL)
+    - **[DONE]** Auto-off after 30s, wake on BOOT button press (GPIO interrupt)
     - **[TODO]** World map XBM + satellite position dot (from sat_pos_oled command)
-    - **[TODO]** Auto-off after 30s, wake on BOOT button press
     - **[TODO]** Flash on LoRa packet reception
-2.  **RGB LEDs:** The T114 has two RGB LEDs. Define purpose:
-    - LED1: Connection status (solid = connected, slow blink = joining, fast blink = error)
-    - LED2: LoRa activity (flash on packet RX)
-    - Both OFF when display is off (power saving mode), with optional slow pulse (~1/30s) as heartbeat
-3.  **Power Saving Review:** Before Phase 3 is complete, do a full power audit:
+2.  **LEDs:**
+    - **[DONE]** Green LED (P1.03) — blink on state transitions
+    - **[TODO]** NeoPixel RGB LEDs — WS2812 via SPI2 blocked (nRF SPIM needs SCK pin). Options: assign dummy SCK GPIO, or use I2S driver (`CONFIG_WS2812_STRIP_I2S=y`)
+3.  **[DONE] Hardware Watchdog:** WDT0, 1200s timeout (2x keepalive). Fed on CONNACK/PINGRESP.
+4.  **[DONE] Debug Safety Checks:** CONFIG_STACK_SENTINEL + CONFIG_FORTIFY_SOURCE_RUN_TIME enabled.
+    - **[TODO]** Before production: measure flash/RAM impact of removing STACK_SENTINEL, FORTIFY_SOURCE_RUN_TIME, SYS_HEAP_RUNTIME_STATS, and THREAD_NAME. Keep or remove based on cost vs safety.
+5.  **Power Saving Review:** Before Phase 3 is complete, do a full power audit:
     - Measure current draw in each state (Thread join, MQTT connected idle, LoRa RX, deep sleep)
     - Identify and disable unnecessary peripherals (QSPI, unused GPIOs, USB when not needed)
     - Profile SED poll period vs. power draw
     - Target: <1mA average active, <50uA Thread idle, <11uA deep sleep
     - Implement SED latency toggling (per nrf-thread-switch pattern)
-4.  **Firmware Updates:** USB-only via UF2 drag-and-drop. OTA over Thread was evaluated and dropped due to power cost (see Section 6.3).
-5.  **Commissioning Mode:** Extended wake window (15-30 min) for unprovisioned devices.
-6.  **Hardware Watchdog:** nRF52840 has one WDT (WDT0). Feed on MQTT PINGRESP; if no PINGRESP within 2x keepalive, watchdog reboots the device.
+6.  **Firmware Updates:** USB-only via UF2 drag-and-drop. OTA over Thread dropped (see Section 6.3).
+7.  **Commissioning Mode:** Extended wake window (15-30 min) for unprovisioned devices.
+8.  **[DONE] set_name persistence:** Saves to NVS, reboots to reconnect with new station name on all topics.
+9.  **[DONE] Weblogin:** Trigger via BOOT button press (rate-limited to 10s). Server responds on cmnd/weblogin with URL.
+10. **MQTT command implementation status (18/23 implemented):**
+    - **Implemented:** begine, batch_conf, freq, sat, set_pos_prm, set_name (NVS+reboot), status, reset, tx (rejected), log, foff, filter, update (rejected), weblogin
+    - **Stubs:** sleep/siesta (needs power mgmt), sat_pos_oled (needs display), frame/{num} (needs display)
+    - **Not implemented:** beginp (server always sends begine), begin_lora/begin_fsk (begine handles), set_adv_prm/get_adv_prm (low priority)
+11. **[TODO] Evaluate cJSON or Zephyr json.h** to replace hand-rolled snprintf/strstr JSON.
+12. **[DONE] Power quick wins:** DCDC converter, 32kHz crystal (was RC), PM_DEVICE for SPI sleep states.
+13. **[TODO] SED mode + power gating:** Requires commissioning mode first (see Section 6.8). Plan:
+    - Enable CONFIG_OPENTHREAD_MTD_SED + poll period toggling (fast for MQTT, slow for idle)
+    - SX1262 duty cycle RX (startReceiveDutyCycle) instead of continuous RX
+    - Gate Vext when LEDs/GPS not needed, TFT_EN when display off
+    - USB disable when no cable detected
+    - Target: <1mA average (currently ~17mA estimated)
 
-### Phase 4: RadioLib ZephyrHal Upstream PR
+### Phase 4: Power Optimization & Commissioning
+Requires current measurement equipment and on-site testing.
+
+1.  **Commissioning mode:** Extended wake window (15-30 min) for unprovisioned devices.
+    Device must stay fully awake (no SED) during Thread joining and DTLS commissioning handshake.
+    Once provisioned and connected, transition to power-saving mode.
+2.  **SED (Sleepy End Device) mode:**
+    - Enable CONFIG_OPENTHREAD_MTD_SED + CONFIG_OPENTHREAD_POLL_PERIOD=60000 (60s)
+    - Implement poll period toggling: fast (100-500ms) during MQTT activity, slow (60s) idle
+    - Set otThreadSetChildTimeout to 4x poll period
+    - TCP/TLS survives over SED — packets buffered at parent router
+3.  **SX1262 duty cycle RX:** Use startReceiveDutyCycle() for hardware-managed RX/sleep cycling
+    instead of continuous RX. Saves ~4.1mA (4.6mA → 0.5mA).
+4.  **Peripheral power gating:**
+    - Vext (P0.21) LOW when LEDs/GPS not needed (saves ~3mA)
+    - TFT_EN (P0.03) LOW when display blanked (saves ~1.5mA)
+    - usb_disable() when no USB cable detected (saves ~1mA)
+5.  **Current measurement:** Baseline each state with a power profiler
+    - Thread joining, MQTT connected idle, LoRa RX, deep sleep
+    - Target: <1mA average (estimated achievable based on research)
+6.  **CONFIG_RAM_POWER_DOWN_LIBRARY=y** — power down unused SRAM banks
+
+### Phase 5: RadioLib ZephyrHal Upstream PR
 The Zephyr HAL is functionally complete and multi-instance safe. To submit as a PR
 to [jgromes/RadioLib](https://github.com/jgromes/RadioLib), the following packaging
 work is needed (no existing RadioLib HAL has formal tests — the bar is a working
@@ -218,25 +256,25 @@ example + clean HAL source):
 *   **Approach:** Firmware updates are USB-only via UF2 drag-and-drop. Users with physical access flash new firmware directly. A small MQTT notification can alert users when updates are available.
 *   **Future option:** If OTA is revisited, use CoAP block transfer (not MQTT) over Thread, or require the user to bring the device within USB range.
 
-### 6.4 mbedTLS Memory — HIGH RISK
-*   **The Problem:** Static RAM usage is 241KB / 256KB (92%) before any TLS handshake heap allocation. Only ~15KB margin remains.
-*   **The Risk:** The 80KB system heap + 60KB mbedTLS heap = 140KB of heap pools (55% of total RAM). `CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=4096` saves RAM but may fail if mqtt.tinygs.com sends >4KB TLS records. Peak ECC/RSA math during handshake could exhaust remaining heap.
-*   **Measured:** Build reports 241KB static RAM (vs. plan estimate of 222KB). The 34KB margin from the plan is actually ~15KB.
-*   **Mitigations (Squeeze Playbook, in order):**
-    1.  **CC310 hardware crypto:** ~~Enable `CONFIG_HW_CC3XX=y`~~ DONE — `CONFIG_PSA_CRYPTO_DRIVER_CC3XX=y` enabled. +70KB flash, +640B RAM.
-    2.  **Heap sharing:** Set `CONFIG_MBEDTLS_ENABLE_HEAP=n` to merge mbedTLS heap into system heap (reclaims 60KB static array, shares dynamically).
-    3.  **LTO:** Enable `CONFIG_LTO=y` to strip unused static data.
-    4.  **Stack profiling:** Use `CONFIG_THREAD_ANALYZER=y` to shrink oversized thread stacks.
-    5.  **Content length:** If 4096 breaks mqtt.tinygs.com, try 8192 before 16384. Each doubling costs ~4KB.
-    6.  **Measure:** `CONFIG_SYS_HEAP_RUNTIME_STATS=y` is enabled — log heap high-water mark after TLS handshake.
+### 6.4 mbedTLS Memory — RESOLVED (was HIGH RISK)
+*   **The Problem:** Static RAM usage was 241KB / 256KB (92%) before any TLS handshake heap allocation.
+*   **Resolution:** Aggressive optimization reduced RAM to 162KB (62%):
+    - System heap: 80KB → 8KB (peak measured: 516 bytes)
+    - mbedTLS heap: 60KB → 40KB (dedicated, required for handshake fragmentation)
+    - LTO: CONFIG_LTO=y + CONFIG_ISR_TABLES_LOCAL_DECLARATION=y saves ~85KB flash
+    - CC310 hardware crypto disabled (PSA RSA verify broken). Oberon software crypto used.
+*   **Current TLS buffer config:**
+    - CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=8192 (IN=8192, OUT=4096)
+    - Heap sharing not used — mbedTLS needs contiguous heap for cert parsing
+*   **MQTT TX/RX buffers right-sized:**
+    - mqtt_tx_buf: 128 (MQTT header+topic only; payload sent via iovec)
+    - mqtt_rx_buf: 256 (streaming read buffer)
+    - payload_buf: 512 (outbound JSON, with truncation warnings)
+    - rx_payload: 768 (inbound server payloads)
 
-### 6.5 RadioLib on Zephyr — LOW RISK
-*   **The Problem:** Porting RadioLib (optimized for Arduino's blocking API) to Zephyr.
-*   **The Risk:** Naive `k_sleep()` polling for LoRa packet reception negates the nRF52's power savings.
-*   **Current Status:** SX1262 init fails with code -2 (`CHIP_NOT_FOUND`) — likely SPI pin mapping or Vext timing issue. Not blocking MQTT-TLS testing.
-*   **Mitigations:**
-    1.  Use Zephyr's `k_work` workqueue attached to `gpio_add_callback` for DIO1 (packet received interrupt).
-    2.  Debug SPI communication: verify pin mapping against T114 schematic, increase Vext stabilization delay, check CS polarity.
+### 6.5 RadioLib on Zephyr — RESOLVED (was LOW RISK)
+*   **Resolution:** RadioLib ZephyrHal fully working. Multi-instance safe (CONTAINER_OF pattern). SX1262 init, config, TX, RX all proven. Interrupt-driven packet reception via DIO1 GPIO callback.
+*   **Actual linked size:** ~1.3KB after LTO (pre-LTO object was 160KB — misleading).
 
 ### 6.6 NVS/FATFS Storage Conflict — RESOLVED
 *   **The Problem:** OpenThread stores persistent credentials via Zephyr's NVS settings subsystem. FATFS stores config.json/index.html. Sharing a partition would corrupt both.
@@ -254,12 +292,14 @@ example + clean HAL source):
 *   **The Risk:** If the firmware enters its 11µA deep sleep (SED) mode too quickly, the Thread radio will turn off. By the time the user walks outside to scan the code, the Border Router won't be able to reach the device for the DTLS commissioning handshake.
 *   **Mitigations:** Implement a dedicated **"Commissioning Mode"** state. If the device is unprovisioned, it must remain fully awake (Radio RX on) for a generous window (e.g., 15-30 minutes) after boot before falling back to the aggressive SED sleep cycle.
 
-### 6.9 Extreme Brittleness to Stack Overflows — HIGH RISK
-*   **The Problem:** With static RAM at 241KB, only ~15KB of genuinely free RAM remains for the Zephyr kernel's dynamic thread stacks, ISR stacks, and network buffer allocations.
-*   **The Risk:** OpenThread and mbedTLS state machines are complex. A malformed packet or edge-case TLS fragment could cause a function to allocate slightly more stack frames than profiled, triggering a CPU hard fault and rebooting the node.
-*   **Mitigations:** During Phase 1, perform extensive "fuzzing". Send max-sized MQTT payloads, invalid Thread packets, and force TLS reconnections repeatedly while monitoring `CONFIG_THREAD_ANALYZER` high-water marks. Do not trust idle-state RAM usage.
+### 6.9 Stack Overflows — LOW RISK (was HIGH)
+*   **The Problem:** Stack overflows in Zephyr cause silent hard faults.
+*   **Resolution:** RAM is now 162KB (62%), leaving ~94KB free. Risk substantially reduced.
+*   **Active mitigations:**
+    - CONFIG_STACK_SENTINEL=y — writes sentinel word at bottom of each thread stack, checked on context switch
+    - CONFIG_FORTIFY_SOURCE_RUN_TIME=y — catches buffer overflows in libc calls (memcpy, snprintf, etc.)
+    - All MQTT payload buffers have overflow/truncation warnings
+*   **[TODO] Production:** Assess flash/RAM cost of removing STACK_SENTINEL, FORTIFY_SOURCE_RUN_TIME, SYS_HEAP_RUNTIME_STATS, and THREAD_NAME. Keep or remove based on savings vs safety tradeoff.
 
-### 6.10 Hardware Crypto (CC310) vs. Adafruit SoftDevice — HIGH RISK
-*   **The Problem:** To save RAM, `CONFIG_PSA_CRYPTO_DRIVER_CC3XX=y` uses the nRF52's hardware crypto. However, the board retains the Adafruit UF2 bootloader and the Nordic SoftDevice at `0x00000 - 0x26000`.
-*   **The Risk:** The SoftDevice (MBR) intercepts hardware interrupts. A Zephyr OpenThread application directly controlling the CC310 peripheral alongside a resident Nordic SoftDevice can lead to IRQ routing failures or crypto initialization crashes.
-*   **Mitigations:** Verify early in Phase 1 that the CC310 initializes and successfully performs an ECC/RSA operation. If it faults, either drop the Adafruit bootloader entirely (migrating to MCUboot at `0x0` via SWD) or fall back to software crypto (which will break the 256KB RAM budget).
+### 6.10 Hardware Crypto (CC310) — RESOLVED (was HIGH RISK)
+*   **Resolution:** CC310 hardware crypto disabled. PSA RSA PKCS1v15 verify returns INVALID_ARGUMENT via CC310 driver. Using Oberon software crypto instead. CONFIG_MBEDTLS_USE_PSA_CRYPTO=n forces legacy (non-PSA) path for TLS. OpenThread uses PSA directly (unaffected). RAM budget is comfortable without CC310.
