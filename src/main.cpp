@@ -516,7 +516,9 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             } else if (strcmp(cmnd, "set_pos_prm") == 0) {
                 tinygs_handle_set_pos((char *)rx_payload, ret);
             } else if (strcmp(cmnd, "status") == 0) {
-                LOG_INF("  → Status request (TODO: send response)");
+                extern char device_client_id[13];
+                tinygs_send_status(client, MQTT_USERNAME, device_client_id,
+                                   436.703f, 10, 250.0f, 5);
             } else if (strcmp(cmnd, "log") == 0) {
                 LOG_INF("  → Server: %s", (char *)rx_payload);
             } else {

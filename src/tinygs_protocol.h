@@ -106,4 +106,12 @@ extern float tinygs_station_alt;
  */
 void tinygs_handle_set_pos(const char *payload, size_t len);
 
+/*
+ * Send status response (stat/status topic).
+ * Called in response to cmnd/status from server.
+ */
+int tinygs_send_status(struct mqtt_client *client,
+                        const char *user, const char *station,
+                        float frequency, int sf, float bw, int cr);
+
 #endif /* TINYGS_PROTOCOL_H */

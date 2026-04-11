@@ -258,6 +258,59 @@ int tinygs_send_rx(struct mqtt_client *client,
     return mqtt_publish(client, &param);
 }
 
+int tinygs_send_status(struct mqtt_client *client,
+                        const char *user, const char *station,
+                        float frequency, int sf, float bw, int cr)
+{
+    tinygs_build_topic(topic_buf, sizeof(topic_buf),
+                        TINYGS_TOPIC_STAT, TINYGS_STAT_STATUS,
+                        user, station);
+
+    int len = snprintf(payload_buf, sizeof(payload_buf),
+        "{"
+        "\"station_location\":[%.4f,%.4f],"
+        "\"version\":%u,"
+        "\"board\":%d,"
+        "\"tx\":false,"
+        "\"mode\":\"LoRa\","
+        "\"frequency\":%.4f,"
+        "\"frequency_offset\":0,"
+        "\"satellite\":\"\","
+        "\"sf\":%d,"
+        "\"cr\":%d,"
+        "\"bw\":%.1f,"
+        "\"NORAD\":0,"
+        "\"rssi\":0,"
+        "\"snr\":0,"
+        "\"frequency_error\":0,"
+        "\"crc_error\":false,"
+        "\"unix_GS_time\":%u"
+        "}",
+        (double)tinygs_station_lat,
+        (double)tinygs_station_lon,
+        (unsigned)TINYGS_VERSION,
+        TINYGS_BOARD,
+        (double)frequency,
+        sf, cr,
+        (double)bw,
+        (unsigned)(k_uptime_get_32() / 1000)
+    );
+
+    struct mqtt_publish_param param;
+    param.message.topic.qos = MQTT_QOS_0_AT_MOST_ONCE;
+    param.message.topic.topic.utf8 = (uint8_t *)topic_buf;
+    param.message.topic.topic.size = strlen(topic_buf);
+    param.message.payload.data = (uint8_t *)payload_buf;
+    param.message.payload.len = len;
+    param.message_id = 0;
+    param.dup_flag = 0;
+    param.retain_flag = 0;
+
+    LOG_INF("Publishing status to %s", topic_buf);
+
+    return mqtt_publish(client, &param);
+}
+
 void tinygs_handle_set_pos(const char *payload, size_t len)
 {
     /* ESP32 format: JSON array [lat, lon, alt] or [alt]
