@@ -386,6 +386,9 @@ static int resolve_broker(void)
 static uint32_t mqtt_connected_uptime_ms = 0;
 static uint32_t mqtt_last_pingresp_ms = 0;
 
+/* Forward declaration — defined later in RadioLib section */
+extern SX1262 *radio;
+
 static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *evt)
 {
     uint32_t now = k_uptime_get_32();
@@ -460,14 +463,66 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             cmnd += 6;  /* skip "/cmnd/" */
             LOG_INF("  command: %s", cmnd);
 
-            /* TODO: dispatch commands — for now just log them */
-            if (strcmp(cmnd, "batch_conf") == 0 ||
-                strcmp(cmnd, "begine") == 0) {
-                LOG_INF("  → Radio config command received (not yet applied)");
+            if (strcmp(cmnd, "begine") == 0 ||
+                strcmp(cmnd, "batch_conf") == 0) {
+                /* Reconfigure radio from JSON payload.
+                 * Minimal parser — extract freq, sf, bw, cr, sat */
+                LOG_INF("  → Applying radio config...");
+                if (radio != nullptr) {
+                    /* Parse frequency */
+                    const char *p = strstr((char *)rx_payload, "\"freq\":");
+                    if (p) {
+                        float freq = strtof(p + 7, NULL);
+                        if (freq > 100.0f && freq < 1000.0f) {
+                            int st = radio->setFrequency(freq);
+                            LOG_INF("  freq=%.4f MHz (%s)", (double)freq,
+                                    st == RADIOLIB_ERR_NONE ? "OK" : "FAIL");
+                        }
+                    }
+                    /* Parse SF */
+                    p = strstr((char *)rx_payload, "\"sf\":");
+                    if (p) {
+                        int sf = atoi(p + 5);
+                        if (sf >= 5 && sf <= 12) {
+                            radio->setSpreadingFactor(sf);
+                            LOG_INF("  sf=%d", sf);
+                        }
+                    }
+                    /* Parse BW */
+                    p = strstr((char *)rx_payload, "\"bw\":");
+                    if (p) {
+                        float bw = strtof(p + 5, NULL);
+                        radio->setBandwidth(bw);
+                        LOG_INF("  bw=%.1f kHz", (double)bw);
+                    }
+                    /* Parse CR */
+                    p = strstr((char *)rx_payload, "\"cr\":");
+                    if (p) {
+                        int cr = atoi(p + 5);
+                        radio->setCodingRate(cr);
+                        LOG_INF("  cr=%d", cr);
+                    }
+                    /* Parse satellite name */
+                    p = strstr((char *)rx_payload, "\"sat\":\"");
+                    if (p) {
+                        char sat[32];
+                        const char *end = strchr(p + 7, '"');
+                        if (end && (end - p - 7) < (int)sizeof(sat)) {
+                            memcpy(sat, p + 7, end - p - 7);
+                            sat[end - p - 7] = '\0';
+                            LOG_INF("  satellite: %s", sat);
+                        }
+                    }
+                    /* Restart reception */
+                    radio->startReceive();
+                    LOG_INF("  Radio reconfigured, listening");
+                }
             } else if (strcmp(cmnd, "status") == 0) {
-                LOG_INF("  → Status request received");
+                LOG_INF("  → Status request (TODO: send response)");
             } else if (strcmp(cmnd, "log") == 0) {
-                LOG_INF("  → Server log: %s", (char *)rx_payload);
+                LOG_INF("  → Server: %s", (char *)rx_payload);
+            } else {
+                LOG_INF("  → Unhandled command: %s", cmnd);
             }
         }
 
@@ -720,7 +775,7 @@ static void setup_usb_storage(void)
 
 static ZephyrHal radio_hal(lora_spi.bus, (struct spi_config *)&lora_spi.config);
 static Module *radio_mod = nullptr;
-static SX1262 *radio = nullptr;
+SX1262 *radio = nullptr;  /* non-static — accessed from MQTT callback */
 
 /* LoRa packet reception flag — set by DIO1 ISR */
 static volatile bool lora_packet_received = false;
