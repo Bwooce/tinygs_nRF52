@@ -72,10 +72,14 @@ static volatile bool thread_attached = false;
 
 #define MQTT_BROKER_HOSTNAME "mqtt.tinygs.com"
 #define MQTT_BROKER_PORT     8883
-#define MQTT_CLIENT_ID       "tinygs_nrf52_poc"
-#include "mqtt_credentials.h" /* MQTT_USERNAME, MQTT_PASSWORD — gitignored */
+#include "mqtt_credentials.h" /* MQTT_USERNAME, MQTT_PASSWORD defaults — gitignored */
 #include "tinygs_ca_cert.h"   /* TinyGS server cert for TLS cipher suite config */
 #define MQTT_TLS_SEC_TAG     1
+
+/* Runtime config — defaults from mqtt_credentials.h, overridden by config.json */
+static char cfg_station[32] = "tinygs_nrf52_poc";
+static char cfg_mqtt_user[64] = MQTT_USERNAME;
+static char cfg_mqtt_pass[64] = MQTT_PASSWORD;
 
 /* MQTT client and buffers */
 static struct mqtt_client mqtt_client;
@@ -403,12 +407,12 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             LOG_INF("MQTT CONNECTED to %s:%d", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
 
             {
-                /* Station name for topics = MQTT_CLIENT_ID (dashboard-configured).
+                /* Station name for topics = cfg_station (dashboard-configured).
                  * MAC (device_client_id) is only for MQTT connect and the mac JSON field. */
                 extern char device_client_id[13];
 
-                tinygs_subscribe(client, MQTT_USERNAME, MQTT_CLIENT_ID);
-                tinygs_send_welcome(client, MQTT_USERNAME, MQTT_CLIENT_ID,
+                tinygs_subscribe(client, cfg_mqtt_user, cfg_station);
+                tinygs_send_welcome(client, cfg_mqtt_user, cfg_station,
                                     device_client_id);
             }
 
@@ -579,7 +583,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     }
                 }
             } else if (strcmp(cmnd, "status") == 0) {
-                tinygs_send_status(client, MQTT_USERNAME, MQTT_CLIENT_ID);
+                tinygs_send_status(client, cfg_mqtt_user, cfg_station);
             } else if (strcmp(cmnd, "reset") == 0) {
                 LOG_WRN("  → Reset requested by server");
                 k_msleep(500);
@@ -707,21 +711,19 @@ static int mqtt_tls_connect(void)
     mqtt_client.client_id.utf8 = (uint8_t *)device_client_id;
     mqtt_client.client_id.size = strlen(device_client_id);
 
-    static struct mqtt_utf8 username = {
-        .utf8 = (uint8_t *)MQTT_USERNAME,
-        .size = sizeof(MQTT_USERNAME) - 1,
-    };
-    static struct mqtt_utf8 password = {
-        .utf8 = (uint8_t *)MQTT_PASSWORD,
-        .size = sizeof(MQTT_PASSWORD) - 1,
-    };
+    static struct mqtt_utf8 username;
+    username.utf8 = (uint8_t *)cfg_mqtt_user;
+    username.size = strlen(cfg_mqtt_user);
+    static struct mqtt_utf8 password;
+    password.utf8 = (uint8_t *)cfg_mqtt_pass;
+    password.size = strlen(cfg_mqtt_pass);
     mqtt_client.user_name = &username;
     mqtt_client.password = &password;
 
     /* Last Will Testament — tells server we disconnected */
     static char will_topic_str[128];
     snprintf(will_topic_str, sizeof(will_topic_str),
-             TINYGS_TOPIC_STAT, MQTT_USERNAME, MQTT_CLIENT_ID, TINYGS_STAT_STATUS);
+             TINYGS_TOPIC_STAT, cfg_mqtt_user, cfg_station, TINYGS_STAT_STATUS);
     static struct mqtt_topic will_topic = {
         .qos = MQTT_QOS_1_AT_LEAST_ONCE,
     };
@@ -810,6 +812,10 @@ static const char *html_content =
     "<h1>TinyGS nRF52 Setup</h1>"
     "<p>Configure your Ground Station. Save config.json to this drive, then reboot.</p>"
     "<hr>"
+    "<label>Station Name:</label><input type='text' id='station' placeholder='my_station_name'>"
+    "<label>MQTT Username:</label><input type='text' id='user' placeholder='From TinyGS dashboard'>"
+    "<label>MQTT Password:</label><input type='password' id='pass' placeholder='From TinyGS dashboard'>"
+    "<br>"
     "<label>Station Location (required for satellite assignment):</label>"
     "<div class='row'>"
     "<input type='number' step='0.0001' id='lat' placeholder='Latitude (-33.8688)'>"
@@ -823,6 +829,9 @@ static const char *html_content =
     "<script>"
     "function saveConfig() {"
     "  const config = {"
+    "    station: document.getElementById('station').value,"
+    "    mqtt_user: document.getElementById('user').value,"
+    "    mqtt_pass: document.getElementById('pass').value,"
     "    lat: parseFloat(document.getElementById('lat').value),"
     "    lon: parseFloat(document.getElementById('lon').value),"
     "    alt: parseFloat(document.getElementById('alt').value) || 0"
@@ -895,7 +904,36 @@ static void setup_usb_storage(void)
                         tinygs_station_alt = strtof(p + 6, NULL);
                     }
 
-                    LOG_INF("Station location: lat=%.4f lon=%.4f alt=%.0f",
+                    /* Parse station name */
+                    p = strstr(cfg_buf, "\"station\":\"");
+                    if (p) {
+                        const char *end = strchr(p + 11, '"');
+                        if (end && (end - p - 11) < (int)sizeof(cfg_station)) {
+                            memcpy(cfg_station, p + 11, end - p - 11);
+                            cfg_station[end - p - 11] = '\0';
+                        }
+                    }
+                    /* Parse MQTT username */
+                    p = strstr(cfg_buf, "\"mqtt_user\":\"");
+                    if (p) {
+                        const char *end = strchr(p + 13, '"');
+                        if (end && (end - p - 13) < (int)sizeof(cfg_mqtt_user)) {
+                            memcpy(cfg_mqtt_user, p + 13, end - p - 13);
+                            cfg_mqtt_user[end - p - 13] = '\0';
+                        }
+                    }
+                    /* Parse MQTT password */
+                    p = strstr(cfg_buf, "\"mqtt_pass\":\"");
+                    if (p) {
+                        const char *end = strchr(p + 13, '"');
+                        if (end && (end - p - 13) < (int)sizeof(cfg_mqtt_pass)) {
+                            memcpy(cfg_mqtt_pass, p + 13, end - p - 13);
+                            cfg_mqtt_pass[end - p - 13] = '\0';
+                        }
+                    }
+
+                    LOG_INF("Config: station=%s user=%s lat=%.4f lon=%.4f alt=%.0f",
+                            cfg_station, cfg_mqtt_user,
                             (double)tinygs_station_lat,
                             (double)tinygs_station_lon,
                             (double)tinygs_station_alt);
@@ -1012,7 +1050,7 @@ static bool lora_check_rx(void)
 
         /* Publish via MQTT if connected */
         if (app_state == STATE_MQTT_CONNECTED) {
-            tinygs_send_rx(&mqtt_client, MQTT_USERNAME, MQTT_CLIENT_ID,
+            tinygs_send_rx(&mqtt_client, cfg_mqtt_user, cfg_station,
                            data, len, rssi, snr, freq_err);
         }
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
@@ -1141,7 +1179,7 @@ int main(void)
                 /* Send TinyGS ping every 60s */
                 uint32_t now_ms = k_uptime_get_32();
                 if ((now_ms - last_ping_ms) >= (TINYGS_PING_INTERVAL_S * 1000)) {
-                    tinygs_send_ping(&mqtt_client, MQTT_USERNAME, MQTT_CLIENT_ID);
+                    tinygs_send_ping(&mqtt_client, cfg_mqtt_user, cfg_station);
                     last_ping_ms = now_ms;
                 }
 
