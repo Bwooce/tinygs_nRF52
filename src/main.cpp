@@ -477,23 +477,10 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 tinygs_send_welcome(client, cfg_mqtt_user, cfg_station,
                                     device_client_id);
 
-                /* Request a web login URL — lets user configure auto-tune etc
-                 * on the TinyGS website. URL arrives via cmnd/weblogin. */
-                {
-                    static char wl_topic[128];
-                    tinygs_build_topic(wl_topic, sizeof(wl_topic),
-                                       TINYGS_TOPIC_TELE, "get_weblogin",
-                                       cfg_mqtt_user, cfg_station);
-                    struct mqtt_publish_param wl = {
-                        .message = {
-                            .topic = { .qos = MQTT_QOS_0_AT_MOST_ONCE },
-                            .payload = { .data = (uint8_t *)"1", .len = 1 },
-                        },
-                    };
-                    wl.message.topic.topic.utf8 = (uint8_t *)wl_topic;
-                    wl.message.topic.topic.size = strlen(wl_topic);
-                    mqtt_publish(client, &wl);
-                }
+                /* Web login URL can be requested manually if needed.
+                 * Publishes to tele/get_weblogin, server responds on cmnd/weblogin
+                 * with a one-time URL for configuring auto-tune etc on tinygs.com.
+                 * TODO: trigger via button press or config.json flag */
             }
 
             app_state = STATE_MQTT_CONNECTED;
