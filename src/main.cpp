@@ -381,11 +381,17 @@ static int resolve_broker(void)
 /* MQTT Event Handler                                                          */
 /* -------------------------------------------------------------------------- */
 
+static uint32_t mqtt_connected_uptime_ms = 0;
+static uint32_t mqtt_last_pingresp_ms = 0;
+
 static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *evt)
 {
+    uint32_t now = k_uptime_get_32();
+
     switch (evt->type) {
     case MQTT_EVT_CONNACK:
         if (evt->result == 0) {
+            mqtt_connected_uptime_ms = now;
             LOG_INF("MQTT CONNECTED to %s:%d", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
             app_state = STATE_MQTT_CONNECTED;
         } else {
@@ -395,13 +401,21 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
         break;
 
     case MQTT_EVT_DISCONNECT:
-        LOG_WRN("MQTT disconnected: %d", evt->result);
+        LOG_WRN("MQTT DISCONNECTED after %us: result=%d",
+                (unsigned)(now - mqtt_connected_uptime_ms) / 1000,
+                evt->result);
         app_state = STATE_ERROR;
+        break;
+
+    case MQTT_EVT_PINGRESP:
+        mqtt_last_pingresp_ms = now;
+        LOG_INF("MQTT PINGRESP (connected %us)",
+                (unsigned)(now - mqtt_connected_uptime_ms) / 1000);
         break;
 
     case MQTT_EVT_PUBLISH: {
         const struct mqtt_publish_param *pub = &evt->param.publish;
-        LOG_INF("MQTT PUBLISH on topic len=%u, payload len=%u",
+        LOG_INF("MQTT PUBLISH topic_len=%u payload_len=%u",
                 pub->message.topic.topic.size,
                 pub->message.payload.len);
         break;
@@ -413,7 +427,9 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
         break;
 
     default:
-        LOG_DBG("MQTT event: %d", evt->type);
+        LOG_DBG("MQTT event: %d (connected %us)",
+                evt->type,
+                (unsigned)(now - mqtt_connected_uptime_ms) / 1000);
         break;
     }
 }
@@ -541,6 +557,7 @@ static int mqtt_tls_connect(void)
     tls_cfg->sec_tag_list = sec_tag_list;
     tls_cfg->sec_tag_count = ARRAY_SIZE(sec_tag_list);
     tls_cfg->hostname = MQTT_BROKER_HOSTNAME;
+    tls_cfg->session_cache = TLS_SESSION_CACHE_ENABLED;
 
     LOG_INF("Connecting with TLS...");
 
