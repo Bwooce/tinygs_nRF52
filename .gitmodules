@@ -1,6 +1,6 @@
 [submodule "lib/RadioLib"]
 	path = lib/RadioLib
-	url = /home/bruce/dev/RadioLib_Zephyr
+	url = https://github.com/Bwooce/RadioLib.git
 	branch = zephyr-hal
 [submodule "lib/ArduinoJson"]
 	path = lib/ArduinoJson
