@@ -936,42 +936,44 @@ static void setup_usb_storage(void)
             }
         }
 
-        /* Read config.json if it exists — station location, name, etc.
-         * This is the only time we can read FATFS (before USB MSC takes over). */
+        /* Config.json: bidirectional sync with NVS.
+         *
+         * NVS is authoritative (loaded later by tinygs_config_init).
+         * config.json on the USB drive is a VIEW of the config:
+         * - Read config.json → import values that differ from compiled defaults
+         *   (this seeds NVS on first boot or when user edits the file)
+         * - Write config.json from current runtime values so the drive
+         *   always shows the current state for user inspection/editing
+         *
+         * Flow: read → parse → overwrite with current values → unmount
+         */
         {
             static char cfg_buf[512];
             struct fs_file_t cfg;
+
+            /* Read existing config.json if present */
             fs_file_t_init(&cfg);
             if (fs_open(&cfg, "/NAND:/config.json", FS_O_READ) == 0) {
                 ssize_t n = fs_read(&cfg, cfg_buf, sizeof(cfg_buf) - 1);
                 fs_close(&cfg);
                 if (n > 0) {
                     cfg_buf[n] = '\0';
-                    LOG_INF("Loaded config.json (%d bytes)", (int)n);
+                    LOG_INF("Read config.json (%d bytes)", (int)n);
 
-                    /* Parse latitude */
-                    const char *p = strstr(cfg_buf, "\"lat\":");
+                    const char *p;
+                    p = strstr(cfg_buf, "\"lat\":");
                     if (p) {
-                        float lat = strtof(p + 6, NULL);
-                        if (lat >= -90.0f && lat <= 90.0f) {
-                            tinygs_station_lat = lat;
-                        }
+                        float v = strtof(p + 6, NULL);
+                        if (v >= -90.0f && v <= 90.0f) tinygs_station_lat = v;
                     }
-                    /* Parse longitude */
                     p = strstr(cfg_buf, "\"lon\":");
                     if (p) {
-                        float lon = strtof(p + 6, NULL);
-                        if (lon >= -180.0f && lon <= 180.0f) {
-                            tinygs_station_lon = lon;
-                        }
+                        float v = strtof(p + 6, NULL);
+                        if (v >= -180.0f && v <= 180.0f) tinygs_station_lon = v;
                     }
-                    /* Parse altitude */
                     p = strstr(cfg_buf, "\"alt\":");
-                    if (p) {
-                        tinygs_station_alt = strtof(p + 6, NULL);
-                    }
+                    if (p) tinygs_station_alt = strtof(p + 6, NULL);
 
-                    /* Parse station name */
                     p = strstr(cfg_buf, "\"station\":\"");
                     if (p) {
                         const char *end = strchr(p + 11, '"');
@@ -980,7 +982,6 @@ static void setup_usb_storage(void)
                             cfg_station[end - p - 11] = '\0';
                         }
                     }
-                    /* Parse MQTT username */
                     p = strstr(cfg_buf, "\"mqtt_user\":\"");
                     if (p) {
                         const char *end = strchr(p + 13, '"');
@@ -989,7 +990,6 @@ static void setup_usb_storage(void)
                             cfg_mqtt_user[end - p - 13] = '\0';
                         }
                     }
-                    /* Parse MQTT password */
                     p = strstr(cfg_buf, "\"mqtt_pass\":\"");
                     if (p) {
                         const char *end = strchr(p + 13, '"');
@@ -998,25 +998,34 @@ static void setup_usb_storage(void)
                             cfg_mqtt_pass[end - p - 13] = '\0';
                         }
                     }
-
-                    LOG_INF("Config: station=%s user=%s lat=%.4f lon=%.4f alt=%.0f",
-                            cfg_station, cfg_mqtt_user,
-                            (double)tinygs_station_lat,
-                            (double)tinygs_station_lon,
-                            (double)tinygs_station_alt);
                 }
-            } else {
-                LOG_INF("No config.json found — using defaults");
+            }
+
+            /* Write config.json from current values — always, so the drive
+             * reflects the current state for user inspection/editing */
+            fs_file_t_init(&cfg);
+            if (fs_open(&cfg, "/NAND:/config.json", FS_O_CREATE | FS_O_WRITE) == 0) {
+                int len = snprintf(cfg_buf, sizeof(cfg_buf),
+                    "{\n"
+                    "  \"station\": \"%s\",\n"
+                    "  \"mqtt_user\": \"%s\",\n"
+                    "  \"mqtt_pass\": \"%s\",\n"
+                    "  \"lat\": %.4f,\n"
+                    "  \"lon\": %.4f,\n"
+                    "  \"alt\": %.0f\n"
+                    "}\n",
+                    cfg_station, cfg_mqtt_user, cfg_mqtt_pass,
+                    (double)tinygs_station_lat,
+                    (double)tinygs_station_lon,
+                    (double)tinygs_station_alt);
+                fs_write(&cfg, cfg_buf, len);
+                fs_sync(&cfg);
+                fs_close(&cfg);
+                LOG_INF("Wrote config.json (%d bytes)", len);
             }
         }
 
-        /*
-         * Unmount FATFS before enabling USB MSC.
-         * Once USB is active, the host OS owns the FAT sectors.
-         * Any firmware writes to FATFS while mounted via USB will corrupt it.
-         * Runtime config changes should use NVS and sync to FATFS on reboot.
-         */
-        /* Force flush flashdisk cache to flash before USB MSC takes over */
+        /* Flush and unmount before USB MSC takes over */
         disk_access_ioctl("NAND", DISK_IOCTL_CTRL_SYNC, NULL);
         fs_unmount(&mp);
     }
