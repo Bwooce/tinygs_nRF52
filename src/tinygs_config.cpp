@@ -121,6 +121,12 @@ int tinygs_config_init(void)
         return 0;
     }
 
+    /* Always reset modem_conf — we previously saved raw begine JSON with
+     * unescaped quotes that broke the welcome payload. Until we have proper
+     * JSON escaping, modem_conf should not be persisted. */
+    strcpy(tinygs_radio.modem_conf, "{}");
+    settings_delete("tgs/modem");
+
     LOG_INF("Config loaded: station=%s lat=%.4f lon=%.4f alt=%.0f",
             cfg_station,
             (double)tinygs_station_lat,
