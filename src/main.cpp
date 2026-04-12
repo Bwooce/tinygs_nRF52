@@ -558,6 +558,7 @@ static int resolve_broker(void)
 static uint32_t mqtt_connected_uptime_ms = 0;
 static uint32_t mqtt_rx_count = 0;  /* MQTT messages received */
 static uint32_t lora_rx_count = 0;  /* LoRa packets received */
+static bool mqtt_first_connect = true; /* Clean session only on first connect */
 static uint32_t mqtt_last_pingresp_ms = 0;
 
 /* Device MAC-based client ID — ESP32 format %04X%08X */
@@ -591,6 +592,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                  * with a one-time URL for configuring auto-tune etc. */
             }
 
+            mqtt_first_connect = false; /* Next reconnect uses clean_session=0 */
             app_state = STATE_MQTT_CONNECTED;
         } else {
             LOG_ERR("MQTT CONNACK error: %d", evt->result);
@@ -861,6 +863,11 @@ static int mqtt_tls_connect(void)
     LOG_INF("Connecting MQTT to [%s]:%d ...", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
 
     mqtt_client_init(&mqtt_client);
+
+    /* First connect: clean_session=1 (fresh subscriptions).
+     * Reconnect after network drop: clean_session=0 (broker keeps
+     * subscriptions and delivers queued messages). */
+    mqtt_client.clean_session = mqtt_first_connect ? 1 : 0;
 
     mqtt_client.broker = &broker_addr;
 
