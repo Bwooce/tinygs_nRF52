@@ -361,17 +361,37 @@ ZTEST(json_parser, test_sat_pos_oled_floats)
 
 /* ---- foff and freq parsing (simple float strings) ---- */
 
-ZTEST(json_parser, test_foff_positive)
+ZTEST(json_parser, test_foff_simple_float)
 {
-    /* foff is just a float string — parsed with strtof in main.cpp */
-    float foff = strtof("1500.0", NULL);
+    float foff = tinygs_parse_foff("1500.0", 6, NULL, NULL);
     zassert_true(fabsf(foff - 1500.0f) < 0.1f, "foff 1500");
 }
 
 ZTEST(json_parser, test_foff_negative)
 {
-    float foff = strtof("-2000.5", NULL);
+    float foff = tinygs_parse_foff("-2000.5", 7, NULL, NULL);
     zassert_true(fabsf(foff - (-2000.5f)) < 0.1f, "foff -2000.5");
+}
+
+ZTEST(json_parser, test_foff_array_format)
+{
+    float tol = 0;
+    uint32_t refresh = 0;
+    float foff = tinygs_parse_foff("[1500.0, 800, 2000]", 19, &tol, &refresh);
+    zassert_true(fabsf(foff - 1500.0f) < 0.1f, "offset 1500");
+    zassert_true(fabsf(tol - 800.0f) < 0.1f, "tolerance 800");
+    zassert_equal(refresh, 2000, "refresh 2000ms");
+}
+
+ZTEST(json_parser, test_foff_array_partial)
+{
+    /* Only offset and tolerance, no refresh */
+    float tol = 0;
+    uint32_t refresh = 4000;
+    float foff = tinygs_parse_foff("[500, 1200]", 11, &tol, &refresh);
+    zassert_true(fabsf(foff - 500.0f) < 0.1f, "offset 500");
+    zassert_true(fabsf(tol - 1200.0f) < 0.1f, "tolerance 1200");
+    zassert_equal(refresh, 4000, "refresh unchanged");
 }
 
 ZTEST(json_parser, test_freq_parse)

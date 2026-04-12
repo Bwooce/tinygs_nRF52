@@ -33,6 +33,7 @@
 #include <openthread/sntp.h>
 #include <time.h>
 #include "tinygs_display.h"
+#include <zephyr/drivers/hwinfo.h>
 #include <hal/nrf_power.h>
 #include <hal/nrf_ficr.h>
 
@@ -559,6 +560,7 @@ static uint32_t mqtt_connected_uptime_ms = 0;
 static uint32_t mqtt_rx_count = 0;  /* MQTT messages received */
 static uint32_t lora_rx_count = 0;  /* LoRa packets received */
 static bool mqtt_first_connect = true; /* Clean session only on first connect */
+static uint32_t doppler_interval_ms = 4000; /* Updated by foff [offset, tol, refresh] */
 static uint32_t mqtt_last_pingresp_ms = 0;
 
 /* Device MAC-based client ID — ESP32 format %04X%08X */
@@ -790,16 +792,18 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             } else if (strcmp(cmnd, "sleep") == 0 || strcmp(cmnd, "siesta") == 0) {
                 LOG_INF("  → Sleep requested (not implemented yet)");
             } else if (strcmp(cmnd, "foff") == 0) {
-                /* Frequency offset in Hz — applied on next begine freq set */
-                float foff = strtof((char *)rx_payload, NULL);
+                float foff = tinygs_parse_foff((char *)rx_payload, ret,
+                                                &tinygs_radio.doppler_tol,
+                                                &doppler_interval_ms);
                 tinygs_radio.freq_offset = foff;
-                /* Apply immediately if radio is active */
                 if (radio) {
                     radio->setFrequency(tinygs_radio.frequency +
                                         tinygs_radio.freq_offset / 1e6f);
                     radio->startReceive();
                 }
-                LOG_INF("  → foff=%.0f Hz", (double)foff);
+                LOG_INF("  → foff=%.0f Hz tol=%.0f Hz refresh=%ums",
+                        (double)foff, (double)tinygs_radio.doppler_tol,
+                        (unsigned)doppler_interval_ms);
             } else if (strcmp(cmnd, "filter") == 0) {
                 int fcount = tinygs_parse_filter((char *)rx_payload, ret,
                                                   tinygs_radio.filter,
@@ -1237,7 +1241,6 @@ static void sntp_sync(void)
 #include "AioP13.h"
 
 static uint32_t last_doppler_ms = 0;
-#define DOPPLER_INTERVAL_MS 4000
 
 /**
  * Compute Doppler shift using P13 propagator and apply to radio frequency.
@@ -1459,6 +1462,21 @@ int main(void)
     }
 
     LOG_INF("=== TinyGS nRF52 Phase 2: MQTT-TLS over Thread ===");
+
+    /* Log boot/reset reason */
+    {
+        uint32_t cause = 0;
+        hwinfo_get_reset_cause(&cause);
+        hwinfo_clear_reset_cause();
+        const char *reason = "unknown";
+        if (cause & RESET_PIN) reason = "pin reset";
+        else if (cause & RESET_SOFTWARE) reason = "software reboot";
+        else if (cause & RESET_WATCHDOG) reason = "watchdog";
+        else if (cause & BIT(2)) reason = "power-on";  /* RESET_POR */
+        else if (cause == 0) reason = "power-on";
+        LOG_INF("Boot reason: %s (0x%02x)", reason, cause);
+    }
+
     log_heap_usage("boot");
     init_openthread();
 
@@ -1598,7 +1616,7 @@ int main(void)
 
                 /* Doppler compensation — every 4s if TLE available */
                 uint32_t now_ms = k_uptime_get_32();
-                if ((now_ms - last_doppler_ms) >= DOPPLER_INTERVAL_MS) {
+                if ((now_ms - last_doppler_ms) >= doppler_interval_ms) {
                     doppler_update();
                     last_doppler_ms = now_ms;
                 }

@@ -144,6 +144,26 @@ int tinygs_parse_set_name(const char *json, size_t len, struct tinygs_name_msg *
 
 /* --- filter array parsing: [1, 0, 235] --- */
 
+float tinygs_parse_foff(const char *json, size_t len, float *tol, uint32_t *refresh_ms)
+{
+    const char *bracket = (const char *)memchr(json, '[', len);
+    if (bracket) {
+        bracket++;
+        char *end;
+        float offset = strtof(bracket, &end);
+        if (*end == ',') {
+            float t = strtof(end + 1, &end);
+            if (tol && t > 0) *tol = t;
+        }
+        if (*end == ',') {
+            int r = atoi(end + 1);
+            if (refresh_ms && r > 0) *refresh_ms = (uint32_t)r;
+        }
+        return offset;
+    }
+    return strtof(json, NULL);
+}
+
 int tinygs_parse_filter(const char *json, size_t len, uint8_t *buf, size_t buf_size)
 {
     const char *p = (const char *)memchr(json, '[', len);
