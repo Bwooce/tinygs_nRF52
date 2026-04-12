@@ -121,7 +121,9 @@ struct tinygs_radio_state {
     float doppler_tol;     /* Hz — hysteresis threshold (default 1200) */
     uint8_t filter[8];     /* Packet filter bytes from server */
     uint8_t filter_len;    /* Number of active filter bytes (0 = no filter) */
-    char  modem_conf[256]; /* Last begine/batch_conf JSON �� echoed in welcome */
+    char  modem_conf[256]; /* Last begine/batch_conf JSON, echoed in welcome */
+    float sat_pos_x;       /* Satellite map position from sat_pos_oled (128x64 coords) */
+    float sat_pos_y;
 };
 extern struct tinygs_radio_state tinygs_radio;
 

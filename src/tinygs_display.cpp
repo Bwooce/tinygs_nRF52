@@ -40,7 +40,8 @@ static uint32_t last_activity_ms = 0;
 #define PAGE_INTERVAL_MS 5000
 #define DISP_W           240
 #define DISP_H           135
-#define DISPLAY_TIMEOUT_MS 30000 /* Auto-off after 30s */
+#define DISPLAY_TIMEOUT_DEFAULT_MS 30000
+static uint32_t display_timeout_ms = DISPLAY_TIMEOUT_DEFAULT_MS;
 
 /* RGB565 colors */
 #define COL_BLACK   0x0000
@@ -54,6 +55,17 @@ static uint32_t last_activity_ms = 0;
 
 extern int read_vbat_mv(void);
 extern char cfg_station[32];
+extern volatile bool thread_attached;
+
+/* App state enum — must match main.cpp */
+enum app_state {
+    STATE_WAIT_THREAD = 0,
+    STATE_DNS_RESOLVE,
+    STATE_MQTT_CONNECT,
+    STATE_MQTT_CONNECTED,
+    STATE_ERROR,
+};
+extern enum app_state app_state;
 
 /* Last packet info — updated by tinygs_display_packet_rx() */
 static float last_pkt_rssi = 0;
@@ -228,10 +240,16 @@ static void draw_page_worldmap(void)
             }
         }
 
-        /* Draw satellite dot (3x3 red) from Doppler position */
-        if (tinygs_radio.tle_valid) {
-            /* Use latlon2xy from AioP13 — but we can compute inline */
-            /* For now: no sat position available unless sat_pos_oled received */
+        /* Draw satellite dot (3x3 red) from sat_pos_oled or P13 */
+        if (tinygs_radio.sat_pos_x != 0 || tinygs_radio.sat_pos_y != 0) {
+            /* Scale from ESP32 128x64 coordinates to our 240x135 */
+            int sat_x = (int)(tinygs_radio.sat_pos_x * DISP_W / 128);
+            int sat_y = (int)(tinygs_radio.sat_pos_y * DISP_H / 64);
+            if (y >= sat_y - 1 && y <= sat_y + 1 && sat_x >= 1 && sat_x < DISP_W - 1) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    line_buf[sat_x + dx] = COL_RED;
+                }
+            }
         }
 
         display_write(disp_dev, 0, y, &desc, line_buf);
@@ -243,15 +261,46 @@ static void draw_page_worldmap(void)
     }
 }
 
-static void draw_page_system(void)
+/* Page 1: Connection status (real-time state) */
+static void draw_page_status(void)
 {
     char buf[32];
-    draw_string(0, 0, "System", COL_CYAN, COL_BLACK);
-    draw_string(0, 18, "Thread: Child", COL_GREEN, COL_BLACK);
-    draw_string(0, 36, "MQTT: Connected", COL_GREEN, COL_BLACK);
+    draw_string(0, 0, "Status", COL_CYAN, COL_BLACK);
+
+    const char *thread_str = thread_attached ? "Child" : "Detached";
+    uint16_t thread_col = thread_attached ? COL_GREEN : COL_YELLOW;
+    snprintf(buf, sizeof(buf), "Thread: %s", thread_str);
+    draw_string(0, 18, buf, thread_col, COL_BLACK);
+
+    const char *mqtt_str;
+    uint16_t mqtt_col;
+    switch (app_state) {
+    case STATE_MQTT_CONNECTED: mqtt_str = "Connected"; mqtt_col = COL_GREEN; break;
+    case STATE_MQTT_CONNECT:   mqtt_str = "Connecting..."; mqtt_col = COL_YELLOW; break;
+    case STATE_DNS_RESOLVE:    mqtt_str = "DNS..."; mqtt_col = COL_YELLOW; break;
+    case STATE_ERROR:          mqtt_str = "Error"; mqtt_col = COL_RED; break;
+    default:                   mqtt_str = "Waiting"; mqtt_col = COL_WHITE; break;
+    }
+    snprintf(buf, sizeof(buf), "MQTT: %s", mqtt_str);
+    draw_string(0, 36, buf, mqtt_col, COL_BLACK);
+
     snprintf(buf, sizeof(buf), "Vbat: %dmV", read_vbat_mv());
     draw_string(0, 54, buf, COL_WHITE, COL_BLACK);
     snprintf(buf, sizeof(buf), "Keep: %ds", CONFIG_MQTT_KEEPALIVE);
+    draw_string(0, 72, buf, COL_WHITE, COL_BLACK);
+}
+
+/* Page 5: Version and memory info */
+static void draw_page_info(void)
+{
+    char buf[32];
+    draw_string(0, 0, "System Info", COL_CYAN, COL_BLACK);
+    snprintf(buf, sizeof(buf), "Ver: %u", (unsigned)TINYGS_VERSION);
+    draw_string(0, 18, buf, COL_WHITE, COL_BLACK);
+    draw_string(0, 36, "nRF52840/SX1262", COL_WHITE, COL_BLACK);
+    snprintf(buf, sizeof(buf), "Up: %us", (unsigned)(k_uptime_get_32() / 1000));
+    draw_string(0, 54, buf, COL_GREEN, COL_BLACK);
+    snprintf(buf, sizeof(buf), "Flash: %uKB", (unsigned)(462 /* approx */));
     draw_string(0, 72, buf, COL_WHITE, COL_BLACK);
 }
 
@@ -283,7 +332,7 @@ bool tinygs_display_init(void)
         gpio_add_callback(button.port, &button_cb_data);
     }
 
-    LOG_INF("Display: ST7789V 240x135 ready (auto-off %ds)", DISPLAY_TIMEOUT_MS / 1000);
+    LOG_INF("Display: ST7789V 240x135 ready (auto-off %ds)", display_timeout_ms / 1000);
     return true;
 }
 
@@ -294,7 +343,7 @@ void tinygs_display_update(void)
     uint32_t now = k_uptime_get_32();
 
     /* Auto-off after inactivity */
-    if (display_active && (now - last_activity_ms) >= DISPLAY_TIMEOUT_MS) {
+    if (display_active && (now - last_activity_ms) >= display_timeout_ms) {
         display_blanking_on(disp_dev);
         if (device_is_ready(backlight.port)) gpio_pin_set_dt(&backlight, 0);
         display_active = false;
@@ -310,14 +359,14 @@ void tinygs_display_update(void)
     }
 
     switch (current_page) {
-    case 0: draw_page_station(); break;
-    case 1: draw_page_system(); break;
-    case 2: draw_page_satellite(); break;
-    case 3: draw_page_worldmap(); break;
-    case 4: draw_page_lastpkt(); break;
-    case 5: draw_page_system(); break;  /* Remote frame 0 placeholder */
-    case 6: draw_page_station(); break; /* Remote frame 1 placeholder */
-    case 7: draw_page_system(); break;  /* Remote frame 2 placeholder */
+    case 0: draw_page_station(); break;     /* Logo + station name */
+    case 1: draw_page_status(); break;     /* Thread/MQTT real-time state */
+    case 2: draw_page_satellite(); break;  /* Current satellite config */
+    case 3: draw_page_worldmap(); break;   /* World map + station dot */
+    case 4: draw_page_lastpkt(); break;    /* Last received packet */
+    case 5: draw_page_info(); break;       /* Version/board/uptime */
+    case 6: break;                         /* Remote frame 0 (server-pushed) */
+    case 7: break;                         /* Remote frame 1 (server-pushed) */
     }
 }
 
@@ -336,6 +385,11 @@ void tinygs_display_on(void)
     if (device_is_ready(backlight.port)) gpio_pin_set_dt(&backlight, 1);
     display_active = true;
     last_page_switch_ms = k_uptime_get_32();
+}
+
+void tinygs_display_set_timeout(uint32_t seconds)
+{
+    display_timeout_ms = seconds ? (seconds * 1000) : UINT32_MAX;
 }
 
 void tinygs_display_packet_rx(float rssi, float snr)

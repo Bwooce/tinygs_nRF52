@@ -77,8 +77,8 @@ enum app_state {
     STATE_ERROR,
 };
 
-static enum app_state app_state = STATE_WAIT_THREAD;
-static volatile bool thread_attached = false;
+enum app_state app_state = STATE_WAIT_THREAD;
+volatile bool thread_attached = false;
 
 /* -------------------------------------------------------------------------- */
 /* MQTT Configuration                                                         */
@@ -807,8 +807,17 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 LOG_INF("  *** TinyGS Web Login URL: %s", (char *)rx_payload);
                 LOG_INF("  *** Open this URL to configure auto-tune and other settings");
             } else if (strcmp(cmnd, "sat_pos_oled") == 0) {
-                /* Satellite position for world map display: [x, y] pixel coordinates */
-                LOG_DBG("  → sat_pos_oled: %s", (char *)rx_payload);
+                /* Satellite position for world map: [x, y] in 128x64 pixel coords */
+                const char *p = strchr((char *)rx_payload, '[');
+                if (p) {
+                    p++;
+                    tinygs_radio.sat_pos_x = strtof(p, (char **)&p);
+                    while (*p == ',' || *p == ' ') p++;
+                    tinygs_radio.sat_pos_y = strtof(p, NULL);
+                }
+                LOG_DBG("  → sat_pos: %.0f,%.0f",
+                        (double)tinygs_radio.sat_pos_x,
+                        (double)tinygs_radio.sat_pos_y);
             } else if (strcmp(cmnd, "frame") == 0 ||
                        strncmp(cmnd, "frame/", 6) == 0) {
                 LOG_DBG("  → frame data (display not implemented)");
@@ -1099,6 +1108,12 @@ static void setup_usb_storage(void)
                             cfg_mqtt_pass[end - p - 13] = '\0';
                         }
                     }
+
+                    p = strstr(cfg_buf, "\"display_timeout\":");
+                    if (p) {
+                        int t = atoi(p + 18);
+                        if (t >= 0) tinygs_display_set_timeout((uint32_t)t);
+                    }
                 }
             }
 
@@ -1113,7 +1128,8 @@ static void setup_usb_storage(void)
                     "  \"mqtt_pass\": \"%s\",\n"
                     "  \"lat\": %.4f,\n"
                     "  \"lon\": %.4f,\n"
-                    "  \"alt\": %.0f\n"
+                    "  \"alt\": %.0f,\n"
+                    "  \"display_timeout\": 30\n"
                     "}\n",
                     cfg_station, cfg_mqtt_user, cfg_mqtt_pass,
                     (double)tinygs_station_lat,

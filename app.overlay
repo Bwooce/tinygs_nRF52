@@ -16,9 +16,15 @@
  * Power: Vext (P0.21 HIGH) gates GPS, NeoPixels, I2C peripherals
  * Connectors: P1 (7-pin), P2 (7-pin) headers, USB-C, SH1.25x2 battery
  * Bootloader: Adafruit UF2 (0xF4000-0x100000), app at 0x26000
+ *   Source: https://github.com/adafruit/Adafruit_nRF52_Bootloader
+ *   Virtual USB drive: 32MB GhostFAT, accepts any size file
+ *   Max firmware: 944KB binary (USER_FLASH_END=0xED000 - DFU_APP_DATA_RESERVED)
+ *   Max UF2 file: ~1.9MB (2x binary due to UF2 block format)
+ *   Out-of-range blocks silently rejected → partial flash → brick risk
+ *   Our app partition (752KB) is within the 944KB bootloader limit
  *
  * Base board: nrf52840dk_nrf52840 (all pins overridden below)
- * Pin assignments verified against Heltec official pinout and Meshtastic variant.h
+ * Pin assignments verified against Heltec official pinout, schematic V2.1, and Meshtastic variant.h
  */
 
 #include <zephyr/dt-bindings/led/led.h>

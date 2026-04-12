@@ -1,6 +1,9 @@
 #ifndef TINYGS_DISPLAY_H
 #define TINYGS_DISPLAY_H
 
+#include <stdint.h>
+#include <stdbool.h>
+
 /**
  * @brief Initialize the display. Returns false if no display connected.
  */
@@ -22,6 +25,11 @@ void tinygs_display_off(void);
  * @brief Turn display on.
  */
 void tinygs_display_on(void);
+
+/**
+ * @brief Set display auto-off timeout in seconds. 0 = never auto-off.
+ */
+void tinygs_display_set_timeout(uint32_t seconds);
 
 /**
  * @brief Notify display of a received LoRa packet.
