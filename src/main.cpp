@@ -1707,25 +1707,45 @@ int main(void)
                     tinygs_send_weblogin_request(&mqtt_client, cfg_mqtt_user, cfg_station);
                 }
 
+                /* Track main thread stack high-water mark */
+#if defined(CONFIG_INIT_STACKS) && defined(CONFIG_THREAD_STACK_INFO)
+                {
+                    static size_t stack_hwm = SIZE_MAX;
+                    size_t unused = 0;
+                    if (k_thread_stack_space_get(k_current_get(), &unused) == 0) {
+                        if (unused < stack_hwm) stack_hwm = unused;
+                    }
+                }
+#endif
+
                 /* Periodic status log — every 5 minutes */
                 if ((now_ms - last_status_log_ms) >= STATUS_LOG_INTERVAL_MS) {
                     uint32_t uptime_s = k_uptime_get_32() / 1000;
                     uint32_t conn_s = (now_ms - mqtt_connected_uptime_ms) / 1000;
+
+                    /* Get main thread stack free space */
+                    size_t stack_free = 0;
+#if defined(CONFIG_INIT_STACKS) && defined(CONFIG_THREAD_STACK_INFO)
+                    k_thread_stack_space_get(k_current_get(), &stack_free);
+#endif
+
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
                     struct sys_memory_stats stats;
                     sys_heap_runtime_stats_get(&_system_heap.heap, &stats);
-                    LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u heap=%u/%u(max=%u) vbat=%dmV sat=%s",
+                    LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u heap=%u/%u(max=%u) stack_free=%u vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
                             (unsigned)stats.allocated_bytes,
                             (unsigned)stats.free_bytes,
                             (unsigned)stats.max_allocated_bytes,
+                            (unsigned)stack_free,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
 #else
-                    LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u vbat=%dmV sat=%s",
+                    LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u stack_free=%u vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
+                            (unsigned)stack_free,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
 #endif
