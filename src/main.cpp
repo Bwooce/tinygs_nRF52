@@ -567,7 +567,16 @@ static uint32_t mqtt_last_pingresp_ms = 0;
 char device_client_id[13] = {0};
 
 /* Forward declaration — defined later in RadioLib section */
+/* Radio pointer type matches DTS compatible */
+#if DT_NODE_HAS_COMPAT(DT_ALIAS(lora0), semtech_sx1262)
 extern SX1262 *radio;
+#elif DT_NODE_HAS_COMPAT(DT_ALIAS(lora0), semtech_sx1268)
+extern SX1268 *radio;
+#elif DT_NODE_HAS_COMPAT(DT_ALIAS(lora0), semtech_sx1276)
+extern SX1276 *radio;
+#elif DT_NODE_HAS_COMPAT(DT_ALIAS(lora0), semtech_sx1278)
+extern SX1278 *radio;
+#endif
 
 static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *evt)
 {
@@ -1169,12 +1178,24 @@ static void setup_usb_storage(void)
 
 /* -------------------------------------------------------------------------- */
 /* -------------------------------------------------------------------------- */
-/* RadioLib (SX1262)                                                           */
+/* RadioLib — radio type selected by DTS compatible                             */
 /* -------------------------------------------------------------------------- */
 
 static ZephyrHal radio_hal(lora_spi.bus, (struct spi_config *)&lora_spi.config);
 static Module *radio_mod = nullptr;
-SX1262 *radio = nullptr;  /* non-static — accessed from MQTT callback */
+/* Radio type from DTS compatible — compile-time selection */
+#define LORA_NODE DT_ALIAS(lora0)
+#if DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1262)
+  SX1262 *radio = nullptr;
+#elif DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1268)
+  SX1268 *radio = nullptr;
+#elif DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1276)
+  SX1276 *radio = nullptr;
+#elif DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1278)
+  SX1278 *radio = nullptr;
+#else
+  #error "Unsupported LoRa radio — check lora0 alias in app.overlay"
+#endif
 
 /* LoRa packet reception flag — set by DIO1 ISR */
 static volatile bool lora_packet_received = false;
@@ -1319,7 +1340,7 @@ static void lora_rx_callback(void)
 
 static void init_radio(void)
 {
-    LOG_INF("Initializing SX1262...");
+    LOG_INF("Initializing LoRa radio (%s)...", DT_NODE_FULL_NAME(LORA_NODE));
 
     uint32_t cs   = radio_hal.addPin(&lora_cs);
     uint32_t rst  = radio_hal.addPin(&lora_reset);
@@ -1332,14 +1353,22 @@ static void init_radio(void)
      * zephyr_hal_run_tests(&radio_hal); */
 
     radio_mod = new Module(&radio_hal, cs, dio1, rst, busy);
+#if DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1262)
     radio = new SX1262(radio_mod);
+#elif DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1268)
+    radio = new SX1268(radio_mod);
+#elif DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1276)
+    radio = new SX1276(radio_mod);
+#elif DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1278)
+    radio = new SX1278(radio_mod);
+#endif
 
     int state = radio->begin();
     if (state == RADIOLIB_ERR_NONE) {
         LOG_INF("Radio: %s initialized (RadioLib)",
                 DT_NODE_FULL_NAME(DT_NODELABEL(sx1262)));
     } else {
-        LOG_ERR("SX1262 init failed: %d", state);
+        LOG_ERR("Radio init failed: %d", state);
         return;
     }
 
@@ -1358,7 +1387,7 @@ static void init_radio(void)
     radio->setPacketReceivedAction(lora_rx_callback);
     state = radio->startReceive();
     if (state == RADIOLIB_ERR_NONE) {
-        LOG_INF("SX1262 listening on %.3f MHz, SF%d, BW%.0f",
+        LOG_INF("LoRa listening on %.3f MHz, SF%d, BW%.0f",
                 (double)tinygs_radio.frequency, tinygs_radio.sf,
                 (double)tinygs_radio.bw);
     } else {

@@ -27,7 +27,7 @@
 /* Version info for welcome message */
 #define TINYGS_VERSION        2604100  /* YYMMDDR: 2026-04-10, release 0 */
 #define TINYGS_GIT_VERSION    "tinygs_nRF52"
-#define TINYGS_CHIP           "nRF52840"
+#define TINYGS_CHIP           CONFIG_SOC  /* From Zephyr board config, e.g. "nRF52840_QIAA" */
 #define TINYGS_BOARD          255  /* Custom/unknown board ID */
 #define TINYGS_RADIO_CHIP     6    /* SX1262 (matches ESP32 Radio.h enum) */
 
