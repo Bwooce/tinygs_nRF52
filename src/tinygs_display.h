@@ -2,6 +2,7 @@
 #define TINYGS_DISPLAY_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 /**
@@ -36,6 +37,14 @@ void tinygs_display_set_timeout(uint32_t seconds);
  * Updates last-packet page and briefly flashes the display.
  */
 void tinygs_display_packet_rx(float rssi, float snr);
+
+/**
+ * @brief Set a remote text frame from server (frame/{num} command).
+ * @param frame_idx Frame index (0 or 1)
+ * @param json JSON payload: [[font, align, x, y, "text"], ...]
+ * @param len JSON length
+ */
+void tinygs_display_set_remote_frame(int frame_idx, const char *json, size_t len);
 
 /**
  * @brief Check and clear the weblogin request flag.

@@ -821,9 +821,12 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 LOG_DBG("  → sat_pos: %.0f,%.0f",
                         (double)tinygs_radio.sat_pos_x,
                         (double)tinygs_radio.sat_pos_y);
-            } else if (strcmp(cmnd, "frame") == 0 ||
-                       strncmp(cmnd, "frame/", 6) == 0) {
-                LOG_DBG("  → frame data (display not implemented)");
+            } else if (strncmp(cmnd, "frame/", 6) == 0) {
+                int frame_num = atoi(cmnd + 6);
+                tinygs_display_set_remote_frame(frame_num,
+                                                 (const char *)rx_payload, ret);
+            } else if (strcmp(cmnd, "frame") == 0) {
+                LOG_DBG("  → frame command without number, ignored");
             } else {
                 LOG_INF("  → Unhandled command: %s", cmnd);
             }
@@ -1499,7 +1502,7 @@ int main(void)
             /* Blue blink while waiting for Thread */
             neopixel_set(0, 0, (k_uptime_get_32() / 500) % 2 ? 20 : 0,  0, 0, 0);
             if (thread_attached) {
-                log_heap_usage("thread_attached");
+                /* Heap stats now in periodic STATUS log */
                 LOG_INF("--- Thread attached, waiting 5s for routing to stabilize ---");
                 k_msleep(5000);
                 app_state = STATE_DNS_RESOLVE;
@@ -1513,7 +1516,7 @@ int main(void)
             break;
 
         case STATE_DNS_RESOLVE:
-            log_heap_usage("pre_dns");
+            /* Heap stats now in periodic STATUS log */
             log_ot_diagnostics();
             if (resolve_broker() == 0) {
                 app_state = STATE_MQTT_CONNECT;
@@ -1530,7 +1533,7 @@ int main(void)
             break;
 
         case STATE_MQTT_CONNECT:
-            log_heap_usage("pre_tls");
+            /* Heap stats now in periodic STATUS log */
             if (mqtt_tls_connect() == 0) {
                 /* Set up poll fd for mqtt_input */
                 mqtt_poll_fd.fd = mqtt_client.transport.tls.sock;
@@ -1558,7 +1561,6 @@ int main(void)
             break;
 
         case STATE_MQTT_CONNECTED: {
-            log_heap_usage("mqtt_connected");
             LOG_INF("=== MQTT-TLS CONNECTION SUCCESSFUL ===");
             neopixel_set(0, 10, 0,  0, 0, 0); /* Green = connected */
             led_set(true);

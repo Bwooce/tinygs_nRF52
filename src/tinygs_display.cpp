@@ -26,6 +26,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 LOG_MODULE_REGISTER(tinygs_display, LOG_LEVEL_INF);
@@ -71,6 +72,24 @@ extern enum app_state app_state;
 static float last_pkt_rssi = 0;
 static float last_pkt_snr = 0;
 static uint32_t last_pkt_time_ms = 0;
+
+/* Remote frames — server-pushed text via frame/{num} MQTT command.
+ * Each frame has up to 8 text elements with position and content.
+ * ESP32 supports 4 frames x 15 elements — we use 2 frames x 8 for RAM. */
+#define REMOTE_FRAME_COUNT   2
+#define REMOTE_FRAME_MAX_ELEM 8
+#define REMOTE_TEXT_MAX_LEN  30  /* Max chars per text element */
+
+struct remote_text_elem {
+    int16_t x;
+    int16_t y;
+    char text[REMOTE_TEXT_MAX_LEN + 1];
+};
+
+static struct {
+    struct remote_text_elem elems[REMOTE_FRAME_MAX_ELEM];
+    uint8_t count;
+} remote_frames[REMOTE_FRAME_COUNT];
 
 static const struct gpio_dt_spec backlight = {
     .port = DEVICE_DT_GET(DT_NODELABEL(gpio0)),
@@ -290,6 +309,33 @@ static void draw_page_status(void)
     draw_string(0, 72, buf, COL_WHITE, COL_BLACK);
 }
 
+/* Pages 6-7: Server-pushed remote text frames */
+static void draw_page_remote(int frame_idx)
+{
+    if (frame_idx < 0 || frame_idx >= REMOTE_FRAME_COUNT) return;
+    const auto &frame = remote_frames[frame_idx];
+
+    if (frame.count == 0) {
+        /* Empty frame — skip to next page */
+        current_page = (current_page + 1) % PAGE_COUNT;
+        last_page_switch_ms = k_uptime_get_32();
+        return;
+    }
+
+    for (int i = 0; i < frame.count; i++) {
+        const auto &elem = frame.elems[i];
+        /* Scale ESP32 128x64 coordinates to our 240x135 display */
+        int x = (int)(elem.x * DISP_W / 128);
+        int y = (int)(elem.y * DISP_H / 64);
+        /* Clamp to screen bounds */
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        if (x >= DISP_W) continue;
+        if (y >= DISP_H - FONT_H) continue;
+        draw_string(x, y, elem.text, COL_WHITE, COL_BLACK);
+    }
+}
+
 /* Page 5: Version and memory info */
 static void draw_page_info(void)
 {
@@ -365,8 +411,8 @@ void tinygs_display_update(void)
     case 3: draw_page_worldmap(); break;   /* World map + station dot */
     case 4: draw_page_lastpkt(); break;    /* Last received packet */
     case 5: draw_page_info(); break;       /* Version/board/uptime */
-    case 6: break;                         /* Remote frame 0 (server-pushed) */
-    case 7: break;                         /* Remote frame 1 (server-pushed) */
+    case 6: draw_page_remote(0); break;     /* Remote frame 0 (server-pushed) */
+    case 7: draw_page_remote(1); break;    /* Remote frame 1 (server-pushed) */
     }
 }
 
@@ -385,6 +431,83 @@ void tinygs_display_on(void)
     if (device_is_ready(backlight.port)) gpio_pin_set_dt(&backlight, 1);
     display_active = true;
     last_page_switch_ms = k_uptime_get_32();
+}
+
+void tinygs_display_set_remote_frame(int frame_idx, const char *json, size_t len)
+{
+    if (frame_idx < 0 || frame_idx >= REMOTE_FRAME_COUNT) return;
+    auto &frame = remote_frames[frame_idx];
+    frame.count = 0;
+
+    /* Parse: [[font, align, x, y, "text"], ...] — we skip font/align (single font) */
+    const char *p = json;
+    const char *end = json + len;
+
+    /* Find outer array */
+    while (p < end && *p != '[') p++;
+    if (p >= end) return;
+    p++; /* skip outer '[' */
+
+    while (p < end && frame.count < REMOTE_FRAME_MAX_ELEM) {
+        /* Find inner array start */
+        while (p < end && *p != '[') {
+            if (*p == ']') return; /* end of outer array */
+            p++;
+        }
+        if (p >= end) break;
+        p++; /* skip inner '[' */
+
+        /* Parse: font, align, x, y, "text" */
+        /* Skip font (field 0) */
+        while (p < end && *p != ',') p++;
+        if (p >= end) break;
+        p++; /* skip comma */
+
+        /* Skip align (field 1) */
+        while (p < end && *p != ',') p++;
+        if (p >= end) break;
+        p++; /* skip comma */
+
+        /* Parse x (field 2) */
+        while (p < end && (*p == ' ')) p++;
+        int16_t x = (int16_t)atoi(p);
+        while (p < end && *p != ',') p++;
+        if (p >= end) break;
+        p++;
+
+        /* Parse y (field 3) */
+        while (p < end && (*p == ' ')) p++;
+        int16_t y = (int16_t)atoi(p);
+        while (p < end && *p != ',') p++;
+        if (p >= end) break;
+        p++;
+
+        /* Parse "text" (field 4) */
+        while (p < end && *p != '"') p++;
+        if (p >= end) break;
+        p++; /* skip opening quote */
+
+        const char *text_start = p;
+        while (p < end && *p != '"') p++;
+        if (p >= end) break;
+
+        size_t text_len = p - text_start;
+        if (text_len > REMOTE_TEXT_MAX_LEN) text_len = REMOTE_TEXT_MAX_LEN;
+
+        frame.elems[frame.count].x = x;
+        frame.elems[frame.count].y = y;
+        memcpy(frame.elems[frame.count].text, text_start, text_len);
+        frame.elems[frame.count].text[text_len] = '\0';
+        frame.count++;
+
+        p++; /* skip closing quote */
+
+        /* Skip to end of inner array */
+        while (p < end && *p != ']') p++;
+        if (p < end) p++; /* skip ']' */
+    }
+
+    LOG_INF("Remote frame %d: %d elements", frame_idx, frame.count);
 }
 
 void tinygs_display_set_timeout(uint32_t seconds)
