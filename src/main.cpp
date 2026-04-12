@@ -786,8 +786,9 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             } else if (strcmp(cmnd, "status") == 0) {
                 tinygs_send_status(client, cfg_mqtt_user, cfg_station);
             } else if (strcmp(cmnd, "reset") == 0) {
-                LOG_WRN("  → Reset requested by server");
-                k_msleep(500);
+                LOG_WRN("*** SERVER RESET — rebooting ***");
+                mqtt_disconnect(client);
+                k_msleep(2000);
                 sys_reboot(SYS_REBOOT_COLD);
             } else if (strcmp(cmnd, "tx") == 0) {
                 LOG_INF("  → TX not supported (tx=false)");
