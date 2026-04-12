@@ -1524,7 +1524,11 @@ int main(void)
         else if (cause & RESET_WATCHDOG) reason = "watchdog";
         else if (cause & BIT(2)) reason = "power-on";  /* RESET_POR */
         else if (cause == 0) reason = "power-on";
-        LOG_INF("Boot reason: %s (0x%02x)", reason, cause);
+        uint32_t gpregret = nrf_power_gpregret_get(NRF_POWER, 0);
+        LOG_INF("Boot reason: %s (0x%02x) gpregret=0x%02x", reason, cause, gpregret);
+        if (gpregret == 0x57) {
+            LOG_INF("  (1200-baud bootloader reset detected)");
+        }
     }
 
     /* Check for crash diagnostic from previous boot (retained RAM) */
