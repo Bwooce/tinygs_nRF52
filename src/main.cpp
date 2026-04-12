@@ -46,6 +46,23 @@
 
 LOG_MODULE_REGISTER(tinygs_nrf52, LOG_LEVEL_DBG);
 
+/* Crash diagnostic — __noinit survives warm reset (SREQ doesn't clear RAM) */
+#define CRASH_MAGIC 0xDEAD0000
+static volatile uint32_t __noinit crash_reason;
+static volatile uint32_t __noinit crash_pc;
+static volatile uint32_t __noinit crash_lr;
+
+extern "C" void k_sys_fatal_error_handler(unsigned int reason,
+                                           const z_arch_esf_t *esf)
+{
+    crash_reason = CRASH_MAGIC | (reason & 0xFFFF);
+    if (esf) {
+        crash_pc = esf->basic.pc;
+        crash_lr = esf->basic.lr;
+    }
+    sys_reboot(SYS_REBOOT_COLD);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Heap / RAM instrumentation                                                  */
 /* -------------------------------------------------------------------------- */
@@ -1508,6 +1525,16 @@ int main(void)
         else if (cause & BIT(2)) reason = "power-on";  /* RESET_POR */
         else if (cause == 0) reason = "power-on";
         LOG_INF("Boot reason: %s (0x%02x)", reason, cause);
+    }
+
+    /* Check for crash diagnostic from previous boot (retained RAM) */
+    if ((crash_reason & 0xFFFF0000) == CRASH_MAGIC) {
+        LOG_ERR("*** PREVIOUS CRASH: reason=%u PC=0x%08x LR=0x%08x ***",
+                (unsigned)(crash_reason & 0xFFFF),
+                (unsigned)crash_pc, (unsigned)crash_lr);
+        LOG_ERR("Use: arm-zephyr-eabi-addr2line -e build/zephyr/zephyr.elf 0x%08x",
+                (unsigned)crash_pc);
+        crash_reason = 0; /* Clear so we don't report again */
     }
 
     log_heap_usage("boot");

@@ -148,9 +148,9 @@ Fields and their exact types as serialized by ESP32 ArduinoJson:
 | Field | JSON type | C++ source type | Example | Notes |
 |-------|-----------|-----------------|---------|-------|
 | station_location | array[float,float] | float | [-33.87, 151.21] | [lat, lon] |
-| version | number | uint32_t | 2603242 | YYMMDDR format (NOT a string) |
+| version | number | uint32_t | 2603242 | YYMMDDR format (NOT a string). Changing this may trigger server resets — the server may flag unknown versions for update. |
 | git_version | string | const char* | "abc1234" | Git commit hash |
-| chip | string | const char* | "ESP32-D0WDQ6" | Chip model |
+| chip | string | const char* | "ESP32-D0WDQ6" | From `ESP.getChipModel()`. Known values: "ESP32-D0WDQ6", "ESP32-PICO-D4", "ESP32-S3", "nRF52840". Server may send reset if unrecognized. |
 | board | number | uint8_t | 67 | Board index into boards[] array |
 | mac | string | char[13] | "AABBCCDDEEFF" | Device MAC, 12 hex chars |
 | radioChip | number | uint8_t | 6 | Enum: 0=SX1262, 1=SX1278, 2=SX1276, 5=SX1268, 6=SX1262, 10=LR1121 |
@@ -372,7 +372,25 @@ the station as offline:
 | modem_conf | JSON-escaped string `"{}"` | raw JSON object `{}` |
 | TLE field | `"tlx"` | `"tle"` (wrong field name) |
 
-## 9. ESP32 Source Reference
+## 9. Server-Initiated Resets
+
+The TinyGS server sends `cmnd/reset` (payload `"1"`) to individual stations. This is
+a station-specific command (not global broadcast). Observed triggers:
+
+- **Suspected: version or chip changes in welcome payload.** Periodic resets were observed
+  after changing `version` from 2604100 to 2604120 and `chip` from "nRF52840" to
+  "nRF52840_QIAA" simultaneously. Reverting both stopped the resets. The exact trigger
+  is unconfirmed — it could be either field, both, or something else entirely. The server
+  may maintain a whitelist of known firmware versions or chip identifiers.
+- **Auto-tune cycling:** The ESP32 firmware also receives reset commands — this may be
+  normal server behavior for cycling stations between satellite assignments, though the
+  ESP32 reconnects much faster over WiFi so users don't notice.
+
+**Recommendation:** Keep `version` and `chip` values conservative. Test any changes to
+welcome payload fields one at a time, with at least 15 minutes of soak testing to verify
+the server doesn't start sending resets.
+
+## 10. ESP32 Source Reference
 
 Source: [github.com/G4lile0/tinyGS](https://github.com/G4lile0/tinyGS)
 Key files:
