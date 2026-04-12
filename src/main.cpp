@@ -556,6 +556,8 @@ static int resolve_broker(void)
 /* -------------------------------------------------------------------------- */
 
 static uint32_t mqtt_connected_uptime_ms = 0;
+static uint32_t mqtt_rx_count = 0;  /* MQTT messages received */
+static uint32_t lora_rx_count = 0;  /* LoRa packets received */
 static uint32_t mqtt_last_pingresp_ms = 0;
 
 /* Device MAC-based client ID — ESP32 format %04X%08X */
@@ -611,6 +613,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
         break;
 
     case MQTT_EVT_PUBLISH: {
+        mqtt_rx_count++;
         const struct mqtt_publish_param *pub = &evt->param.publish;
         static char rx_topic[128];
         static uint8_t rx_payload[768];
@@ -1368,6 +1371,7 @@ static bool lora_check_rx(void)
     float freq_err = radio->getFrequencyError();
 
     if (state == RADIOLIB_ERR_NONE) {
+        lora_rx_count++;
         /* Flash LED1 white on packet RX */
         neopixel_set(0, 10, 0,  30, 30, 30);
         LOG_INF("LoRa RX: %u bytes, RSSI=%.1f, SNR=%.1f, FreqErr=%.1f",
@@ -1447,6 +1451,31 @@ int main(void)
     LOG_INF("=== TinyGS nRF52 Phase 2: MQTT-TLS over Thread ===");
     log_heap_usage("boot");
     init_openthread();
+
+    /* Check if device has Thread credentials (commissioned).
+     * If not, stay fully awake for 15 minutes to allow Joiner commissioning.
+     * The user needs time to scan the QR code from index.html. */
+    {
+        struct openthread_context *ot_ctx = openthread_get_default_context();
+        if (ot_ctx) {
+            openthread_api_mutex_lock(ot_ctx);
+            bool commissioned = otDatasetIsCommissioned(ot_ctx->instance);
+            openthread_api_mutex_unlock(ot_ctx);
+
+            if (!commissioned) {
+                LOG_INF("*** COMMISSIONING MODE ***");
+                LOG_INF("Device not provisioned — staying awake for 15 minutes");
+                LOG_INF("Joiner PSKd: %s", CONFIG_OPENTHREAD_JOINER_PSKD);
+                LOG_INF("Scan QR code from index.html or run:");
+                LOG_INF("  ot-ctl commissioner joiner add '*' %s",
+                        CONFIG_OPENTHREAD_JOINER_PSKD);
+                /* Keep display on during commissioning */
+                tinygs_display_set_timeout(900); /* 15 minutes */
+            } else {
+                LOG_INF("Thread credentials found — normal mode");
+            }
+        }
+    }
 
     /* Load persistent config from NVS. Must be AFTER init_openthread()
      * because OpenThread initializes the settings/NVS subsystem.
@@ -1541,6 +1570,8 @@ int main(void)
 
             /* TinyGS main loop — process MQTT, LoRa RX, and pings */
             uint32_t last_ping_ms = k_uptime_get_32();
+            uint32_t last_status_log_ms = last_ping_ms;
+            #define STATUS_LOG_INTERVAL_MS 300000 /* 5 minutes */
 
             while (app_state == STATE_MQTT_CONNECTED) {
                 /* Poll MQTT socket for incoming data */
@@ -1572,6 +1603,31 @@ int main(void)
                 /* Weblogin request via BOOT button */
                 if (tinygs_display_weblogin_requested()) {
                     tinygs_send_weblogin_request(&mqtt_client, cfg_mqtt_user, cfg_station);
+                }
+
+                /* Periodic status log — every 5 minutes */
+                if ((now_ms - last_status_log_ms) >= STATUS_LOG_INTERVAL_MS) {
+                    uint32_t uptime_s = k_uptime_get_32() / 1000;
+                    uint32_t conn_s = (now_ms - mqtt_connected_uptime_ms) / 1000;
+#ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
+                    struct sys_memory_stats stats;
+                    sys_heap_runtime_stats_get(&_system_heap.heap, &stats);
+                    LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u heap=%u/%u(max=%u) vbat=%dmV sat=%s",
+                            (unsigned)uptime_s, (unsigned)conn_s,
+                            (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
+                            (unsigned)stats.allocated_bytes,
+                            (unsigned)stats.free_bytes,
+                            (unsigned)stats.max_allocated_bytes,
+                            read_vbat_mv(),
+                            tinygs_radio.satellite);
+#else
+                    LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u vbat=%dmV sat=%s",
+                            (unsigned)uptime_s, (unsigned)conn_s,
+                            (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
+                            read_vbat_mv(),
+                            tinygs_radio.satellite);
+#endif
+                    last_status_log_ms = now_ms;
                 }
 
                 k_msleep(100);  /* 100ms loop — responsive to LoRa packets */

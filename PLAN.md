@@ -168,6 +168,9 @@ All Phase 1 objectives proven:
     - **Not implemented:** beginp (server always sends begine), begin_lora/begin_fsk (begine handles), set_adv_prm/get_adv_prm (low priority)
 11. **[DONE] JSON parsing refactor:** Zephyr json.h (CONFIG_JSON_LIBRARY) for begine/set_name/filter parsing. Zero-allocation descriptor-based. snprintf output kept as-is.
 12. **[TODO] Add Zephyr ztest framework** for JSON parser unit tests. Replace on-target smoke tests with proper test suite.
+13. **[DONE] Commissioning mode:** Detects unprovisioned device via `otDatasetIsCommissioned()`. Keeps display on 15 min, logs Joiner PSKd.
+14. **[DONE] Periodic status log:** Every 5 min: uptime, connection time, MQTT RX count, LoRa RX count, heap, vbat, current satellite.
+15. **[TODO] TX support:** Implement `radio->transmit()` for the `tx` MQTT command. Report `tx:true` in welcome. Requires ham license and antenna for testing — implement code path but leave `tx:false` until verified.
 12. **[DONE] Power quick wins:** DCDC converter, 32kHz crystal (was RC), PM_DEVICE for SPI sleep states.
 13. **[TODO] SED mode + power gating:** Requires commissioning mode first (see Section 6.8). Plan:
     - Enable CONFIG_OPENTHREAD_MTD_SED + poll period toggling (fast for MQTT, slow for idle)
