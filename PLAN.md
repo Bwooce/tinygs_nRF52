@@ -144,12 +144,15 @@ All Phase 1 objectives proven:
     - **[DONE]** Multi-page module with 3 color-coded pages cycling every 5s
     - **[DONE]** Custom 8x16 font renderer (4.6KB flash vs 114KB LVGL)
     - **[DONE]** Auto-off after 30s, wake on BOOT button press (GPIO interrupt)
-    - **[TODO]** World map XBM + satellite position dot (from sat_pos_oled command)
-    - **[TODO]** Flash on LoRa packet reception
+    - **[DONE]** World map bitmap (240x135, scaled from ESP32 128x64 XBM) with station dot
+    - **[DONE]** Satellite position dot from sat_pos_oled MQTT command
+    - **[DONE]** 8 pages matching ESP32 layout including last-packet page and remote frames
+    - **[DONE]** Display wakes on LoRa packet reception
+    - **[DONE]** Configurable timeout via config.json `display_timeout`
 2.  **LEDs:**
     - **[DONE]** Green LED (P1.03) — blink on state transitions
-    - **[TODO]** NeoPixel RGB LEDs — WS2812 via SPI2 blocked (nRF SPIM needs SCK pin). Options: assign dummy SCK GPIO, or use I2S driver (`CONFIG_WS2812_STRIP_I2S=y`)
-3.  **[DONE] Hardware Watchdog:** WDT0, 1200s timeout (2x keepalive). Fed on CONNACK/PINGRESP.
+    - **[DONE]** NeoPixel RGB LEDs — WS2812 via SPI2 with dummy SCK (P0.09). I2S driver broken on nRF52840, GPIO driver nRF51-only.
+3.  **[DONE] Hardware Watchdog:** WDT0, 600s timeout (2x keepalive). Fed on CONNACK, PINGRESP, and any MQTT RX.
 4.  **[DONE] Debug Safety Checks:** CONFIG_STACK_SENTINEL + CONFIG_FORTIFY_SOURCE_RUN_TIME enabled.
     - **[TODO]** Before production: measure flash/RAM impact of removing STACK_SENTINEL, FORTIFY_SOURCE_RUN_TIME, SYS_HEAP_RUNTIME_STATS, and THREAD_NAME. Keep or remove based on cost vs safety.
 5.  **Power Saving Review:** Before Phase 3 is complete, do a full power audit:
@@ -167,17 +170,19 @@ All Phase 1 objectives proven:
     - **Stubs:** sleep/siesta (needs power mgmt), sat_pos_oled (needs display), frame/{num} (needs display)
     - **Not implemented:** beginp (server always sends begine), begin_lora/begin_fsk (begine handles), set_adv_prm/get_adv_prm (low priority)
 11. **[DONE] JSON parsing refactor:** Zephyr json.h (CONFIG_JSON_LIBRARY) for begine/set_name/filter parsing. Zero-allocation descriptor-based. snprintf output kept as-is.
-12. **[TODO] Add Zephyr ztest framework** for JSON parser unit tests. Replace on-target smoke tests with proper test suite.
+12. **[DONE] Ztest framework:** 36 unit tests on native_sim. Covers begine, set_pos, set_name, filter, foff parsing + output round-trips.
 13. **[DONE] Commissioning mode:** Detects unprovisioned device via `otDatasetIsCommissioned()`. Keeps display on 15 min, logs Joiner PSKd.
-14. **[DONE] Periodic status log:** Every 5 min: uptime, connection time, MQTT RX count, LoRa RX count, heap, vbat, current satellite.
-15. **[TODO] TX support:** Implement `radio->transmit()` for the `tx` MQTT command. Report `tx:true` in welcome. Requires ham license and antenna for testing — implement code path but leave `tx:false` until verified.
-12. **[DONE] Power quick wins:** DCDC converter, 32kHz crystal (was RC), PM_DEVICE for SPI sleep states.
-13. **[TODO] SED mode + power gating:** Requires commissioning mode first (see Section 6.8). Plan:
-    - Enable CONFIG_OPENTHREAD_MTD_SED + poll period toggling (fast for MQTT, slow for idle)
-    - SX1262 duty cycle RX (startReceiveDutyCycle) instead of continuous RX
-    - Gate Vext when LEDs/GPS not needed, TFT_EN when display off
-    - USB disable when no cable detected
-    - Target: <1mA average (currently ~17mA estimated)
+14. **[DONE] Periodic status log:** Every 5 min: uptime, connection time, MQTT/LoRa RX counts, heap used/free/max, stack_free, vbat, satellite.
+15. **[TODO] TX support:** Implement `radio->transmit()` for `tx` MQTT command. Requires ham license + antenna.
+16. **[DONE] Power quick wins:** DCDC converter (board Kconfig), PM_DEVICE for SPI sleep states. 32kHz crystal reverted to RC (needs verification).
+17. **[DONE] DTS-driven hardware:** Radio type, chip name, GPIO pins, radioChip enum all derived from DTS overlay. Changing board only requires overlay edit.
+18. **[DONE] Crash investigation and stability fixes:**
+    - **Server resets:** TinyGS server sends `cmnd/reset` when welcome fields change (chip name suffix, version number). Keep `version` and `chip` conservative.
+    - **getRSSI crash:** `radio->getRSSI()` during active LoRa RX corrupts SX1262 SPI bus. ESP32 uses `WiFi.RSSI()` for ping, never radio RSSI. Fixed: use Thread parent RSSI for InstRSSI field.
+    - **Watchdog timeout:** Zephyr MQTT library doesn't auto-disconnect on missed PINGRESPs (`unacked_ping` just increments). Fixed: feed watchdog on any MQTT RX, reduce keepalive from 600s to 300s.
+    - **Retained-RAM crash diagnostic:** `__noinit` variables survive warm reset, log PC/LR on next boot. RESETREAS fully decoded (PIN/DOG/SREQ/LOCKUP).
+    - **Stack usage:** Measured at 2368 bytes peak (4KB stack, 1728 free). 8KB overkill but safe margin.
+19. **[TODO] SED mode + power gating:** Requires on-site testing (see Phase 4).
 
 ### Phase 4: Power Optimization & Commissioning
 Requires current measurement equipment and on-site testing.
