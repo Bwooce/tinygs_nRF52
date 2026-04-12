@@ -222,14 +222,9 @@ static void neopixel_off(void)
 /* Battery Voltage ADC                                                         */
 /* -------------------------------------------------------------------------- */
 
-/* Battery ADC: P0.04 (AIN2), bias enable on P0.06 (active HIGH).
- * Voltage divider 100k:390k → multiplier ~4.9
- * Use direct GPIO spec instead of DT_ALIAS to avoid DTS node issues. */
-static const struct gpio_dt_spec adc_ctrl = {
-    .port = DEVICE_DT_GET(DT_NODELABEL(gpio0)),
-    .pin = 6,
-    .dt_flags = GPIO_ACTIVE_HIGH,
-};
+/* Battery ADC: P0.04 (AIN2), bias enable from DTS alias.
+ * Voltage divider 100k:390k → multiplier ~4.9 */
+static const struct gpio_dt_spec adc_ctrl = GPIO_DT_SPEC_GET(DT_ALIAS(adc_ctrl), gpios);
 
 int read_vbat_mv(void)
 {
@@ -1374,7 +1369,7 @@ static void init_radio(void)
 
     /* Set default LoRa config — 433MHz, SF10, BW125, CR5
      * This will be overridden by server batch_conf commands */
-    state = radio->setFrequency(436.703);
+    state = radio->setFrequency(TINYGS_DEFAULT_FREQ);
     if (state != RADIOLIB_ERR_NONE) {
         LOG_ERR("setFrequency failed: %d", state);
     }

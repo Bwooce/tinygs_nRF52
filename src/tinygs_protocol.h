@@ -25,11 +25,25 @@
 #define TINYGS_STAT_STATUS    "status"
 
 /* Version info for welcome message */
-#define TINYGS_VERSION        2604100  /* YYMMDDR: 2026-04-10, release 0 */
+#define TINYGS_VERSION        2604120  /* YYMMDDR: 2026-04-12, release 0 */
+#define TINYGS_DEFAULT_FREQ   436.703f /* MHz — initial listen frequency before server assigns */
 #define TINYGS_GIT_VERSION    "tinygs_nRF52"
 #define TINYGS_CHIP           CONFIG_SOC  /* From Zephyr board config, e.g. "nRF52840_QIAA" */
 #define TINYGS_BOARD          255  /* Custom/unknown board ID */
-#define TINYGS_RADIO_CHIP     6    /* SX1262 (matches ESP32 Radio.h enum) */
+/* Radio chip ID for TinyGS welcome message (matches ESP32 Radio.h enum):
+ * 0=SX1262, 1=SX1278, 2=SX1276, 5=SX1268, 6=SX1262, 10=LR1121 */
+#define LORA_DTS_NODE DT_ALIAS(lora0)
+#if DT_NODE_HAS_COMPAT(LORA_DTS_NODE, semtech_sx1262)
+#define TINYGS_RADIO_CHIP     6
+#elif DT_NODE_HAS_COMPAT(LORA_DTS_NODE, semtech_sx1268)
+#define TINYGS_RADIO_CHIP     5
+#elif DT_NODE_HAS_COMPAT(LORA_DTS_NODE, semtech_sx1276)
+#define TINYGS_RADIO_CHIP     2
+#elif DT_NODE_HAS_COMPAT(LORA_DTS_NODE, semtech_sx1278)
+#define TINYGS_RADIO_CHIP     1
+#else
+#define TINYGS_RADIO_CHIP     255
+#endif
 
 /* Ping interval — offset 30s before MQTT keepalive to avoid collision.
  * When both TinyGS PUBLISH ping and MQTT PINGREQ fire simultaneously,

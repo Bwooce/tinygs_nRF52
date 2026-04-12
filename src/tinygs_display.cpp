@@ -91,18 +91,8 @@ static struct {
     uint8_t count;
 } remote_frames[REMOTE_FRAME_COUNT];
 
-static const struct gpio_dt_spec backlight = {
-    .port = DEVICE_DT_GET(DT_NODELABEL(gpio0)),
-    .pin = 15,
-    .dt_flags = GPIO_ACTIVE_HIGH,
-};
-
-/* BOOT button — P1.10, active low with internal pull-up */
-static const struct gpio_dt_spec button = {
-    .port = DEVICE_DT_GET(DT_NODELABEL(gpio1)),
-    .pin = 10,
-    .dt_flags = GPIO_ACTIVE_LOW,
-};
+static const struct gpio_dt_spec backlight = GPIO_DT_SPEC_GET(DT_ALIAS(backlight), gpios);
+static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
 static struct gpio_callback button_cb_data;
 
 static volatile bool weblogin_requested = false;

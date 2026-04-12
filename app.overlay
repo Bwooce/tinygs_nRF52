@@ -63,6 +63,22 @@
             gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
             label = "TFT Power Enable";
         };
+        backlight: backlight {
+            gpios = <&gpio0 15 GPIO_ACTIVE_LOW>;
+            label = "TFT Backlight";
+        };
+        adc_ctrl: adc_ctrl {
+            gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+            label = "Battery ADC Bias Enable";
+        };
+    };
+
+    buttons {
+        compatible = "gpio-keys";
+        boot_button: boot_button {
+            gpios = <&gpio1 10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+            label = "BOOT Button";
+        };
     };
 
     aliases {
@@ -70,6 +86,9 @@
         lora0 = &sx1262;
         led0 = &green_led;
         led-strip = &led_strip;
+        sw0 = &boot_button;
+        backlight = &backlight;
+        adc-ctrl = &adc_ctrl;
     };
 };
 
