@@ -1040,8 +1040,8 @@ static const char *html_content =
     "  a.download = 'config.json';"
     "  a.click();"
     "}"
-    "</script>"
-    "</body></html>";
+    "</script>";
+/* Closing tags added after commissioning info block */
 
 static void setup_usb_storage(void)
 {
@@ -1076,11 +1076,36 @@ static void setup_usb_storage(void)
     LOG_INF("FATFS mount: %d", res);
 
     if (res == 0) {
-        /* Write index.html if it doesn't exist */
+        /* Write index.html with commissioning info (only if missing) */
         if (fs_stat("/NAND:/index.html", &entry) != 0) {
+            /* Get EUI-64 for commissioning info */
+            extern char device_client_id[13];
+            if (device_client_id[0] == '\0') {
+                uint64_t dev_id = NRF_FICR->DEVICEID[0] |
+                                  ((uint64_t)NRF_FICR->DEVICEID[1] << 32);
+                snprintf(device_client_id, sizeof(device_client_id),
+                         "%04X%08X", (unsigned)(dev_id >> 32), (unsigned)dev_id);
+            }
+
             fs_file_t_init(&file);
             if (fs_open(&file, "/NAND:/index.html", FS_O_CREATE | FS_O_WRITE) == 0) {
+                /* Write static HTML head */
                 fs_write(&file, html_content, strlen(html_content));
+
+                /* Append commissioning info */
+                static char commission_html[256];
+                int clen = snprintf(commission_html, sizeof(commission_html),
+                    "<div class='card' style='margin-top:16px;'>"
+                    "<h2>Thread Commissioning</h2>"
+                    "<p><strong>MAC / EUI-64:</strong> %s</p>"
+                    "<p><strong>Joiner PSKd:</strong> %s</p>"
+                    "<p style='font-size:0.8em;color:#666;'>"
+                    "Run on your OTBR: <code>ot-ctl commissioner joiner add '*' %s</code></p>"
+                    "</div></body></html>",
+                    device_client_id,
+                    CONFIG_OPENTHREAD_JOINER_PSKD,
+                    CONFIG_OPENTHREAD_JOINER_PSKD);
+                fs_write(&file, commission_html, clen);
                 fs_sync(&file);
                 fs_close(&file);
             }
@@ -1741,7 +1766,7 @@ int main(void)
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
                             (unsigned)stats.allocated_bytes,
-                            (unsigned)(stats.allocated_bytes + stats.free_bytes),
+                            (unsigned)CONFIG_HEAP_MEM_POOL_SIZE,
                             (unsigned)stats.max_allocated_bytes,
                             (unsigned)stack_used, (unsigned)stack_size,
                             read_vbat_mv(),
