@@ -790,7 +790,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             } else if (strcmp(cmnd, "log") == 0) {
                 LOG_INF("  → Server: %s", (char *)rx_payload);
             } else if (strcmp(cmnd, "sleep") == 0 || strcmp(cmnd, "siesta") == 0) {
-                LOG_INF("  → Sleep requested (not implemented yet)");
+                LOG_INF("  → Sleep not implemented (Phase 4 power management)");
             } else if (strcmp(cmnd, "foff") == 0) {
                 float foff = tinygs_parse_foff((char *)rx_payload, ret,
                                                 &tinygs_radio.doppler_tol,
@@ -1336,7 +1336,8 @@ static void init_radio(void)
 
     int state = radio->begin();
     if (state == RADIOLIB_ERR_NONE) {
-        LOG_INF("SX1262 OK");
+        LOG_INF("Radio: %s initialized (RadioLib)",
+                DT_NODE_FULL_NAME(DT_NODELABEL(sx1262)));
     } else {
         LOG_ERR("SX1262 init failed: %d", state);
         return;
@@ -1357,7 +1358,9 @@ static void init_radio(void)
     radio->setPacketReceivedAction(lora_rx_callback);
     state = radio->startReceive();
     if (state == RADIOLIB_ERR_NONE) {
-        LOG_INF("SX1262 listening on 436.703 MHz, SF10, BW250");
+        LOG_INF("SX1262 listening on %.3f MHz, SF%d, BW%.0f",
+                (double)tinygs_radio.frequency, tinygs_radio.sf,
+                (double)tinygs_radio.bw);
     } else {
         LOG_ERR("startReceive failed: %d", state);
     }
@@ -1466,7 +1469,7 @@ int main(void)
         k_msleep(100);
     }
 
-    LOG_INF("=== TinyGS nRF52 Phase 2: MQTT-TLS over Thread ===");
+    LOG_INF("=== TinyGS nRF52 v%u — Thread/MQTT-TLS ===", (unsigned)TINYGS_VERSION);
 
     /* Log boot/reset reason */
     {
@@ -1591,7 +1594,7 @@ int main(void)
             break;
 
         case STATE_MQTT_CONNECTED: {
-            LOG_INF("=== MQTT-TLS CONNECTION SUCCESSFUL ===");
+            LOG_INF("MQTT connected, entering main loop");
             neopixel_set(0, 10, 0,  0, 0, 0); /* Green = connected */
             led_set(true);
 
