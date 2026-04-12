@@ -639,6 +639,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 
     case MQTT_EVT_PUBLISH: {
         mqtt_rx_count++;
+        watchdog_feed(); /* Any RX proves connection is alive */
         const struct mqtt_publish_param *pub = &evt->param.publish;
         static char rx_topic[128];
         static uint8_t rx_payload[768];
