@@ -1655,7 +1655,12 @@ int main(void)
 
                 /* Send TinyGS ping */
                 if ((now_ms - last_ping_ms) >= (TINYGS_PING_INTERVAL_S * 1000)) {
-                    tinygs_send_ping(&mqtt_client, cfg_mqtt_user, cfg_station);
+                    LOG_INF("Sending TinyGS ping (%us connected)...",
+                            (unsigned)(now_ms - mqtt_connected_uptime_ms) / 1000);
+                    int ping_ret = tinygs_send_ping(&mqtt_client, cfg_mqtt_user, cfg_station);
+                    if (ping_ret) {
+                        LOG_ERR("Ping publish failed: %d", ping_ret);
+                    }
                     last_ping_ms = now_ms;
                 }
 

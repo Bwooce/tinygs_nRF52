@@ -9,7 +9,17 @@
 #include <zephyr/sys/heap_listener.h>
 
 extern int read_vbat_mv(void);
+/* Radio pointer type must match main.cpp's DTS-selected type */
+#define LORA_NODE DT_ALIAS(lora0)
+#if DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1262)
 extern SX1262 *radio;
+#elif DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1268)
+extern SX1268 *radio;
+#elif DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1276)
+extern SX1276 *radio;
+#elif DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1278)
+extern SX1278 *radio;
+#endif
 
 static uint32_t get_free_heap(void)
 {
@@ -231,7 +241,7 @@ int tinygs_send_ping(struct mqtt_client *client,
 
     int len = tinygs_build_ping(payload_buf, sizeof(payload_buf),
                                  read_vbat_mv(), get_free_heap(), get_free_heap(), 0,
-                                 radio ? radio->getRSSI() : -120.0f);
+                                 -120.0f);  /* Skip radio->getRSSI() — crashes on SPI */
 
     struct mqtt_publish_param param;
     param.message.topic.qos = MQTT_QOS_0_AT_MOST_ONCE;
