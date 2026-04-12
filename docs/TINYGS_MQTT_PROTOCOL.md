@@ -198,9 +198,9 @@ Fields and their exact types as serialized by ESP32 ArduinoJson:
 | Mem | number | uint32_t | 98304 | Free heap bytes |
 | MinMem | number | uint32_t | 65536 | Minimum free heap (historical) |
 | MaxBlk | number | uint32_t | 131072 | Max allocatable block |
-| RSSI | number | int32_t | -45 | WiFi/Thread parent RSSI (dBm) |
+| RSSI | number | int32_t | -45 | WiFi RSSI (ESP32) / Thread parent RSSI (nRF52) |
 | radio | number | int16_t | 0 | RadioLib error code (0=OK) |
-| InstRSSI | number | float | -98.5 | Instantaneous radio RSSI |
+| InstRSSI | number | float | -65.0 | ESP32: unused. nRF52: Thread parent RSSI (same as RSSI). Do NOT call radio->getRSSI() during active RX — crashes SX1262 SPI. |
 
 ```json
 {

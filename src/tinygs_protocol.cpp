@@ -136,7 +136,8 @@ int tinygs_build_ping(char *buf, size_t buflen,
                        int vbat_mv, uint32_t free_mem, uint32_t min_mem,
                        int radio_error, float inst_rssi)
 {
-    /* Get Thread parent RSSI if available */
+    /* Get Thread parent RSSI — ESP32 uses WiFi.RSSI() here.
+     * We use Thread parent RSSI for both RSSI and InstRSSI fields. */
     int8_t thread_rssi = 0;
     struct openthread_context *ot_ctx = openthread_get_default_context();
     if (ot_ctx) {
@@ -144,6 +145,7 @@ int tinygs_build_ping(char *buf, size_t buflen,
         otThreadGetParentAverageRssi(ot_ctx->instance, &thread_rssi);
         openthread_api_mutex_unlock(ot_ctx);
     }
+    inst_rssi = (float)thread_rssi; /* Use Thread RSSI instead of LoRa radio RSSI */
 
     return snprintf(buf, buflen,
         "{"
@@ -241,7 +243,7 @@ int tinygs_send_ping(struct mqtt_client *client,
 
     int len = tinygs_build_ping(payload_buf, sizeof(payload_buf),
                                  read_vbat_mv(), get_free_heap(), get_free_heap(), 0,
-                                 -120.0f);  /* Skip radio->getRSSI() — crashes on SPI */
+                                 -120.0f);  /* Last pkt RSSI — ESP32 uses WiFi.RSSI() here, not radio */
 
     struct mqtt_publish_param param;
     param.message.topic.qos = MQTT_QOS_0_AT_MOST_ONCE;
