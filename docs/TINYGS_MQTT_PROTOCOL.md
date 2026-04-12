@@ -93,7 +93,7 @@ The TinyGS ping interval (`tele/ping`) must NOT equal `CONFIG_MQTT_KEEPALIVE`. W
 
 | Setting | Value | Notes |
 |---------|-------|-------|
-| MQTT keepalive | 600s | Tested over NAT64, reliable |
+| MQTT keepalive | 300s | Reverted from 600s — PINGRESPs not reliably received over NAT64 |
 | TinyGS ping | 570s | = keepalive - 30s, avoids PINGREQ collision |
 | MQTT PINGREQ | 600s | Sent automatically by MQTT library |
 
@@ -341,7 +341,7 @@ The modem configuration structure contains:
 
 | Operation | Interval | Notes |
 |-----------|----------|-------|
-| MQTT keepalive | 600s (configurable) | Tested over NAT64, reliable |
+| MQTT keepalive | 300s (configurable) | 600s caused missed PINGRESPs; 300s reliable |
 | TinyGS ping | keepalive - 30s | Offset avoids PINGREQ collision |
 | Satellite reassignment | ~60s | When auto-tune enabled |
 | Doppler update | 4s | When TLE available, 1200 Hz hysteresis |

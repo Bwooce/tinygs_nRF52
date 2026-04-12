@@ -170,7 +170,7 @@ commissioning. Items marked **[build]** are compile-time only (prj.conf).
 | Item | Source | Current Location | Notes |
 |------|--------|-----------------|-------|
 | Station name | **[server]** | MQTT_CLIENT_ID (hardcoded) | Via set_name command; needs NVS persist + reconnect |
-| MQTT keepalive (s) | **[build]** | prj.conf CONFIG_MQTT_KEEPALIVE=600 | Also sets TinyGS ping interval; 600s tested |
+| MQTT keepalive (s) | **[build]** | prj.conf CONFIG_MQTT_KEEPALIVE=300 | Also sets TinyGS ping interval; 300s reliable, 600s loses PINGRESPs |
 | TX allowed | **[user]** | Hardcoded false | Currently always false |
 | Low power mode | **[user]** | Not implemented | Phase 3 SED sleep config |
 | OT log level | **[build]** | prj.conf OPENTHREAD_LOG_LEVEL_CRIT | CRIT/WARN/NOTE/INFO/DEBG |
