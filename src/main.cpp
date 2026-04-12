@@ -1724,29 +1724,34 @@ int main(void)
                     uint32_t uptime_s = k_uptime_get_32() / 1000;
                     uint32_t conn_s = (now_ms - mqtt_connected_uptime_ms) / 1000;
 
-                    /* Get main thread stack free space */
-                    size_t stack_free = 0;
+                    /* Get main thread stack usage */
+                    size_t stack_unused = 0;
+                    size_t stack_size = CONFIG_MAIN_STACK_SIZE;
 #if defined(CONFIG_INIT_STACKS) && defined(CONFIG_THREAD_STACK_INFO)
-                    k_thread_stack_space_get(k_current_get(), &stack_free);
+                    k_thread_stack_space_get(k_current_get(), &stack_unused);
 #endif
+                    size_t stack_used = stack_size - stack_unused;
 
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
                     struct sys_memory_stats stats;
                     sys_heap_runtime_stats_get(&_system_heap.heap, &stats);
-                    LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u heap=%u/%u(max=%u) stack_free=%u vbat=%dmV sat=%s",
+                    LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
+                            "heap=%u/%u(peak=%u) stack=%u/%u "
+                            "vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
                             (unsigned)stats.allocated_bytes,
-                            (unsigned)stats.free_bytes,
+                            (unsigned)(stats.allocated_bytes + stats.free_bytes),
                             (unsigned)stats.max_allocated_bytes,
-                            (unsigned)stack_free,
+                            (unsigned)stack_used, (unsigned)stack_size,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
 #else
-                    LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u stack_free=%u vbat=%dmV sat=%s",
+                    LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
+                            "stack=%u/%u vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
-                            (unsigned)stack_free,
+                            (unsigned)stack_used, (unsigned)stack_size,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
 #endif
