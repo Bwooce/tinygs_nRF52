@@ -17,6 +17,8 @@
 | Max packet size | 1000 bytes |
 | Keep-alive | Configurable via CONFIG_MQTT_KEEPALIVE. Tested: 300s and 600s both work over NAT64. 600s is the practical maximum. |
 | MQTT version | 3.1.1 (NOT 5.0 — server does not support MQTT 5.0) |
+| LWT (Last Will) | Topic: `stat/status`, payload: `"0"`, QoS 1. Published by broker on unexpected disconnect. |
+| Clean Session | true (no persistent session — re-subscribe on every connect) |
 | TLS | Required. TinyGS custom CA + ISRG Root X1 (see `certs.h`) |
 
 ### 1.1 Client ID vs Station Name

@@ -8,6 +8,7 @@
 #include <zephyr/ztest.h>
 #include "tinygs_json.h"
 #include <string.h>
+#include <stdlib.h>
 #include <math.h>
 
 /* ---- begine parsing tests ---- */
@@ -289,6 +290,139 @@ ZTEST(json_parser, test_ping_output_format)
     zassert_not_null(strstr(json, "\"Vbat\":4130"), "Vbat present");
     zassert_not_null(strstr(json, "\"RSSI\":-65"), "RSSI present");
     zassert_not_null(strstr(json, "\"InstRSSI\":-120.0"), "InstRSSI present");
+}
+
+/* ---- begine edge cases ---- */
+
+ZTEST(json_parser, test_begine_fractional_bw)
+{
+    /* BW 62.5 is common for narrow-band sats */
+    char json[] = "{\"freq\":436.08,\"bw\":62.5,\"sf\":8,\"cr\":6,"
+                  "\"sat\":\"Test\",\"NORAD\":1}";
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "fractional bw should parse");
+    float bw = tinygs_begine_get_bw(&msg);
+    zassert_true(fabsf(bw - 62.5f) < 0.1f, "bw should be 62.5");
+}
+
+ZTEST(json_parser, test_begine_all_booleans_inverted)
+{
+    char json[] = "{\"freq\":400.0,\"bw\":125,\"sf\":12,\"cr\":8,"
+                  "\"crc\":false,\"iIQ\":true,\"sat\":\"X\",\"NORAD\":1}";
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "should parse");
+    zassert_false(msg.crc, "crc should be false");
+    zassert_true(msg.iIQ, "iIQ should be true");
+    zassert_equal(msg.sf, 12, "sf 12");
+    zassert_equal(msg.cr, 8, "cr 8");
+}
+
+ZTEST(json_parser, test_begine_long_satellite_name)
+{
+    char json[] = "{\"freq\":437.0,\"bw\":125,\"sf\":10,\"cr\":5,"
+                  "\"sat\":\"Surve-251228C-K4KDR\",\"NORAD\":99999}";
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "should parse");
+    zassert_true(strcmp(msg.sat, "Surve-251228C-K4KDR") == 0, "long sat name");
+}
+
+ZTEST(json_parser, test_begine_norad_zero)
+{
+    char json[] = "{\"freq\":436.0,\"bw\":125,\"sf\":10,\"cr\":5,"
+                  "\"sat\":\"Unknown\",\"NORAD\":0}";
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "should parse");
+    zassert_equal(msg.NORAD, 0, "NORAD 0 is valid");
+}
+
+/* ---- sat_pos_oled parsing ---- */
+
+ZTEST(json_parser, test_sat_pos_oled_basic)
+{
+    struct tinygs_pos_msg msg;
+    int ret = tinygs_parse_set_pos("[64, 32]", 8, &msg);
+    zassert_equal(ret, 2, "should parse 2 values");
+    zassert_true(fabsf(msg.values[0] - 64.0f) < 0.1f, "x=64");
+    zassert_true(fabsf(msg.values[1] - 32.0f) < 0.1f, "y=32");
+}
+
+ZTEST(json_parser, test_sat_pos_oled_floats)
+{
+    struct tinygs_pos_msg msg;
+    int ret = tinygs_parse_set_pos("[55.5, 22.3]", 12, &msg);
+    zassert_equal(ret, 2, "should parse 2 float values");
+    zassert_true(fabsf(msg.values[0] - 55.5f) < 0.1f, "x=55.5");
+    zassert_true(fabsf(msg.values[1] - 22.3f) < 0.1f, "y=22.3");
+}
+
+/* ---- foff and freq parsing (simple float strings) ---- */
+
+ZTEST(json_parser, test_foff_positive)
+{
+    /* foff is just a float string — parsed with strtof in main.cpp */
+    float foff = strtof("1500.0", NULL);
+    zassert_true(fabsf(foff - 1500.0f) < 0.1f, "foff 1500");
+}
+
+ZTEST(json_parser, test_foff_negative)
+{
+    float foff = strtof("-2000.5", NULL);
+    zassert_true(fabsf(foff - (-2000.5f)) < 0.1f, "foff -2000.5");
+}
+
+ZTEST(json_parser, test_freq_parse)
+{
+    float freq = strtof("436.703", NULL);
+    zassert_true(fabsf(freq - 436.703f) < 0.001f, "freq 436.703");
+}
+
+/* ---- set_pos_prm edge cases ---- */
+
+ZTEST(json_parser, test_set_pos_negative_coords)
+{
+    struct tinygs_pos_msg msg;
+    int ret = tinygs_parse_set_pos("[-33.8688, 151.2093, 50.0]", 27, &msg);
+    zassert_equal(ret, 3, "should parse 3");
+    zassert_true(msg.values[0] < -33.0f, "lat should be negative");
+    zassert_true(msg.values[1] > 151.0f, "lon should be positive");
+}
+
+ZTEST(json_parser, test_set_pos_spaces)
+{
+    struct tinygs_pos_msg msg;
+    int ret = tinygs_parse_set_pos("[ -10.5 , 20.3 , 100 ]", 23, &msg);
+    zassert_equal(ret, 3, "should handle spaces");
+}
+
+ZTEST(json_parser, test_set_pos_no_bracket)
+{
+    struct tinygs_pos_msg msg;
+    int ret = tinygs_parse_set_pos("null", 4, &msg);
+    zassert_equal(ret, -1, "bare null should fail");
+}
+
+/* ---- filter edge cases ---- */
+
+ZTEST(json_parser, test_filter_single)
+{
+    uint8_t buf[8];
+    int ret = tinygs_parse_filter("[42]", 4, buf, sizeof(buf));
+    zassert_equal(ret, 1, "single element");
+    zassert_equal(buf[0], 42, "value 42");
+}
+
+ZTEST(json_parser, test_filter_max_value)
+{
+    uint8_t buf[8];
+    int ret = tinygs_parse_filter("[0, 255, 128]", 13, buf, sizeof(buf));
+    zassert_equal(ret, 3, "three elements");
+    zassert_equal(buf[0], 0, "min byte");
+    zassert_equal(buf[1], 255, "max byte");
+    zassert_equal(buf[2], 128, "mid byte");
 }
 
 ZTEST_SUITE(json_parser, NULL, NULL, NULL, NULL, NULL);
