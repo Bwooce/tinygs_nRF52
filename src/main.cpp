@@ -1513,21 +1513,27 @@ int main(void)
 
     LOG_INF("=== TinyGS nRF52 v%u — Thread/MQTT-TLS ===", (unsigned)TINYGS_VERSION);
 
-    /* Log boot/reset reason */
+    /* Log boot/reset reason — read raw nRF RESETREAS for full picture.
+     * Errata 136: after pin reset, other bits may be falsely set. */
     {
-        uint32_t cause = 0;
-        hwinfo_get_reset_cause(&cause);
-        hwinfo_clear_reset_cause();
-        const char *reason = "unknown";
-        if (cause & RESET_PIN) reason = "pin reset";
-        else if (cause & RESET_SOFTWARE) reason = "software reboot";
-        else if (cause & RESET_WATCHDOG) reason = "watchdog";
-        else if (cause & BIT(2)) reason = "power-on";  /* RESET_POR */
-        else if (cause == 0) reason = "power-on";
+        uint32_t resetreas = NRF_POWER->RESETREAS;
+        NRF_POWER->RESETREAS = resetreas; /* Clear by writing 1s */
         uint32_t gpregret = nrf_power_gpregret_get(NRF_POWER, 0);
-        LOG_INF("Boot reason: %s (0x%02x) gpregret=0x%02x", reason, cause, gpregret);
+
+        LOG_INF("Boot: RESETREAS=0x%08x gpregret=0x%02x [%s%s%s%s%s%s]",
+                resetreas, gpregret,
+                (resetreas & (1<<0)) ? "PIN " : "",
+                (resetreas & (1<<1)) ? "DOG " : "",
+                (resetreas & (1<<2)) ? "SREQ " : "",
+                (resetreas & (1<<3)) ? "LOCKUP " : "",
+                (resetreas & (1<<16)) ? "OFF " : "",
+                (resetreas & (1<<17)) ? "DIF " : "");
+
         if (gpregret == 0x57) {
-            LOG_INF("  (1200-baud bootloader reset detected)");
+            LOG_INF("  → 1200-baud bootloader entry");
+        }
+        if (resetreas & (1<<3)) {
+            LOG_ERR("  → CPU LOCKUP detected! (fault-in-fault-handler)");
         }
     }
 
