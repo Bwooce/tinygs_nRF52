@@ -1765,17 +1765,25 @@ int main(void)
 #endif
                     size_t stack_used = stack_size - stack_unused;
 
+                    /* picolibc sbrk heap usage (C++ new, malloc) */
+                    extern char *__malloc_sbrk_start;
+                    extern char *__malloc_sbrk_top;
+                    size_t sbrk_used = (__malloc_sbrk_top > __malloc_sbrk_start)
+                                     ? (size_t)(__malloc_sbrk_top - __malloc_sbrk_start)
+                                     : 0;
+
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
                     struct sys_memory_stats stats;
                     sys_heap_runtime_stats_get(&_system_heap.heap, &stats);
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
-                            "heap=%u/%u(peak=%u) stack=%u/%u "
+                            "heap=%u/%u(peak=%u) sbrk=%u stack=%u/%u "
                             "vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
                             (unsigned)stats.allocated_bytes,
                             (unsigned)CONFIG_HEAP_MEM_POOL_SIZE,
                             (unsigned)stats.max_allocated_bytes,
+                            (unsigned)sbrk_used,
                             (unsigned)stack_used, (unsigned)stack_size,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
