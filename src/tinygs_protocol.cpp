@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <malloc.h>
 #include "tinygs_config.h"
 #include <zephyr/sys/heap_listener.h>
 
@@ -23,14 +24,23 @@ extern SX1278 *radio;
 
 static uint32_t get_free_heap(void)
 {
+    /* Report picolibc malloc heap (where C++ new allocates) + Zephyr sys_heap.
+     * ESP32 equivalent: ESP.getFreeHeap() reports total free across all heaps. */
+    uint32_t free_total = 0;
+
+    /* Picolibc malloc heap (C++ new, RadioLib objects) */
+    struct mallinfo mi = mallinfo();
+    free_total += mi.fordblks;
+
+    /* Zephyr system heap (k_malloc) */
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
     extern struct k_heap _system_heap;
     struct sys_memory_stats stats;
     if (sys_heap_runtime_stats_get(&_system_heap.heap, &stats) == 0) {
-        return (uint32_t)stats.free_bytes;
+        free_total += (uint32_t)stats.free_bytes;
     }
 #endif
-    return 0;
+    return free_total;
 }
 #include <zephyr/sys/base64.h>
 #include <zephyr/net/openthread.h>
