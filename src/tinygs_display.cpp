@@ -349,6 +349,14 @@ bool tinygs_display_init(void)
         return false;
     }
 
+    /* Enable TFT power (P0.03) — must be driven before display will work */
+    static const struct gpio_dt_spec tft_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(tft_en), gpios, {0});
+    if (tft_en.port && device_is_ready(tft_en.port)) {
+        gpio_pin_configure_dt(&tft_en, GPIO_OUTPUT_ACTIVE);
+        gpio_pin_set_dt(&tft_en, 1);
+        k_msleep(10); /* Let TFT power stabilize */
+    }
+
     if (device_is_ready(backlight.port)) {
         gpio_pin_configure_dt(&backlight, GPIO_OUTPUT_ACTIVE);
         gpio_pin_set_dt(&backlight, 1);
