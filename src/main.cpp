@@ -1713,7 +1713,7 @@ int main(void)
                 {
                     int live_ret = mqtt_live(&mqtt_client);
                     if (live_ret && live_ret != -EAGAIN) {
-                        LOG_ERR("mqtt_live: %d", live_ret);
+                        LOG_DBG("mqtt_live: %d", live_ret);
                     }
                 }
 
@@ -1730,14 +1730,9 @@ int main(void)
                     last_doppler_ms = now_ms;
                 }
 
-                /* Send TinyGS ping */
+                /* Send TinyGS ping (also serves as MQTT keepalive — see protocol doc) */
                 if ((now_ms - last_ping_ms) >= (TINYGS_PING_INTERVAL_S * 1000)) {
-                    LOG_INF("Sending TinyGS ping (%us connected)...",
-                            (unsigned)(now_ms - mqtt_connected_uptime_ms) / 1000);
-                    int ping_ret = tinygs_send_ping(&mqtt_client, cfg_mqtt_user, cfg_station);
-                    if (ping_ret) {
-                        LOG_ERR("Ping publish failed: %d", ping_ret);
-                    }
+                    tinygs_send_ping(&mqtt_client, cfg_mqtt_user, cfg_station);
                     last_ping_ms = now_ms;
                 }
 
