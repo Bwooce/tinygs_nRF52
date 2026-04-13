@@ -217,6 +217,14 @@ static void led_set(bool on)
     }
 }
 
+/* NeoPixel colors — LED0=status (problems only), LED1=activity */
+#define NEO_OFF       0, 0, 0
+#define NEO_RED       20, 0, 0
+#define NEO_GREEN     0, 10, 0
+#define NEO_BLUE      0, 0, 20
+#define NEO_YELLOW    15, 10, 0
+#define NEO_WHITE     30, 30, 30
+
 /* NeoPixel functions — no-ops when LED_STRIP is disabled */
 static void neopixel_set(uint8_t r0, uint8_t g0, uint8_t b0,
                           uint8_t r1, uint8_t g1, uint8_t b1)
@@ -1462,7 +1470,7 @@ static bool lora_check_rx(void)
     if (state == RADIOLIB_ERR_NONE) {
         lora_rx_count++;
         /* Flash LED1 white on packet RX */
-        neopixel_set(0, 10, 0,  30, 30, 30);
+        neopixel_set(NEO_OFF,  NEO_WHITE); /* LED1 flash on LoRa RX */
         LOG_INF("LoRa RX: %u bytes, RSSI=%.1f, SNR=%.1f, FreqErr=%.1f",
                 (unsigned)len, (double)rssi, (double)snr, (double)freq_err);
 
@@ -1503,7 +1511,7 @@ static bool lora_check_rx(void)
 
     /* Restart reception, turn off RX flash */
     radio->startReceive();
-    neopixel_set(0, 10, 0,  0, 0, 0); /* Back to green status, LED1 off */
+    neopixel_off(); /* Back to off after RX flash */
     return true;
 }
 
@@ -1621,7 +1629,7 @@ int main(void)
 
         case STATE_WAIT_THREAD:
             /* Blue blink while waiting for Thread */
-            neopixel_set(0, 0, (k_uptime_get_32() / 500) % 2 ? 20 : 0,  0, 0, 0);
+            neopixel_set(0, 0, (k_uptime_get_32() / 500) % 2 ? 20 : 0,  NEO_OFF); /* Blue blink = waiting for Thread */
             if (thread_attached) {
                 /* Heap stats now in periodic STATUS log */
                 LOG_INF("--- Thread attached, waiting 5s for routing to stabilize ---");
@@ -1683,7 +1691,7 @@ int main(void)
 
         case STATE_MQTT_CONNECTED: {
             LOG_INF("MQTT connected, entering main loop");
-            neopixel_set(0, 10, 0,  0, 0, 0); /* Green = connected */
+            neopixel_off(); /* LEDs off when stable — any lit LED means a problem */
             led_set(true);
 
             /* Sync time via SNTP — needed for Doppler compensation */
@@ -1702,7 +1710,12 @@ int main(void)
                 if (rc > 0) {
                     mqtt_input(&mqtt_client);
                 }
-                mqtt_live(&mqtt_client);
+                {
+                    int live_ret = mqtt_live(&mqtt_client);
+                    if (live_ret && live_ret != -EAGAIN) {
+                        LOG_ERR("mqtt_live: %d", live_ret);
+                    }
+                }
 
                 /* Check for LoRa packet reception */
                 lora_check_rx();
@@ -1789,7 +1802,7 @@ int main(void)
         }
 
         case STATE_ERROR:
-            neopixel_set(20, 0, 0,  0, 0, 0); /* Red = error */
+            neopixel_set(NEO_RED,  NEO_OFF); /* Red = error */
             led_set(false);
             LOG_ERR("Error state. Retrying in 30s...");
             k_msleep(30000);
