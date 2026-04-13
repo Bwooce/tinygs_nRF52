@@ -15,6 +15,12 @@
  * Battery: SH1.25x2 JST connector, 100k/390k divider on AIN2 (P0.04)
  * Power: Vext (P0.21 HIGH) gates GPS, NeoPixels, I2C peripherals
  * Connectors: P1 (7-pin), P2 (7-pin) headers, USB-C, SH1.25x2 battery
+ *
+ * NeoPixel LED meanings (2x WS2812, P0.14):
+ *   LED0 (status): Blue blink = waiting for Thread
+ *                   Green = MQTT connected
+ *                   Red = error state
+ *   LED1 (activity): White flash = LoRa packet received
  * Bootloader: Adafruit UF2 (0xF4000-0x100000), app at 0x26000
  *   Source: https://github.com/adafruit/Adafruit_nRF52_Bootloader
  *   Virtual USB drive: 32MB GhostFAT, accepts any size file

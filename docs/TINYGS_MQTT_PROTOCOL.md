@@ -341,8 +341,9 @@ The modem configuration structure contains:
 
 | Operation | Interval | Notes |
 |-----------|----------|-------|
-| MQTT keepalive | 300s (configurable) | 600s caused missed PINGRESPs; 300s reliable |
+| MQTT keepalive | 300s (configurable) | 600s caused watchdog timeout; 300s reliable |
 | TinyGS ping | keepalive - 30s | Offset avoids PINGREQ collision |
+| MQTT PINGRESP | Never observed | TinyGS broker does not appear to respond to MQTT PINGREQ. Connection liveness maintained by regular begine/ping PUBLISH traffic instead. Watchdog must be fed on MQTT RX, not PINGRESP. |
 | Satellite reassignment | ~60s | When auto-tune enabled |
 | Doppler update | 4s | When TLE available, 1200 Hz hysteresis |
 | RX queue drain | 2 packets per loop | ESP32 behavior |
