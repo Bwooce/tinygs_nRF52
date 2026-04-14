@@ -799,6 +799,23 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         radio->invertIQ(msg.iIQ);
                         radio->setCRC(msg.crc ? 2 : 0);
 
+                        /* FLDRO — forced Low Data Rate Optimization (CRITICAL for reception) */
+                        if (msg.fldro == 2) {
+                            radio->autoLDRO();
+                        } else {
+                            radio->forceLDRO(msg.fldro ? true : false);
+                        }
+
+                        /* Implicit/explicit header — cl>0 means implicit with fixed length */
+                        if (msg.cl > 0) {
+                            radio->implicitHeader(msg.cl);
+                        } else {
+                            radio->explicitHeader();
+                        }
+
+                        /* RX boosted gain — ~3dB better sensitivity on SX1262 */
+                        radio->setRxBoostedGainMode(true);
+
                         if (msg.sat) {
                             strncpy(tinygs_radio.satellite, msg.sat,
                                     sizeof(tinygs_radio.satellite) - 1);
@@ -1506,6 +1523,8 @@ static void init_radio(void)
     radio->setBandwidth(250.0);
     radio->setCodingRate(5);
     radio->setSyncWord(0x12);
+    radio->autoLDRO();
+    radio->setRxBoostedGainMode(true);
 
     /* Register DIO1 interrupt callback and start receiving */
     radio->setPacketReceivedAction(lora_rx_callback);
