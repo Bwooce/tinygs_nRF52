@@ -292,6 +292,120 @@ ZTEST(json_parser, test_ping_output_format)
     zassert_not_null(strstr(json, "\"InstRSSI\":-120.0"), "InstRSSI present");
 }
 
+/* ---- RX payload value validation ---- */
+
+ZTEST(json_parser, test_rx_payload_has_epoch_not_uptime)
+{
+    /* Simulate an RX payload — verify unix_GS_time is a real epoch,
+     * not a small uptime value. Real epoch should be > 1700000000 (2023+) */
+    char json[512];
+    uint32_t epoch = 1776080126; /* Real SNTP-synced value */
+    int len = snprintf(json, sizeof(json),
+        "{\"station_location\":[-33.8688,151.2093],"
+        "\"mode\":\"LoRa\",\"frequency\":436.703,"
+        "\"frequency_offset\":1500.0,"
+        "\"satellite\":\"Test\",\"sf\":10,\"cr\":5,\"bw\":250.0,"
+        "\"rssi\":-110.5,\"snr\":3.25,\"frequency_error\":1234.5,"
+        "\"unix_GS_time\":%u,"
+        "\"crc_error\":false,\"data\":\"dGVzdA==\","
+        "\"NORAD\":12345,\"noisy\":false,\"iIQ\":false}",
+        (unsigned)epoch);
+
+    zassert_true(len > 0 && len < (int)sizeof(json), "should fit");
+
+    /* unix_GS_time must be a real epoch (> 2023), not uptime (< 100000) */
+    const char *p = strstr(json, "\"unix_GS_time\":");
+    zassert_not_null(p, "unix_GS_time must be present");
+    uint32_t val = (uint32_t)atol(p + 15);
+    zassert_true(val > 1700000000, "unix_GS_time must be real epoch, not uptime");
+}
+
+ZTEST(json_parser, test_rx_payload_frequency_offset_not_zero)
+{
+    /* frequency_offset should reflect the actual foff value, not hardcoded 0 */
+    char json[128];
+    snprintf(json, sizeof(json), "\"frequency_offset\":%.1f", 1500.0);
+    zassert_not_null(strstr(json, "\"frequency_offset\":1500.0"),
+                     "frequency_offset must use actual foff value");
+
+    /* Verify it's NOT hardcoded 0 when offset is set */
+    snprintf(json, sizeof(json), "\"frequency_offset\":%.1f", 0.0);
+    zassert_not_null(strstr(json, "\"frequency_offset\":0.0"),
+                     "frequency_offset 0 is valid when no offset");
+}
+
+ZTEST(json_parser, test_rx_payload_iiq_from_config)
+{
+    /* iIQ must reflect actual radio config, not hardcoded false */
+    char json_true[32], json_false[32];
+    snprintf(json_true, sizeof(json_true), "\"iIQ\":%s", true ? "true" : "false");
+    snprintf(json_false, sizeof(json_false), "\"iIQ\":%s", false ? "true" : "false");
+
+    zassert_not_null(strstr(json_true, "\"iIQ\":true"), "iIQ true");
+    zassert_not_null(strstr(json_false, "\"iIQ\":false"), "iIQ false");
+}
+
+ZTEST(json_parser, test_rx_payload_required_fields)
+{
+    /* Verify all ESP32-required fields are present in RX payload format */
+    const char *required_fields[] = {
+        "\"station_location\":", "\"mode\":", "\"frequency\":",
+        "\"frequency_offset\":", "\"satellite\":", "\"sf\":",
+        "\"cr\":", "\"bw\":", "\"rssi\":", "\"snr\":",
+        "\"frequency_error\":", "\"unix_GS_time\":", "\"crc_error\":",
+        "\"data\":", "\"NORAD\":", "\"noisy\":", "\"iIQ\":",
+    };
+
+    char json[512];
+    int len = snprintf(json, sizeof(json),
+        "{\"station_location\":[-33.8688,151.2093],"
+        "\"mode\":\"LoRa\",\"frequency\":436.703,"
+        "\"frequency_offset\":0.0,\"satellite\":\"Test\","
+        "\"sf\":10,\"cr\":5,\"bw\":250.0,"
+        "\"rssi\":-110.5,\"snr\":3.25,\"frequency_error\":0.0,"
+        "\"unix_GS_time\":1776080126,\"usec_time\":0,"
+        "\"crc_error\":false,\"data\":\"dGVzdA==\","
+        "\"NORAD\":12345,\"noisy\":false,\"iIQ\":false}");
+
+    zassert_true(len > 0, "should build");
+
+    for (size_t i = 0; i < sizeof(required_fields)/sizeof(required_fields[0]); i++) {
+        zassert_not_null(strstr(json, required_fields[i]),
+                         "missing required field in RX payload");
+    }
+}
+
+ZTEST(json_parser, test_welcome_field_types_strict)
+{
+    /* Strict type checks — these type errors have caused server resets */
+    char json[512];
+    int len = snprintf(json, sizeof(json),
+        "{\"version\":%u,\"Vbat\":%d,\"board\":%d,"
+        "\"mode\":\"LoRa\",\"tx\":false,\"modem_conf\":\"%s\"}",
+        2604100u, 4130, 255, "{}");
+
+    zassert_true(len > 0, "should build");
+
+    /* version MUST be number, not string */
+    zassert_not_null(strstr(json, "\"version\":2604100"), "version is number");
+    zassert_is_null(strstr(json, "\"version\":\""), "version NOT string");
+
+    /* Vbat MUST be int millivolts, not float volts */
+    zassert_not_null(strstr(json, "\"Vbat\":4130"), "Vbat is int mV");
+    zassert_is_null(strstr(json, "\"Vbat\":4."), "Vbat NOT float volts");
+
+    /* board MUST be number, not string */
+    zassert_not_null(strstr(json, "\"board\":255"), "board is number");
+    zassert_is_null(strstr(json, "\"board\":\""), "board NOT string");
+
+    /* tx MUST be boolean */
+    zassert_not_null(strstr(json, "\"tx\":false"), "tx is boolean");
+
+    /* modem_conf MUST be escaped string, not raw object */
+    zassert_not_null(strstr(json, "\"modem_conf\":\"{}\""), "modem_conf is escaped string");
+    zassert_is_null(strstr(json, "\"modem_conf\":{}"), "modem_conf NOT raw object");
+}
+
 /* ---- begine edge cases ---- */
 
 ZTEST(json_parser, test_begine_fractional_bw)

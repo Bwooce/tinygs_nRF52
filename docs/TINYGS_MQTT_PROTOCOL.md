@@ -221,7 +221,7 @@ Fields and their exact types as serialized by ESP32 ArduinoJson:
 | station_location | array[float,float] | float | [-33.87, 151.21] | [lat, lon] |
 | mode | **string** | char[8] | "LoRa" | "LoRa", "FSK", or "GMSK" (NOT a number) |
 | frequency | number | float | 436.703 | MHz |
-| frequency_offset | number | float | 0 | Hz |
+| frequency_offset | number | float | 0 | Hz — from foff command, NOT hardcoded 0 |
 | satellite | string | char* | "NORBI" | Satellite name |
 | sf | number | uint8_t | 10 | Spreading factor (LoRa only) |
 | cr | number | uint8_t | 5 | Coding rate (LoRa only) |
@@ -234,7 +234,7 @@ Fields and their exact types as serialized by ESP32 ArduinoJson:
 | rssi | number | float | -120.5 | Packet RSSI |
 | snr | number | float | -5.25 | Packet SNR |
 | frequency_error | number | float | 1234.5 | Hz |
-| unix_GS_time | number | time_t | 1700000000 | Unix timestamp at reception |
+| unix_GS_time | number | time_t | 1700000000 | Unix epoch at reception (NOT uptime — must be SNTP-synced) |
 | usec_time | number | int64_t | 123456 | Microsecond timestamp |
 | crc_error | **boolean** | bool | false | CRC check result |
 | data | string | char* | "base64..." | Base64 encoded packet |
@@ -310,7 +310,20 @@ The `begine` (and `batch_conf`) command carries radio configuration. Key fields:
 34-byte binary representation of the satellite's two-line element set, used for Doppler
 compensation. The decoded bytes are fed to a Plan13 (P13) satellite propagator.
 
-### 3.6 Doppler Compensation
+### 3.6 Critical Radio Configuration from begine
+
+When applying a `begine` config, these settings are REQUIRED for packet reception
+(all confirmed by comparing ESP32 Radio.cpp source):
+
+| Field | API call | Notes |
+|-------|----------|-------|
+| fldro | `forceLDRO(fldro)` or `autoLDRO()` when fldro==2 | **CRITICAL** — without LDRO, low-rate packets are undecodable |
+| cl | `implicitHeader(cl)` when cl>0, else `explicitHeader()` | Required for satellites using implicit header mode |
+| — | `setRxBoostedGainMode(true)` | ~3dB better sensitivity on SX1262, always enable |
+| gain | Not used on SX1262 (fixed gain) | ESP32 passes it to begin() for SX127x compat |
+| iIQ | `invertIQ(iIQ)` | Must also store in radio state for RX payload |
+
+### 3.7 Doppler Compensation
 
 When a `begine` payload includes a `tlx` field:
 1. Decode the 34-byte binary TLE from base64
