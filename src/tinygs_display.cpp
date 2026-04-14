@@ -51,8 +51,9 @@ static uint32_t display_timeout_ms = DISPLAY_TIMEOUT_DEFAULT_MS;
 #define COL_YELLOW  0xFFE0
 #define COL_CYAN    0x07FF
 #define COL_RED     0xF800
-#define COL_DKBLUE  0x0011  /* Dark ocean blue */
-#define COL_DKGREEN 0x0320  /* Dark land green */
+#define COL_LTGRAY  0xC618  /* Light gray background */
+#define COL_OCEAN   0x3B7F  /* Blue ocean for map */
+#define COL_LAND    0x2E05  /* Dark green land for map */
 
 extern int read_vbat_mv(void);
 extern char cfg_station[32];
@@ -156,7 +157,7 @@ static void draw_string(int x, int y, const char *str, uint16_t fg, uint16_t bg)
 static void clear_screen(void)
 {
     if (!disp_dev) return;
-    for (int i = 0; i < DISP_W; i++) line_buf[i] = COL_BLACK;
+    for (int i = 0; i < DISP_W; i++) line_buf[i] = COL_WHITE;
 
     struct display_buffer_descriptor desc = {
         .buf_size = sizeof(line_buf),
@@ -173,50 +174,50 @@ static void clear_screen(void)
 static void draw_page_station(void)
 {
     char buf[32];
-    draw_string(0, 0, "TinyGS nRF52", COL_CYAN, COL_BLACK);
+    draw_string(0, 0, "TinyGS nRF52", 0x0010, COL_WHITE);
     snprintf(buf, sizeof(buf), "Sta: %s", cfg_station);
-    draw_string(0, 18, buf, COL_WHITE, COL_BLACK);
+    draw_string(0, 18, buf, COL_BLACK, COL_WHITE);
     snprintf(buf, sizeof(buf), "Up: %us", (unsigned)(k_uptime_get_32() / 1000));
-    draw_string(0, 36, buf, COL_WHITE, COL_BLACK);
+    draw_string(0, 36, buf, COL_BLACK, COL_WHITE);
     snprintf(buf, sizeof(buf), "Vbat: %dmV", read_vbat_mv());
-    draw_string(0, 54, buf, COL_GREEN, COL_BLACK);
+    draw_string(0, 54, buf, 0x0400, COL_WHITE);
     snprintf(buf, sizeof(buf), "Ver: %u", (unsigned)TINYGS_VERSION);
-    draw_string(0, 72, buf, COL_WHITE, COL_BLACK);
+    draw_string(0, 72, buf, COL_BLACK, COL_WHITE);
 }
 
 static void draw_page_satellite(void)
 {
     char buf[32];
     if (tinygs_radio.satellite[0]) {
-        draw_string(0, 0, tinygs_radio.satellite, COL_YELLOW, COL_BLACK);
+        draw_string(0, 0, tinygs_radio.satellite, 0x8400, COL_WHITE);
     } else {
-        draw_string(0, 0, "No satellite", COL_YELLOW, COL_BLACK);
+        draw_string(0, 0, "No satellite", 0x8400, COL_WHITE);
     }
     snprintf(buf, sizeof(buf), "%.4f MHz", (double)tinygs_radio.frequency);
-    draw_string(0, 18, buf, COL_WHITE, COL_BLACK);
+    draw_string(0, 18, buf, COL_BLACK, COL_WHITE);
     snprintf(buf, sizeof(buf), "SF%d BW%.0f CR%d",
              tinygs_radio.sf, (double)tinygs_radio.bw, tinygs_radio.cr);
-    draw_string(0, 36, buf, COL_WHITE, COL_BLACK);
+    draw_string(0, 36, buf, COL_BLACK, COL_WHITE);
     snprintf(buf, sizeof(buf), "NORAD: %u", (unsigned)tinygs_radio.norad);
-    draw_string(0, 54, buf, COL_WHITE, COL_BLACK);
-    draw_string(0, 72, "Listening...", COL_GREEN, COL_BLACK);
+    draw_string(0, 54, buf, COL_BLACK, COL_WHITE);
+    draw_string(0, 72, "Listening...", 0x0400, COL_WHITE);
 }
 
 /* Page 4: Last received packet info */
 static void draw_page_lastpkt(void)
 {
     char buf[32];
-    draw_string(0, 0, "Last Packet", COL_CYAN, COL_BLACK);
+    draw_string(0, 0, "Last Packet", 0x0010, COL_WHITE);
     if (last_pkt_time_ms > 0) {
         uint32_t ago = (k_uptime_get_32() - last_pkt_time_ms) / 1000;
         snprintf(buf, sizeof(buf), "RSSI: %.1f dBm", (double)last_pkt_rssi);
-        draw_string(0, 18, buf, COL_WHITE, COL_BLACK);
+        draw_string(0, 18, buf, COL_BLACK, COL_WHITE);
         snprintf(buf, sizeof(buf), "SNR: %.2f dB", (double)last_pkt_snr);
-        draw_string(0, 36, buf, COL_WHITE, COL_BLACK);
+        draw_string(0, 36, buf, COL_BLACK, COL_WHITE);
         snprintf(buf, sizeof(buf), "%us ago", (unsigned)ago);
-        draw_string(0, 54, buf, COL_GREEN, COL_BLACK);
+        draw_string(0, 54, buf, 0x0400, COL_WHITE);
     } else {
-        draw_string(0, 36, "No packets yet", COL_YELLOW, COL_BLACK);
+        draw_string(0, 36, "No packets yet", 0x8400, COL_WHITE);
     }
 }
 
@@ -237,7 +238,7 @@ static void draw_page_worldmap(void)
         for (int x = 0; x < DISP_W; x++) {
             int bi = y * WORLDMAP_W + x;
             bool land = (worldmap_bits[bi / 8] >> (bi % 8)) & 1;
-            line_buf[x] = land ? COL_DKGREEN : COL_DKBLUE;
+            line_buf[x] = land ? COL_LAND : COL_OCEAN;
         }
 
         /* Draw station location dot (3x3 yellow) */
@@ -266,7 +267,7 @@ static void draw_page_worldmap(void)
 
     /* Overlay satellite name at bottom */
     if (tinygs_radio.satellite[0]) {
-        draw_string(0, DISP_H - 16, tinygs_radio.satellite, COL_WHITE, COL_DKBLUE);
+        draw_string(0, DISP_H - 16, tinygs_radio.satellite, COL_WHITE, COL_OCEAN);
     }
 }
 
@@ -274,12 +275,12 @@ static void draw_page_worldmap(void)
 static void draw_page_status(void)
 {
     char buf[32];
-    draw_string(0, 0, "Status", COL_CYAN, COL_BLACK);
+    draw_string(0, 0, "Status", 0x0010, COL_WHITE);
 
     const char *thread_str = thread_attached ? "Child" : "Detached";
     uint16_t thread_col = thread_attached ? COL_GREEN : COL_YELLOW;
     snprintf(buf, sizeof(buf), "Thread: %s", thread_str);
-    draw_string(0, 18, buf, thread_col, COL_BLACK);
+    draw_string(0, 18, buf, thread_col, COL_WHITE);
 
     const char *mqtt_str;
     uint16_t mqtt_col;
@@ -288,15 +289,15 @@ static void draw_page_status(void)
     case STATE_MQTT_CONNECT:   mqtt_str = "Connecting..."; mqtt_col = COL_YELLOW; break;
     case STATE_DNS_RESOLVE:    mqtt_str = "DNS..."; mqtt_col = COL_YELLOW; break;
     case STATE_ERROR:          mqtt_str = "Error"; mqtt_col = COL_RED; break;
-    default:                   mqtt_str = "Waiting"; mqtt_col = COL_WHITE; break;
+    default:                   mqtt_str = "Waiting"; mqtt_col = COL_BLACK; break;
     }
     snprintf(buf, sizeof(buf), "MQTT: %s", mqtt_str);
-    draw_string(0, 36, buf, mqtt_col, COL_BLACK);
+    draw_string(0, 36, buf, mqtt_col, COL_WHITE);
 
     snprintf(buf, sizeof(buf), "Vbat: %dmV", read_vbat_mv());
-    draw_string(0, 54, buf, COL_WHITE, COL_BLACK);
+    draw_string(0, 54, buf, COL_BLACK, COL_WHITE);
     snprintf(buf, sizeof(buf), "Keep: %ds", CONFIG_MQTT_KEEPALIVE);
-    draw_string(0, 72, buf, COL_WHITE, COL_BLACK);
+    draw_string(0, 72, buf, COL_BLACK, COL_WHITE);
 }
 
 /* Pages 6-7: Server-pushed remote text frames */
@@ -322,7 +323,7 @@ static void draw_page_remote(int frame_idx)
         if (y < 0) y = 0;
         if (x >= DISP_W) continue;
         if (y >= DISP_H - FONT_H) continue;
-        draw_string(x, y, elem.text, COL_WHITE, COL_BLACK);
+        draw_string(x, y, elem.text, COL_BLACK, COL_WHITE);
     }
 }
 
@@ -330,14 +331,14 @@ static void draw_page_remote(int frame_idx)
 static void draw_page_info(void)
 {
     char buf[32];
-    draw_string(0, 0, "System Info", COL_CYAN, COL_BLACK);
+    draw_string(0, 0, "System Info", 0x0010, COL_WHITE);
     snprintf(buf, sizeof(buf), "Ver: %u", (unsigned)TINYGS_VERSION);
-    draw_string(0, 18, buf, COL_WHITE, COL_BLACK);
-    draw_string(0, 36, "nRF52840/SX1262", COL_WHITE, COL_BLACK);
+    draw_string(0, 18, buf, COL_BLACK, COL_WHITE);
+    draw_string(0, 36, "nRF52840/SX1262", COL_BLACK, COL_WHITE);
     snprintf(buf, sizeof(buf), "Up: %us", (unsigned)(k_uptime_get_32() / 1000));
-    draw_string(0, 54, buf, COL_GREEN, COL_BLACK);
+    draw_string(0, 54, buf, 0x0400, COL_WHITE);
     snprintf(buf, sizeof(buf), "Flash: %uKB", (unsigned)(462 /* approx */));
-    draw_string(0, 72, buf, COL_WHITE, COL_BLACK);
+    draw_string(0, 72, buf, COL_BLACK, COL_WHITE);
 }
 
 bool tinygs_display_init(void)

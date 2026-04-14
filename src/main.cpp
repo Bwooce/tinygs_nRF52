@@ -255,6 +255,7 @@ static void breathing_led_init(void)
             NRF_PWM_PIN_NOT_CONNECTED,
             NRF_PWM_PIN_NOT_CONNECTED,
         },
+        .pin_inverted = { true, false, false, false }, /* Active LOW LED */
         .irq_priority = NRFX_PWM_DEFAULT_CONFIG_IRQ_PRIORITY,
         .base_clock   = NRF_PWM_CLK_1MHz,
         .count_mode   = NRF_PWM_MODE_UP,
