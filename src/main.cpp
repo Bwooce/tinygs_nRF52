@@ -203,7 +203,10 @@ static void led_init(void)
     }
 #if defined(CONFIG_LED_STRIP)
     if (led_strip && device_is_ready(led_strip)) {
-        LOG_INF("NeoPixel: 2x WS2812 ready");
+        /* Clear NeoPixels immediately — bootloader may have left them lit */
+        struct led_rgb off[2] = {{0}, {0}};
+        led_strip_update_rgb(led_strip, off, 2);
+        LOG_INF("NeoPixel: 2x SK6812/WS2812 cleared");
     } else {
         led_strip = NULL;
     }
