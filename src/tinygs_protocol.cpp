@@ -9,6 +9,7 @@
 #include <zephyr/sys/heap_listener.h>
 
 extern int read_vbat_mv(void);
+extern int64_t get_utc_epoch(void);
 /* Radio pointer type must match main.cpp's DTS-selected type */
 #define LORA_NODE DT_ALIAS(lora0)
 #if DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1262)
@@ -284,13 +285,16 @@ int tinygs_send_rx(struct mqtt_client *client,
     }
     b64_buf[b64_len] = '\0';
 
+    /* Get real epoch time (not uptime) — server expects Unix timestamp */
+    uint32_t epoch = (uint32_t)get_utc_epoch();
+
     /* Build RX JSON payload — types matched to ESP32 ArduinoJson output */
     int len = snprintf(payload_buf, sizeof(payload_buf),
         "{"
         "\"station_location\":[%.4f,%.4f],"
         "\"mode\":\"LoRa\","
         "\"frequency\":%.4f,"
-        "\"frequency_offset\":0,"
+        "\"frequency_offset\":%.1f,"
         "\"satellite\":\"%s\","
         "\"sf\":%d,"
         "\"cr\":%d,"
@@ -304,20 +308,22 @@ int tinygs_send_rx(struct mqtt_client *client,
         "\"data\":\"%s\","
         "\"NORAD\":%u,"
         "\"noisy\":false,"
-        "\"iIQ\":false"
+        "\"iIQ\":%s"
         "}",
         (double)tinygs_station_lat,
         (double)tinygs_station_lon,
         (double)tinygs_radio.frequency,
+        (double)tinygs_radio.freq_offset,
         tinygs_radio.satellite,
         tinygs_radio.sf, tinygs_radio.cr,
         (double)tinygs_radio.bw,
         (double)rssi,
         (double)snr,
         (double)freq_err,
-        (unsigned)(k_uptime_get_32() / 1000),
+        (unsigned)epoch,
         b64_buf,
-        (unsigned)tinygs_radio.norad
+        (unsigned)tinygs_radio.norad,
+        tinygs_radio.iIQ ? "true" : "false"
     );
 
     if (len >= (int)sizeof(payload_buf)) {
@@ -355,7 +361,7 @@ int tinygs_send_status(struct mqtt_client *client,
         "\"tx\":false,"
         "\"mode\":\"LoRa\","
         "\"frequency\":%.4f,"
-        "\"frequency_offset\":0,"
+        "\"frequency_offset\":%.1f,"
         "\"satellite\":\"%s\","
         "\"sf\":%d,"
         "\"cr\":%d,"
@@ -372,11 +378,12 @@ int tinygs_send_status(struct mqtt_client *client,
         (unsigned)TINYGS_VERSION,
         TINYGS_BOARD,
         (double)tinygs_radio.frequency,
+        (double)tinygs_radio.freq_offset,
         tinygs_radio.satellite,
         tinygs_radio.sf, tinygs_radio.cr,
         (double)tinygs_radio.bw,
         (unsigned)tinygs_radio.norad,
-        (unsigned)(k_uptime_get_32() / 1000)
+        (unsigned)(uint32_t)get_utc_epoch()
     );
 
     struct mqtt_publish_param param;

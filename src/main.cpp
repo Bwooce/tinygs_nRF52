@@ -797,6 +797,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         radio->setSyncWord(msg.sw);
                         radio->setPreambleLength(msg.pl);
                         radio->invertIQ(msg.iIQ);
+                        tinygs_radio.iIQ = msg.iIQ;
                         radio->setCRC(msg.crc ? 2 : 0);
 
                         /* FLDRO — forced Low Data Rate Optimization (CRITICAL for reception) */
@@ -1348,7 +1349,7 @@ static volatile bool lora_packet_received = false;
 static int64_t sntp_epoch_offset = 0; /* seconds: real_epoch = uptime_s + offset */
 static bool time_synced = false;
 
-static int64_t get_utc_epoch(void)
+int64_t get_utc_epoch(void)
 {
     if (!time_synced) return 0;
     return (int64_t)(k_uptime_get_32() / 1000) + sntp_epoch_offset;

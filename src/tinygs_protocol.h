@@ -127,6 +127,7 @@ struct tinygs_radio_state {
     int   sf;              /* Spreading factor 5-12 */
     float bw;              /* Bandwidth kHz */
     int   cr;              /* Coding rate 5-8 */
+    bool  iIQ;             /* Inverted IQ — from begine, reported in RX payload */
     char  satellite[32];   /* Current satellite name */
     uint32_t norad;        /* NORAD catalog number */
     uint8_t tle[34];       /* Binary TLE from server (base64-decoded) */
