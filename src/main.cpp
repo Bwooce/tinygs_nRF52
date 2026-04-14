@@ -198,9 +198,8 @@ static const void *led_strip = NULL;
 
 static void led_init(void)
 {
-    if (device_is_ready(status_led.port)) {
-        gpio_pin_configure_dt(&status_led, GPIO_OUTPUT_INACTIVE);
-    }
+    /* Don't configure P1.03 as GPIO — PWM0 will own this pin for breathing LED.
+     * The GPIO config would conflict with the PWM peripheral. */
 #if defined(CONFIG_LED_STRIP)
     if (led_strip && device_is_ready(led_strip)) {
         /* Clear NeoPixels immediately — bootloader may have left them lit */
@@ -289,9 +288,9 @@ static void breathing_led_stop(void)
 
 static void led_set(bool on)
 {
-    if (device_is_ready(status_led.port)) {
-        gpio_pin_set_dt(&status_led, on ? 1 : 0);
-    }
+    /* P1.03 is now PWM-driven (breathing LED). Use breathing_led_start/stop instead.
+     * This function kept for error state where we want solid on/off. */
+    (void)on;
 }
 
 /* NeoPixel colors — LED0=status (problems only), LED1=activity */
@@ -1441,9 +1440,15 @@ static void doppler_update(void)
 
     sat.predict(dt);
 
-    /* Get elevation to check if satellite is above horizon */
+    /* Get elevation and satellite map position */
     double elevation = 0.0, azimuth = 0.0;
     sat.elaz(obs, elevation, azimuth);
+
+    /* Update satellite position for world map display (128x64 ESP32 coords) */
+    double sat_lat = 0, sat_lon = 0;
+    sat.latlon(sat_lat, sat_lon);
+    tinygs_radio.sat_pos_x = (float)((180.0 + sat_lon) / 360.0 * 128.0);
+    tinygs_radio.sat_pos_y = (float)((90.0 - sat_lat) / 180.0 * 64.0);
 
     if (elevation <= 0.0) {
         return; /* Below horizon — no Doppler needed */
