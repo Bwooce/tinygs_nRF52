@@ -1,38 +1,77 @@
 /*
- * Heltec Mesh Node T114 Rev 2.0 — Board Definition Overlay
- * https://heltec.org/project/mesh-node-t114/
- * Pinout: https://heltec.org/wp-content/uploads/2024/08/T114_v2_pin.png
- * Schematic V2.1: https://resource.heltec.cn/download/Mesh_Node_T114/schematic/MeshNode-T114_V2.1.pdf
+ * Heltec Mesh Node T114 Rev 2.0 -- Board Definition Overlay
+ * =========================================================
+ * Product:   https://heltec.org/project/mesh-node-t114/
+ * Datasheet: https://resource.heltec.cn/download/Mesh_Node_T114/Datasheet.pdf
+ * Pinout:    https://heltec.org/wp-content/uploads/2024/08/T114_v2_pin.png
+ * Schematic: https://resource.heltec.cn/download/Mesh_Node_T114/schematic/MeshNode-T114_V2.1.pdf
+ * Arduino:   https://github.com/HelTecAutomation/Heltec_nRF52 (variant HT-n5262)
  *
- * MCU: nRF52840 (ARM Cortex-M4F, 64MHz)
- *   - 1MB Flash, 256KB SRAM
- *   - USB 2.0, BLE 5.0, IEEE 802.15.4
- * Radio: SX1262 LoRa (150-960MHz)
- * Display: ST7789V 1.14" TFT 240x135 RGB565
- * GPS: L76K GNSS (UART1)
- * LEDs: 1x green (P1.03), 2x WS2812 NeoPixel (P0.14, Vext-powered)
- * Button: BOOT (P1.10)
- * Battery: SH1.25x2 JST connector, 100k/390k divider on AIN2 (P0.04)
- * Power: Vext (P0.21 HIGH) gates GPS, NeoPixels, I2C peripherals
- * Connectors: P1 (7-pin), P2 (7-pin) headers, USB-C, SH1.25x2 battery
+ * Hardware Summary
+ * ----------------
+ * MCU:       nRF52840 (ARM Cortex-M4F, 64MHz), 1MB Flash, 256KB SRAM
+ * LoRa:      SX1262 (150-960MHz), DIO2 RF switch, DIO3 TCXO 1.8V
+ * Display:   ST7789V 1.14" TFT 240x135 RGB565 (optional, LH114T-IF03)
+ * GPS:       L76K GNSS on UART1 (optional)
+ * USB:       Type-C with ESD protection, LQ5401NI power management
+ * Battery:   SH1.25x2 JST LiPo connector, 100k/390k divider on AIN2 (P0.04)
+ * Solar:     SH1.25x2 solar panel connector
+ * Buttons:   BOOT (P1.10), RESET
+ * Connectors: P1 header (13 pins), P2 header (13 pins), IPEX 1.0 LoRa antenna
+ * Dimensions: 50.80mm x 22.86mm
+ * Temp:      -20 to 70C operating
  *
- * LEDs:
- *   Charge LED (orange, near USB) — LQ5401NI power IC, NOT software controllable.
- *     Flickers during USB charge/power activity. Normal behavior.
- *   Green LED (P1.03) — GPIO controlled, active LOW
- *   2x NeoPixel SK6812 (P0.14) — SPI2 controlled, GRB color order
- *     LED0 (status): Blue blink=Thread wait, Red=error, Off=normal
- *     LED1 (activity): White flash=LoRa RX, Off=idle
- * Bootloader: Adafruit UF2 (0xF4000-0x100000), app at 0x26000
- *   Source: https://github.com/adafruit/Adafruit_nRF52_Bootloader
- *   Virtual USB drive: 32MB GhostFAT, accepts any size file
- *   Max firmware: 944KB binary (USER_FLASH_END=0xED000 - DFU_APP_DATA_RESERVED)
- *   Max UF2 file: ~1.9MB (2x binary due to UF2 block format)
- *   Out-of-range blocks silently rejected → partial flash → brick risk
- *   Our app partition (752KB) is within the 944KB bootloader limit
+ * LEDs (3 elements)
+ * -----------------
+ * 1. Charge LED (orange, near USB connector)
+ *    - Driven by LQ5401NI power management IC
+ *    - NOT software controllable -- hardwired to charge circuit
+ *    - Flickers during USB power/charge activity (normal behavior)
+ *
+ * 2. Green LED (P1.03)
+ *    - GPIO controlled, active LOW (LED_STATE_ON = 0)
+ *    - Defined as LED0 / led0 alias in DTS
+ *
+ * 3. 2x NeoPixel SK6812 RGB LEDs (P0.14)
+ *    - Powered by Vext (P0.21 must be HIGH)
+ *    - GRB color order, 800KHz (WS2812-compatible mode)
+ *    - Driven via SPI2 with dummy SCK on P0.09
+ *    - Heltec BSP: PIN_NEOPIXEL=14, NEOPIXEL_NUM=2
+ *    - Meshtastic: NEO_GRB + NEO_KHZ800
+ *    - Bootloader also drives these for DFU status indication
+ *    - TinyGS meanings:
+ *        LED0 (status): Blue blink=Thread wait, Red=error, Off=normal
+ *        LED1 (activity): White flash=LoRa RX, Off=idle
+ *
+ * Pin Assignments (verified against schematic V2.1, pinout, and Meshtastic variant.h)
+ * -----------------------------------------------------------------------------------
+ * LoRa SX1262 (SPI1): SCK=P0.19, MOSI=P0.22, MISO=P0.23, CS=P0.24,
+ *                      DIO1=P0.20, BUSY=P0.17, RESET=P0.25
+ * Display (SPI0):     SCK=P1.08, MOSI=P1.09, CS=P0.11, DC=P0.12,
+ *                      RESET=P0.02, Backlight=P0.15(active LOW),
+ *                      TFT_EN=P0.03(active LOW, VTFT_CTRL)
+ * NeoPixel (SPI2):    MOSI=P0.14(data), SCK=P0.09(dummy, UART2 RX pad)
+ * Power:              Vext=P0.21(active HIGH), ADC_CTRL=P0.06(active HIGH)
+ * Battery ADC:        P0.04 (AIN2), 100k/390k divider, multiplier 4.916
+ * Button:             BOOT=P1.10 (active LOW, internal pull-up)
+ * GPS (UART1):        TX=P1.07, RX=P1.05, PPS=P1.04, Standby=P1.02
+ * I2C bus 0:          SDA=P0.26, SCL=P0.27 (RTC footprint, not populated)
+ * I2C bus 1:          SDA=P0.16, SCL=P0.13 (header pins)
+ * QSPI flash:         SCK=P1.14, CS=P1.15, IO0=P1.12, IO1=P1.13,
+ *                      IO2=P0.07, IO3=P0.05 (may or may not be populated)
+ *
+ * Bootloader
+ * ----------
+ * Adafruit UF2 at 0xF4000-0x100000
+ * Source: https://github.com/adafruit/Adafruit_nRF52_Bootloader
+ * Virtual USB drive: 32MB GhostFAT, accepts any size file
+ * Max firmware: 944KB binary (USER_FLASH_END=0xED000)
+ * Max UF2 file: ~1.9MB (2x binary due to UF2 block format)
+ * Out-of-range blocks silently rejected -- partial flash -- brick risk
+ * Our app partition (752KB) is within the 944KB bootloader limit
+ * 1200-baud CDC ACM triggers bootloader entry (sets GPREGRET=0x57)
  *
  * Base board: nrf52840dk_nrf52840 (all pins overridden below)
- * Pin assignments verified against Heltec official pinout, schematic V2.1, and Meshtastic variant.h
  */
 
 #include <zephyr/dt-bindings/led/led.h>
