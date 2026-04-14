@@ -213,6 +213,79 @@ static void led_init(void)
 #endif
 }
 
+/* -------------------------------------------------------------------------- */
+/* Breathing LED — nRF PWM hardware sequence, zero CPU                         */
+/* -------------------------------------------------------------------------- */
+
+#include <nrfx_pwm.h>
+#include <hal/nrf_gpio.h>
+
+static nrfx_pwm_t pwm_led = NRFX_PWM_INSTANCE(0);
+static bool pwm_breathing = false;
+
+/* Sine-ish breathing curve: 64 steps, ramps up then down smoothly.
+ * Values are inverted (LED active LOW): 1000=off, 0=full brightness.
+ * PWM top value = 1000 for ~1kHz at 1MHz base clock. */
+static nrf_pwm_values_individual_t breath_values[64];
+static nrf_pwm_sequence_t breath_seq = {
+    .values = { .p_individual = breath_values },
+    .length = NRF_PWM_VALUES_LENGTH(breath_values),
+    .repeats = 30,   /* Hold each step for 30 PWM periods (~30ms at 1kHz) = ~2s full cycle */
+    .end_delay = 0,
+};
+
+static void breathing_led_init(void)
+{
+    /* Build sine breathing table (active LOW: 1000=off, 0=bright) */
+    for (int i = 0; i < 64; i++) {
+        /* Triangle wave: 0→31 ramp up, 32→63 ramp down */
+        int brightness = (i < 32) ? i : (63 - i);
+        /* Square for softer ramp, scale to 0-1000 */
+        int duty = 1000 - (brightness * brightness * 1000 / (31 * 31));
+        breath_values[i].channel_0 = (uint16_t)duty;
+        breath_values[i].channel_1 = 1000; /* unused channels off */
+        breath_values[i].channel_2 = 1000;
+        breath_values[i].channel_3 = 1000;
+    }
+
+    nrfx_pwm_config_t config = {
+        .output_pins = {
+            NRF_GPIO_PIN_MAP(1, 3),  /* P1.03 = green LED */
+            NRF_PWM_PIN_NOT_CONNECTED,
+            NRF_PWM_PIN_NOT_CONNECTED,
+            NRF_PWM_PIN_NOT_CONNECTED,
+        },
+        .irq_priority = NRFX_PWM_DEFAULT_CONFIG_IRQ_PRIORITY,
+        .base_clock   = NRF_PWM_CLK_1MHz,
+        .count_mode   = NRF_PWM_MODE_UP,
+        .top_value    = 1000,
+        .load_mode    = NRF_PWM_LOAD_INDIVIDUAL,
+        .step_mode    = NRF_PWM_STEP_AUTO,
+    };
+
+    if (nrfx_pwm_init(&pwm_led, &config, NULL, NULL) == NRFX_SUCCESS) {
+        LOG_INF("Breathing LED: PWM0 on P1.03");
+    }
+}
+
+static void breathing_led_start(void)
+{
+    if (!pwm_breathing) {
+        nrfx_pwm_simple_playback(&pwm_led, &breath_seq, 0, NRFX_PWM_FLAG_LOOP);
+        pwm_breathing = true;
+    }
+}
+
+static void breathing_led_stop(void)
+{
+    if (pwm_breathing) {
+        nrfx_pwm_stop(&pwm_led, false);
+        pwm_breathing = false;
+        /* Ensure LED is off (active LOW: drive HIGH to turn off) */
+        nrf_gpio_pin_set(NRF_GPIO_PIN_MAP(1, 3));
+    }
+}
+
 static void led_set(bool on)
 {
     if (device_is_ready(status_led.port)) {
@@ -1621,6 +1694,7 @@ int main(void)
     tinygs_display_init();
     watchdog_init();
     led_init();
+    breathing_led_init();
     init_radio();
 
     int retry_count = 0;
@@ -1694,8 +1768,8 @@ int main(void)
 
         case STATE_MQTT_CONNECTED: {
             LOG_INF("MQTT connected, entering main loop");
-            neopixel_off(); /* LEDs off when stable — any lit LED means a problem */
-            led_set(true);
+            neopixel_off(); /* NeoPixels off when stable */
+            breathing_led_start(); /* Green LED breathes when connected */
 
             /* Sync time via SNTP — needed for Doppler compensation */
             if (!time_synced) {
@@ -1801,6 +1875,7 @@ int main(void)
 
         case STATE_ERROR:
             neopixel_set(NEO_RED,  NEO_OFF); /* Red = error */
+            breathing_led_stop();
             led_set(false);
             LOG_ERR("Error state. Retrying in 30s...");
             k_msleep(30000);

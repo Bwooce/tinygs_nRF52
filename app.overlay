@@ -309,7 +309,7 @@
         gctrl = <0x35>;
         vrhs = <0x12>;
         vdvs = <0x20>;
-        mdac = <0x00>;
+        mdac = <0x60>;  /* Landscape rotation (90 degrees) */
         gamma = <0x01>;
         colmod = <0x55>;  /* RGB565 */
         lcm = <0x2c>;
