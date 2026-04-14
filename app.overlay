@@ -16,11 +16,13 @@
  * Power: Vext (P0.21 HIGH) gates GPS, NeoPixels, I2C peripherals
  * Connectors: P1 (7-pin), P2 (7-pin) headers, USB-C, SH1.25x2 battery
  *
- * NeoPixel LED meanings (2x WS2812, P0.14):
- *   LED0 (status): Blue blink = waiting for Thread
- *                   Green = MQTT connected
- *                   Red = error state
- *   LED1 (activity): White flash = LoRa packet received
+ * LEDs:
+ *   Charge LED (orange, near USB) — LQ5401NI power IC, NOT software controllable.
+ *     Flickers during USB charge/power activity. Normal behavior.
+ *   Green LED (P1.03) — GPIO controlled, active LOW
+ *   2x NeoPixel SK6812 (P0.14) — SPI2 controlled, GRB color order
+ *     LED0 (status): Blue blink=Thread wait, Red=error, Off=normal
+ *     LED1 (activity): White flash=LoRa RX, Off=idle
  * Bootloader: Adafruit UF2 (0xF4000-0x100000), app at 0x26000
  *   Source: https://github.com/adafruit/Adafruit_nRF52_Bootloader
  *   Virtual USB drive: 32MB GhostFAT, accepts any size file
