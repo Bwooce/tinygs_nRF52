@@ -1,3 +1,5 @@
+#include <zephyr/dt-bindings/lora/sx126x.h>
+
 /*
  * Heltec Mesh Node T114 Rev 2.0 -- Board Definition Overlay
  * =========================================================
@@ -279,6 +281,8 @@
         busy-gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>;
         dio1-gpios = <&gpio0 20 GPIO_ACTIVE_HIGH>;
         dio2-tx-enable;
+        dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+        tcxo-power-startup-delay-ms = <5>;
     };
 };
 

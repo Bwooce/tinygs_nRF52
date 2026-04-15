@@ -49,6 +49,9 @@
 
 LOG_MODULE_REGISTER(tinygs_nrf52, LOG_LEVEL_DBG);
 
+/* Forward declaration — needed because begine handler re-registers after begin() */
+static void lora_rx_callback(void);
+
 /* Crash diagnostic — __noinit survives warm reset (SREQ doesn't clear RAM) */
 #define CRASH_MAGIC 0xDEAD0000
 static volatile uint32_t __noinit crash_reason;
@@ -777,46 +780,49 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     if (parsed < 0) {
                         LOG_ERR("begine parse failed");
                     } else {
-                        /* Apply radio config from parsed struct */
+                        /* Apply radio config via full begin() — like ESP32.
+                         * Individual setters don't properly re-apply
+                         * setPacketParams on SX1262, causing CRC failures. */
                         float freq = tinygs_begine_get_freq(&msg);
                         if (freq > 100.0f && freq < 1000.0f) {
                             tinygs_radio.frequency = freq;
-                            radio->setFrequency(freq + tinygs_radio.freq_offset / 1e6f);
                         }
                         float bw = tinygs_begine_get_bw(&msg);
-                        if (bw > 0.0f) {
-                            radio->setBandwidth(bw);
-                            tinygs_radio.bw = bw;
-                        }
-                        if (msg.sf >= 5 && msg.sf <= 12) {
-                            radio->setSpreadingFactor(msg.sf);
-                            tinygs_radio.sf = msg.sf;
-                        }
-                        if (msg.cr >= 4 && msg.cr <= 8) {
-                            radio->setCodingRate(msg.cr);
-                            tinygs_radio.cr = msg.cr;
-                        }
-                        radio->setSyncWord(msg.sw);
-                        radio->setPreambleLength(msg.pl);
-                        radio->invertIQ(msg.iIQ);
+                        if (bw > 0.0f) tinygs_radio.bw = bw;
+                        if (msg.sf >= 5 && msg.sf <= 12) tinygs_radio.sf = msg.sf;
+                        if (msg.cr >= 4 && msg.cr <= 8) tinygs_radio.cr = msg.cr;
                         tinygs_radio.iIQ = msg.iIQ;
-                        radio->setCRC(msg.crc ? 2 : 0);
 
-                        /* FLDRO — forced Low Data Rate Optimization (CRITICAL for reception) */
+                        /* Full radio re-init (resets hardware, applies all params atomically).
+                         * TCXO 1.8V on DIO3 is critical — without it the frequency
+                         * reference is dead and all packets fail CRC. */
+                        int16_t rc = radio->begin(
+                            tinygs_radio.frequency + tinygs_radio.freq_offset / 1e6f,
+                            tinygs_radio.bw, tinygs_radio.sf, tinygs_radio.cr,
+                            msg.sw, msg.pwr, msg.pl, LORA_TCXO_VOLTAGE);
+                        if (rc != RADIOLIB_ERR_NONE) {
+                            LOG_ERR("radio->begin() failed: %d", rc);
+                        }
+
+                        /* Re-register DIO1 interrupt (begin() clears it) */
+                        radio->setPacketReceivedAction(lora_rx_callback);
+
+                        /* Post-begin config that ESP32 also applies after begin() */
+                        radio->setCRC(msg.crc ? 2 : 0);
+                        radio->invertIQ(msg.iIQ);
+
                         if (msg.fldro == 2) {
                             radio->autoLDRO();
                         } else {
                             radio->forceLDRO(msg.fldro ? true : false);
                         }
 
-                        /* Implicit/explicit header — cl>0 means implicit with fixed length */
                         if (msg.cl > 0) {
                             radio->implicitHeader(msg.cl);
                         } else {
                             radio->explicitHeader();
                         }
 
-                        /* RX boosted gain — ~3dB better sensitivity on SX1262 */
                         radio->setRxBoostedGainMode(true);
 
                         if (msg.sat) {
@@ -1513,7 +1519,9 @@ static void init_radio(void)
     radio = new SX1278(radio_mod);
 #endif
 
-    int state = radio->begin();
+    /* T114 SX1262 uses TCXO on DIO3 at 1.8V — MUST be set or
+     * the frequency reference is dead and all packets fail CRC */
+    int state = radio->begin(TINYGS_DEFAULT_FREQ, 250.0, 10, 5, 0x12, 5, 8, 1.8);
     if (state == RADIOLIB_ERR_NONE) {
         LOG_INF("Radio: %s initialized (RadioLib)",
                 DT_NODE_FULL_NAME(DT_NODELABEL(sx1262)));
@@ -1522,16 +1530,7 @@ static void init_radio(void)
         return;
     }
 
-    /* Set default LoRa config — 433MHz, SF10, BW125, CR5
-     * This will be overridden by server batch_conf commands */
-    state = radio->setFrequency(TINYGS_DEFAULT_FREQ);
-    if (state != RADIOLIB_ERR_NONE) {
-        LOG_ERR("setFrequency failed: %d", state);
-    }
-    radio->setSpreadingFactor(10);
-    radio->setBandwidth(250.0);
-    radio->setCodingRate(5);
-    radio->setSyncWord(0x12);
+    /* begin() already set default params, just add boosted gain */
     radio->autoLDRO();
     radio->setRxBoostedGainMode(true);
 
@@ -1609,7 +1608,17 @@ static bool lora_check_rx(void)
                            data, len, rssi, snr, freq_err);
         }
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
-        LOG_WRN("LoRa RX: CRC error, %u bytes", (unsigned)len);
+        LOG_WRN("LoRa RX: CRC error, %u bytes, RSSI=%.1f, SNR=%.1f",
+                (unsigned)len, (double)rssi, (double)snr);
+
+        /* Send CRC error packets to server like ESP32 does.
+         * With filter active (filter[0] != 0), ESP32 drops CRC errors.
+         * With no filter, it sends "Error_CRC" as the payload. */
+        if (tinygs_radio.filter[0] == 0 && app_state == STATE_MQTT_CONNECTED) {
+            static const uint8_t err_crc[] = "Error_CRC";
+            tinygs_send_rx(&mqtt_client, cfg_mqtt_user, cfg_station,
+                           err_crc, sizeof(err_crc) - 1, rssi, snr, freq_err);
+        }
     } else {
         LOG_ERR("LoRa readData failed: %d", state);
     }
