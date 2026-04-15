@@ -229,7 +229,7 @@ static nrfx_pwm_t pwm_led = NRFX_PWM_INSTANCE(0);
 static bool pwm_breathing = false;
 
 /* Sine-ish breathing curve: 64 steps, ramps up then down smoothly.
- * Values are inverted (LED active LOW): 1000=off, 0=full brightness.
+ * pin_inverted handles active-low, so values are normal: 0=off, 1000=bright.
  * PWM top value = 1000 for ~1kHz at 1MHz base clock. */
 static nrf_pwm_values_individual_t breath_values[64];
 static nrf_pwm_sequence_t breath_seq = {
@@ -241,16 +241,15 @@ static nrf_pwm_sequence_t breath_seq = {
 
 static void breathing_led_init(void)
 {
-    /* Build sine breathing table (active LOW: 1000=off, 0=bright) */
+    /* Build breathing table. pin_inverted handles active-low LED,
+     * so 0=off, 1000=full brightness in these values. */
     for (int i = 0; i < 64; i++) {
-        /* Triangle wave: 0→31 ramp up, 32→63 ramp down */
         int brightness = (i < 32) ? i : (63 - i);
-        /* Square for softer ramp, scale to 0-1000 */
-        int duty = 1000 - (brightness * brightness * 1000 / (31 * 31));
+        int duty = brightness * brightness * 1000 / (31 * 31);
         breath_values[i].channel_0 = (uint16_t)duty;
-        breath_values[i].channel_1 = 1000; /* unused channels off */
-        breath_values[i].channel_2 = 1000;
-        breath_values[i].channel_3 = 1000;
+        breath_values[i].channel_1 = 0; /* unused channels off */
+        breath_values[i].channel_2 = 0;
+        breath_values[i].channel_3 = 0;
     }
 
     nrfx_pwm_config_t config = {
@@ -287,7 +286,9 @@ static void breathing_led_stop(void)
     if (pwm_breathing) {
         nrfx_pwm_stop(&pwm_led, false);
         pwm_breathing = false;
-        /* Ensure LED is off (active LOW: drive HIGH to turn off) */
+        /* PWM released — manually drive pin to turn LED off.
+         * Active-low LED: HIGH = off */
+        nrf_gpio_cfg_output(NRF_GPIO_PIN_MAP(1, 3));
         nrf_gpio_pin_set(NRF_GPIO_PIN_MAP(1, 3));
     }
 }
@@ -780,42 +781,42 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     if (parsed < 0) {
                         LOG_ERR("begine parse failed");
                     } else {
-                        /* Apply radio config via full begin() — like ESP32.
-                         * Individual setters don't properly re-apply
-                         * setPacketParams on SX1262, causing CRC failures. */
+                        /* Apply radio config via individual setters.
+                         * TCXO 1.8V is configured once at init (persists).
+                         * CRC and header set last — implicitHeader() writes
+                         * all packet params to the SX1262 in one shot. */
                         float freq = tinygs_begine_get_freq(&msg);
                         if (freq > 100.0f && freq < 1000.0f) {
                             tinygs_radio.frequency = freq;
+                            radio->setFrequency(freq + tinygs_radio.freq_offset / 1e6f);
                         }
                         float bw = tinygs_begine_get_bw(&msg);
-                        if (bw > 0.0f) tinygs_radio.bw = bw;
-                        if (msg.sf >= 5 && msg.sf <= 12) tinygs_radio.sf = msg.sf;
-                        if (msg.cr >= 4 && msg.cr <= 8) tinygs_radio.cr = msg.cr;
-                        tinygs_radio.iIQ = msg.iIQ;
-
-                        /* Full radio re-init (resets hardware, applies all params atomically).
-                         * TCXO 1.8V on DIO3 is critical — without it the frequency
-                         * reference is dead and all packets fail CRC. */
-                        int16_t rc = radio->begin(
-                            tinygs_radio.frequency + tinygs_radio.freq_offset / 1e6f,
-                            tinygs_radio.bw, tinygs_radio.sf, tinygs_radio.cr,
-                            msg.sw, msg.pwr, msg.pl, LORA_TCXO_VOLTAGE);
-                        if (rc != RADIOLIB_ERR_NONE) {
-                            LOG_ERR("radio->begin() failed: %d", rc);
+                        if (bw > 0.0f) {
+                            radio->setBandwidth(bw);
+                            tinygs_radio.bw = bw;
                         }
-
-                        /* Re-register DIO1 interrupt (begin() clears it) */
-                        radio->setPacketReceivedAction(lora_rx_callback);
-
-                        /* Post-begin config that ESP32 also applies after begin() */
-                        radio->setCRC(msg.crc ? 2 : 0);
-                        radio->invertIQ(msg.iIQ);
+                        if (msg.sf >= 5 && msg.sf <= 12) {
+                            radio->setSpreadingFactor(msg.sf);
+                            tinygs_radio.sf = msg.sf;
+                        }
+                        if (msg.cr >= 4 && msg.cr <= 8) {
+                            radio->setCodingRate(msg.cr);
+                            tinygs_radio.cr = msg.cr;
+                        }
+                        radio->setSyncWord(msg.sw);
+                        radio->setPreambleLength(msg.pl);
 
                         if (msg.fldro == 2) {
                             radio->autoLDRO();
                         } else {
                             radio->forceLDRO(msg.fldro ? true : false);
                         }
+
+                        /* CRC and IQ before header — implicitHeader writes
+                         * all packet params including CRC to the radio */
+                        radio->setCRC(msg.crc ? 2 : 0);
+                        radio->invertIQ(msg.iIQ);
+                        tinygs_radio.iIQ = msg.iIQ;
 
                         if (msg.cl > 0) {
                             radio->implicitHeader(msg.cl);
