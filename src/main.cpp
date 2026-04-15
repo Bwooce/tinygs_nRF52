@@ -228,26 +228,31 @@ static void led_init(void)
 static nrfx_pwm_t pwm_led = NRFX_PWM_INSTANCE(0);
 static bool pwm_breathing = false;
 
-/* Sine-ish breathing curve: 64 steps, ramps up then down smoothly.
- * pin_inverted handles active-low, so values are normal: 0=off, 1000=bright.
- * PWM top value = 1000 for ~1kHz at 1MHz base clock. */
-static nrf_pwm_values_individual_t breath_values[64];
+/* Breathing LED: one gentle pulse then long off, repeating forever.
+ * pin_inverted handles active-low, so values are normal: 0=off, N=bright.
+ * PWM top value = 1000 for ~1kHz at 1MHz base clock.
+ * Max brightness capped at 50/1000 (5%) to save power.
+ * 64 steps at repeats=20 (~20ms each) = ~1.3s pulse.
+ * end_delay = 32767 (max) at ~1ms each = ~33s between pulses. */
+#define BREATH_MAX_DUTY  50    /* 5% max brightness — just visible */
+#define BREATH_STEPS     64
+static nrf_pwm_values_individual_t breath_values[BREATH_STEPS];
 static nrf_pwm_sequence_t breath_seq = {
     .values = { .p_individual = breath_values },
     .length = NRF_PWM_VALUES_LENGTH(breath_values),
-    .repeats = 30,   /* Hold each step for 30 PWM periods (~30ms at 1kHz) = ~2s full cycle */
-    .end_delay = 0,
+    .repeats = 20,    /* Hold each step ~20ms. Pulse duration: 64*20ms ≈ 1.3s */
+    .end_delay = 32767, /* Max delay after sequence (~33s at 1kHz) before loop repeats */
 };
 
 static void breathing_led_init(void)
 {
     /* Build breathing table. pin_inverted handles active-low LED,
-     * so 0=off, 1000=full brightness in these values. */
-    for (int i = 0; i < 64; i++) {
+     * so 0=off, BREATH_MAX_DUTY=max brightness. */
+    for (int i = 0; i < BREATH_STEPS; i++) {
         int brightness = (i < 32) ? i : (63 - i);
-        int duty = brightness * brightness * 1000 / (31 * 31);
+        int duty = brightness * brightness * BREATH_MAX_DUTY / (31 * 31);
         breath_values[i].channel_0 = (uint16_t)duty;
-        breath_values[i].channel_1 = 0; /* unused channels off */
+        breath_values[i].channel_1 = 0;
         breath_values[i].channel_2 = 0;
         breath_values[i].channel_3 = 0;
     }
@@ -286,7 +291,7 @@ static void breathing_led_init(void)
 static void breathing_led_start(void)
 {
     if (!pwm_breathing) {
-        nrfx_pwm_simple_playback(&pwm_led, &breath_seq, 0, NRFX_PWM_FLAG_LOOP);
+        nrfx_pwm_simple_playback(&pwm_led, &breath_seq, 1, NRFX_PWM_FLAG_LOOP);
         pwm_breathing = true;
     }
 }
