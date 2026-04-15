@@ -268,7 +268,8 @@ int tinygs_send_ping(struct mqtt_client *client,
 int tinygs_send_rx(struct mqtt_client *client,
                     const char *user, const char *station,
                     const uint8_t *data, size_t data_len,
-                    float rssi, float snr, float freq_err)
+                    float rssi, float snr, float freq_err,
+                    bool crc_error)
 {
     tinygs_build_topic(topic_buf, sizeof(topic_buf),
                         TINYGS_TOPIC_TELE, TINYGS_TELE_RX,
@@ -304,10 +305,10 @@ int tinygs_send_rx(struct mqtt_client *client,
         "\"frequency_error\":%.1f,"
         "\"unix_GS_time\":%u,"
         "\"usec_time\":0,"
-        "\"crc_error\":false,"
+        "\"crc_error\":%s,"
         "\"data\":\"%s\","
         "\"NORAD\":%u,"
-        "\"noisy\":false,"
+        "\"noisy\":%s,"
         "\"iIQ\":%s"
         "}",
         (double)tinygs_station_lat,
@@ -321,8 +322,10 @@ int tinygs_send_rx(struct mqtt_client *client,
         (double)snr,
         (double)freq_err,
         (unsigned)epoch,
+        crc_error ? "true" : "false",
         b64_buf,
         (unsigned)tinygs_radio.norad,
+        crc_error ? "true" : "false",
         tinygs_radio.iIQ ? "true" : "false"
     );
 

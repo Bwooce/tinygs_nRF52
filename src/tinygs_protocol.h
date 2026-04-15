@@ -113,7 +113,8 @@ int tinygs_send_ping(struct mqtt_client *client,
 int tinygs_send_rx(struct mqtt_client *client,
                     const char *user, const char *station,
                     const uint8_t *data, size_t data_len,
-                    float rssi, float snr, float freq_err);
+                    float rssi, float snr, float freq_err,
+                    bool crc_error);
 
 /*
  * Station location — used in welcome and RX payloads.

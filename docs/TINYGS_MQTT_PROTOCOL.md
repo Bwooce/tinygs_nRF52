@@ -236,10 +236,10 @@ Fields and their exact types as serialized by ESP32 ArduinoJson:
 | frequency_error | number | float | 1234.5 | Hz |
 | unix_GS_time | number | time_t | 1700000000 | Unix epoch at reception (NOT uptime — must be SNTP-synced) |
 | usec_time | number | int64_t | 123456 | Microsecond timestamp |
-| crc_error | **boolean** | bool | false | CRC check result |
-| data | string | char* | "base64..." | Base64 encoded packet |
+| crc_error | **boolean** | bool | false/true | CRC check result — true for CRC error packets |
+| data | string | char* | "base64..." | Base64 encoded packet. For CRC errors: base64("Error_CRC") |
 | NORAD | number | uint32_t | 46494 | NORAD catalog number |
-| noisy | **boolean** | bool | false | Noisy packet flag |
+| noisy | **boolean** | bool | false/true | Set true for CRC error packets (matches ESP32 behavior) |
 
 **LoRa mode:**
 ```json
@@ -264,6 +264,11 @@ Fields and their exact types as serialized by ESP32 ArduinoJson:
   "iIQ": false
 }
 ```
+
+**CRC error handling:** When the radio reports a CRC mismatch:
+- If `filter[0] == 0` (no filter): send packet with `"crc_error":true`, `"noisy":true`,
+  and `"data"` set to base64("Error_CRC"). The server accepts these and shows them on the website.
+- If `filter[0] != 0` (filter active): silently drop CRC error packets (matches ESP32 behavior).
 
 **FSK mode** (additional/different fields):
 ```json

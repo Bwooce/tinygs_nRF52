@@ -269,6 +269,16 @@ static void breathing_led_init(void)
     };
 
     if (nrfx_pwm_init(&pwm_led, &config, NULL, NULL) == NRFX_SUCCESS) {
+        /* Play a single-step "off" sequence to ensure LED starts dark.
+         * Without this, the PWM idle state may leave the pin floating. */
+        static nrf_pwm_values_individual_t off_val = { 0, 0, 0, 0 };
+        static nrf_pwm_sequence_t off_seq = {
+            .values = { .p_individual = &off_val },
+            .length = NRF_PWM_VALUES_LENGTH(off_val),
+            .repeats = 0,
+            .end_delay = 0,
+        };
+        nrfx_pwm_simple_playback(&pwm_led, &off_seq, 1, 0);
         LOG_INF("Breathing LED: PWM0 on P1.03");
     }
 }
@@ -1601,7 +1611,7 @@ static bool lora_check_rx(void)
         /* Publish via MQTT if connected */
         if (app_state == STATE_MQTT_CONNECTED) {
             tinygs_send_rx(&mqtt_client, cfg_mqtt_user, cfg_station,
-                           data, len, rssi, snr, freq_err);
+                           data, len, rssi, snr, freq_err, false);
         }
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
         LOG_WRN("LoRa RX: CRC error, %u bytes, RSSI=%.1f, SNR=%.1f",
@@ -1613,7 +1623,7 @@ static bool lora_check_rx(void)
         if (tinygs_radio.filter[0] == 0 && app_state == STATE_MQTT_CONNECTED) {
             static const uint8_t err_crc[] = "Error_CRC";
             tinygs_send_rx(&mqtt_client, cfg_mqtt_user, cfg_station,
-                           err_crc, sizeof(err_crc) - 1, rssi, snr, freq_err);
+                           err_crc, sizeof(err_crc) - 1, rssi, snr, freq_err, true);
         }
     } else {
         LOG_ERR("LoRa readData failed: %d", state);
