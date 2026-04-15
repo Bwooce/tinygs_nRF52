@@ -43,6 +43,9 @@
 #include "tinygs_protocol.h"
 #include "tinygs_json.h"
 #include "tinygs_config.h"
+#if defined(CONFIG_IOT_LOG)
+#include <iot_log_zephyr.h>
+#endif
 
 LOG_MODULE_REGISTER(tinygs_nrf52, LOG_LEVEL_DBG);
 
@@ -1686,6 +1689,15 @@ int main(void)
     log_heap_usage("boot");
     init_openthread();
 
+#if defined(CONFIG_IOT_LOG)
+    {
+        iot_log_config_t log_cfg = IOT_LOG_CONFIG_DEFAULT();
+        log_cfg.device_name = "TinyGS-nRF52";
+        log_cfg.level = IOT_LOG_DEBUG;
+        iot_log_init(&log_cfg);
+    }
+#endif
+
     /* Check if device has Thread credentials (commissioned).
      * If not, stay fully awake for 15 minutes to allow Joiner commissioning.
      * The user needs time to scan the QR code from index.html. */
@@ -1825,6 +1837,11 @@ int main(void)
 
                 /* Update display (~every 100ms from poll timeout) */
                 tinygs_display_update();
+
+#if defined(CONFIG_IOT_LOG)
+                /* Check for remote log listener beacons */
+                iot_log_poll();
+#endif
 
                 /* Doppler compensation — every 4s if TLE available */
                 uint32_t now_ms = k_uptime_get_32();
