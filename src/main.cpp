@@ -1477,11 +1477,6 @@ static void doppler_update(void)
         radio->startReceive();
         LOG_INF("Doppler: %.0f Hz → %.6f MHz (el=%.1f°)",
                 (double)new_doppler, (double)effective_freq, elevation);
-    } else {
-        LOG_DBG("Doppler: %.0f Hz (delta=%.0f < tol=%.0f, el=%.1f°)",
-                (double)new_doppler,
-                (double)fabsf(new_doppler - tinygs_radio.freq_doppler),
-                (double)tinygs_radio.doppler_tol, elevation);
     }
 }
 
