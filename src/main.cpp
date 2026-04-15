@@ -1813,10 +1813,6 @@ int main(void)
             LOG_INF("MQTT connected, entering main loop");
             neopixel_off(); /* NeoPixels off when stable */
             breathing_led_start(); /* Green LED breathes when connected */
-#if defined(CONFIG_IOT_LOG)
-            IOT_LOGI("MQTT connected, sat=%s vbat=%dmV",
-                     tinygs_radio.satellite, read_vbat_mv());
-#endif
 
             /* Sync time via SNTP — needed for Doppler compensation */
             if (!time_synced) {
@@ -1916,11 +1912,6 @@ int main(void)
                             (unsigned)stack_used, (unsigned)stack_size,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
-#endif
-#if defined(CONFIG_IOT_LOG)
-                    IOT_LOGI("STATUS: up=%us vbat=%dmV sat=%s",
-                             (unsigned)uptime_s, read_vbat_mv(),
-                             tinygs_radio.satellite);
 #endif
                     last_status_log_ms = now_ms;
                 }
