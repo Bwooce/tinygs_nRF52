@@ -1694,6 +1694,7 @@ int main(void)
         iot_log_config_t log_cfg = IOT_LOG_CONFIG_DEFAULT();
         log_cfg.device_name = "TinyGS-nRF52";
         log_cfg.level = IOT_LOG_DEBUG;
+        log_cfg.always_on = false;
         iot_log_init(&log_cfg);
     }
 #endif
@@ -1749,6 +1750,10 @@ int main(void)
                 /* Heap stats now in periodic STATUS log */
                 LOG_INF("--- Thread attached, waiting 5s for routing to stabilize ---");
                 k_msleep(5000);
+#if defined(CONFIG_IOT_LOG)
+                /* Trigger deferred multicast join now that Thread is attached */
+                iot_log_poll();
+#endif
                 app_state = STATE_DNS_RESOLVE;
                 retry_count = 0;
             } else {
@@ -1808,6 +1813,10 @@ int main(void)
             LOG_INF("MQTT connected, entering main loop");
             neopixel_off(); /* NeoPixels off when stable */
             breathing_led_start(); /* Green LED breathes when connected */
+#if defined(CONFIG_IOT_LOG)
+            IOT_LOGI("MQTT connected, sat=%s vbat=%dmV",
+                     tinygs_radio.satellite, read_vbat_mv());
+#endif
 
             /* Sync time via SNTP — needed for Doppler compensation */
             if (!time_synced) {
@@ -1907,6 +1916,11 @@ int main(void)
                             (unsigned)stack_used, (unsigned)stack_size,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
+#endif
+#if defined(CONFIG_IOT_LOG)
+                    IOT_LOGI("STATUS: up=%us vbat=%dmV sat=%s",
+                             (unsigned)uptime_s, read_vbat_mv(),
+                             tinygs_radio.satellite);
 #endif
                     last_status_log_ms = now_ms;
                 }
