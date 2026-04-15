@@ -1619,8 +1619,10 @@ static bool lora_check_rx(void)
                            data, len, rssi, snr, freq_err, false);
         }
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
-        LOG_WRN("LoRa RX: CRC error, %u bytes, RSSI=%.1f, SNR=%.1f",
-                (unsigned)len, (double)rssi, (double)snr);
+        LOG_WRN("LoRa RX: CRC error, %u bytes, RSSI=%.1f, SNR=%.1f, FreqErr=%.1f",
+                (unsigned)len, (double)rssi, (double)snr, (double)freq_err);
+        /* Dump first 16 bytes for diagnosis */
+        LOG_HEXDUMP_DBG(data, len < 16 ? len : 16, "CRC err data");
 
         /* Send CRC error packets to server like ESP32 does.
          * With filter active (filter[0] != 0), ESP32 drops CRC errors.
