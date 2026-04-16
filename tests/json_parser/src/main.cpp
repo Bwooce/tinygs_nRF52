@@ -810,6 +810,88 @@ ZTEST(json_parser, test_real_rs52_filter_match)
     zassert_true(filter_matches(data, 8, filter, 6), "RS52SV packet should pass RS52 filter");
 }
 
+ZTEST(json_parser, test_real_geoscan1_sw_crc)
+{
+    /* Real GeoScan-1 FSK packet from tinygs.com/packet/019d95b1-f06f-747a-b976-9aa732da9d61
+     * 74 bytes, PN9 framing, SW CRC: poly=0x8005, init=0xFFFF, xor=0, no reflect
+     * Last 2 bytes (0xB1A0) are the CRC over first 72 bytes */
+    static const uint8_t data[] = {
+        0x84, 0x8A, 0x82, 0x86, 0x9E, 0x9C, 0x60, 0xA4, 0xA6, 0x72, 0x64, 0xA6,
+        0x62, 0xE1, 0x03, 0xF0, 0x01, 0x7F, 0xB0, 0xE0, 0x69, 0x03, 0x08, 0x59,
+        0x00, 0x52, 0x00, 0x3E, 0x10, 0x6C, 0x20, 0x06, 0x00, 0x0C, 0x0C, 0x9C,
+        0x00, 0x00, 0x00, 0x00, 0x71, 0x00, 0xF4, 0x12, 0x0C, 0x80, 0xFF, 0x00,
+        0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x0D, 0xB6, 0x20, 0x78,
+        0x07, 0x97, 0x91, 0x2A, 0x1A, 0x76, 0x01, 0x00, 0x0B, 0x00, 0x00, 0x00,
+        0xB1, 0xA0  /* CRC-16 */
+    };
+    /* Verify CRC-16 poly=0x8005, init=0xFFFF, no reflection */
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < 72; i++) {
+        crc ^= (uint16_t)data[i] << 8;
+        for (int j = 0; j < 8; j++) {
+            crc = (crc & 0x8000) ? (crc << 1) ^ 0x8005 : crc << 1;
+            crc &= 0xFFFF;
+        }
+    }
+    uint16_t pkt_crc = ((uint16_t)data[72] << 8) | data[73];
+    zassert_equal(crc, pkt_crc,
+                  "GeoScan-1 SW CRC should match: calc=0x%04X pkt=0x%04X", crc, pkt_crc);
+}
+
+ZTEST(json_parser, test_real_norby2_fsk_ax25_header)
+{
+    /* Real Norby-2 FSK packet from tinygs.com/packet/019d95b0-4fd1-77ae-b8e4-3c85a6e29bad
+     * 161 bytes. Contains AX.25 address field (bit-shifted callsigns).
+     * First bytes are AX.25 header: dest=NKUU@@, src=CUCSCT, ctrl=0x03, PID=0xF0 */
+    static const uint8_t data[] = {
+        0x9C, 0xA6, 0xAA, 0x40, 0x40, 0x40, 0x60, 0x86, 0xAA, 0x84, 0xA6, 0x82,
+        0xA8, 0x61, 0x03, 0xF0
+    };
+    /* AX.25 addresses are ASCII shifted left by 1 bit.
+     * Dest: 0x9C>>1='N', 0xA6>>1='S', 0xAA>>1='U', 0x40>>1=' '... */
+    zassert_equal(data[0] >> 1, 'N', "AX.25 dest[0] = N");
+    zassert_equal(data[1] >> 1, 'S', "AX.25 dest[1] = S");
+    zassert_equal(data[6] & 0x01, 0, "dest SSID extension bit = 0 (more addresses)");
+    zassert_equal(data[13] & 0x01, 1, "src SSID extension bit = 1 (last address)");
+    zassert_equal(data[14], 0x03, "AX.25 control = UI frame");
+    zassert_equal(data[15], 0xF0, "AX.25 PID = no layer 3");
+}
+
+ZTEST(json_parser, test_real_geoscan1_sw_crc_corrupted)
+{
+    /* Same GeoScan-1 packet but with byte 10 flipped — CRC must fail */
+    static const uint8_t data[] = {
+        0x84, 0x8A, 0x82, 0x86, 0x9E, 0x9C, 0x60, 0xA4, 0xA6, 0x72,
+        0x65, /* <-- was 0x64, corrupted to 0x65 */
+        0xA6, 0x62, 0xE1, 0x03, 0xF0, 0x01, 0x7F, 0xB0, 0xE0, 0x69,
+        0x03, 0x08, 0x59, 0x00, 0x52, 0x00, 0x3E, 0x10, 0x6C, 0x20,
+        0x06, 0x00, 0x0C, 0x0C, 0x9C, 0x00, 0x00, 0x00, 0x00, 0x71,
+        0x00, 0xF4, 0x12, 0x0C, 0x80, 0xFF, 0x00, 0x00, 0x00, 0x00,
+        0xFF, 0x00, 0x00, 0x00, 0x00, 0x0D, 0xB6, 0x20, 0x78, 0x07,
+        0x97, 0x91, 0x2A, 0x1A, 0x76, 0x01, 0x00, 0x0B, 0x00, 0x00,
+        0x00, 0xB1, 0xA0  /* original CRC, now wrong */
+    };
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < 72; i++) {
+        crc ^= (uint16_t)data[i] << 8;
+        for (int j = 0; j < 8; j++) {
+            crc = (crc & 0x8000) ? (crc << 1) ^ 0x8005 : crc << 1;
+            crc &= 0xFFFF;
+        }
+    }
+    uint16_t pkt_crc = ((uint16_t)data[72] << 8) | data[73];
+    zassert_not_equal(crc, pkt_crc,
+                      "corrupted packet CRC should NOT match: calc=0x%04X pkt=0x%04X", crc, pkt_crc);
+}
+
+ZTEST(json_parser, test_sw_crc_ccitt_corrupted)
+{
+    /* "123456789" with last byte changed — CRC should not be 0x29B1 */
+    const uint8_t data[] = "12345678A"; /* '9' -> 'A' */
+    uint16_t crc = crc16_ccitt(data, 9);
+    zassert_not_equal(crc, 0x29B1, "corrupted data CRC should differ from known good");
+}
+
 /* TODO: Add tests with real satellite packet captures once we receive clean packets.
  * The hex dump diagnostic logging will provide test vectors for:
  * - Tianqi packet decode (LoRa, implicit header, filter match)
