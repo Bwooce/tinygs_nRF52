@@ -94,8 +94,8 @@ The TinyGS ping interval (`tele/ping`) must NOT equal `CONFIG_MQTT_KEEPALIVE`. W
 | Setting | Value | Notes |
 |---------|-------|-------|
 | MQTT keepalive | 300s | Reverted from 600s — PINGRESPs not reliably received over NAT64 |
-| TinyGS ping | 570s | = keepalive - 30s, avoids PINGREQ collision |
-| MQTT PINGREQ | 600s | Sent automatically by MQTT library |
+| TinyGS ping | 270s | = keepalive - 30s, avoids PINGREQ collision |
+| MQTT PINGREQ | Not sent | TinyGS ping at 270s resets MQTT library's last_activity timer before keepalive threshold |
 
 ### 2.2 Published Topics (Telemetry)
 
@@ -240,6 +240,9 @@ Fields and their exact types as serialized by ESP32 ArduinoJson:
 | data | string | char* | "base64..." | Base64 encoded packet. For CRC errors: base64("Error_CRC") |
 | NORAD | number | uint32_t | 46494 | NORAD catalog number |
 | noisy | **boolean** | bool | false/true | Set true for CRC error packets (matches ESP32 behavior) |
+| f_doppler | number | float | -1234.5 | Doppler correction in Hz (optional, present when Doppler compensation active) |
+
+The RX payload field set switches based on the `mode` field: LoRa packets include sf/cr/bw/iIQ, while FSK packets include bitrate/freqdev/rxBw/data_raw instead.
 
 **LoRa mode:**
 ```json
@@ -284,8 +287,11 @@ Fields and their exact types as serialized by ESP32 ArduinoJson:
 ### 3.4 Status (`stat/status`)
 
 Published in response to `cmnd/status`. Contains station location, version, board, tx status,
-current modem configuration (mode, frequency, satellite, SF/CR/BW or bitrate/freqdev/rxBw),
-and last packet metrics (rssi, snr, frequency_error, crc_error, timestamps).
+current modem configuration, and last packet metrics (rssi, snr, frequency_error, crc_error, timestamps).
+
+The modem configuration fields vary by mode:
+- **LoRa mode:** frequency, satellite, sf, cr, bw, iIQ
+- **FSK mode:** frequency, satellite, bitrate, freqdev, rxBw, OOK
 
 ### 3.5 begine/batch_conf Fields
 
@@ -309,11 +315,14 @@ The `begine` (and `batch_conf`) command carries radio configuration. Key fields:
 | sat | string | "Tianqi" | Satellite name |
 | NORAD | int | 57795 | NORAD catalog number |
 | filter | int[] | [1,0,235] | Packet filter bytes (optional) |
-| **tlx** | string | "base64..." | **Binary TLE, 34 bytes, base64-encoded** |
+| **tle** | string | "base64..." | **Binary TLE, 34 bytes, base64-encoded — active Doppler compensation** |
+| **tlx** | string | "base64..." | **Binary TLE, 34 bytes, base64-encoded — passive (no Doppler)** |
 
-**IMPORTANT:** The TLE field is named `"tlx"` (NOT `"tle"`). This is a base64-encoded
-34-byte binary representation of the satellite's two-line element set, used for Doppler
-compensation. The decoded bytes are fed to a Plan13 (P13) satellite propagator.
+**TLE field naming:** The server sends TLE data under two different field names:
+- `"tle"` — active Doppler compensation. The station should decode the TLE and apply real-time Doppler frequency correction.
+- `"tlx"` — passive TLE. The station stores the TLE for position display but does NOT apply Doppler correction.
+
+Both are base64-encoded 34-byte binary representations of the satellite's two-line element set. The decoded bytes are fed to a Plan13 (P13) satellite propagator.
 
 ### 3.6 Critical Radio Configuration from begine
 

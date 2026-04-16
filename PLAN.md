@@ -45,7 +45,7 @@ To achieve the absolute lowest possible static RAM footprint, we will completely
     *   The webpage displays a clean UI showing the full suite of TinyGS parameters (LoRa frequency, Spreading Factor, OLED brightness, etc.), exactly mimicking the ESP32 configuration dashboard.
     *   The webpage immediately renders the standard **Thread Commissioning QR Code** on screen (using the embedded EUI64 and PSKd) for the user to scan with their Home Assistant app to join the network.
 4.  **Saving Credentials:** When the user clicks "Save Settings" on the webpage, JavaScript generates a formatted `config.json` file containing all the settings and triggers a standard browser download. The user simply saves (or drags-and-drops) this `config.json` directly back onto the USB flash drive.
-5.  **Deployment:** On the next boot, the Zephyr firmware parses `config.json` using the `ArduinoJson` library, loads the settings into RAM, and securely connects to `mqtt.tinygs.com` over the Thread mesh.
+5.  **Deployment:** On the next boot, the Zephyr firmware parses `config.json` using Zephyr json.h, loads the settings into RAM, and securely connects to `mqtt.tinygs.com` over the Thread mesh.
 
 ### 3.4 Post-Commissioning Lifecycle & Remote Configuration
 Once the Ground Station is deployed on the roof:
@@ -128,7 +128,7 @@ All Phase 1 objectives proven:
 
 ### Phase 2: Core TinyGS Porting — COMPLETE
 1.  **[DONE] State Machine & Polling:** MQTT state machine with Thread join → DNS → TLS → MQTT → satellite tracking.
-2.  **[DONE] Protocol Emulation:** 18/23 MQTT commands handled (see Phase 3 item 10 for remaining). JSON escaping for modem_conf. foff and filter implemented.
+2.  **[DONE] Protocol Emulation:** ~21/23 MQTT commands handled (see Phase 3 item 10 for remaining). JSON escaping for modem_conf. foff and filter implemented. FSK mode implemented.
 3.  **[DONE] Interrupt-driven LoRa RX:** Full radio param parsing (freq, sf, bw, cr, sw, pl, iIQ, crc) + packet filter.
 4.  **[DONE] NVS Config Persistence:** Zephyr Settings on shared NVS partition. config.json bidirectional sync.
 5.  **[DONE] Doppler Compensation:** P13 propagator ported from ESP32. TLE parsing from begine. SNTP time sync via OT SNTP client (Google NTP IPv6). 4s update interval, 1200 Hz hysteresis. Activates when server sends TLE data.
@@ -165,10 +165,10 @@ All Phase 1 objectives proven:
 7.  **Commissioning Mode:** Extended wake window (15-30 min) for unprovisioned devices.
 8.  **[DONE] set_name persistence:** Saves to NVS, reboots to reconnect with new station name on all topics.
 9.  **[DONE] Weblogin:** Trigger via BOOT button press (rate-limited to 10s). Server responds on cmnd/weblogin with URL.
-10. **MQTT command implementation status (18/23 implemented):**
-    - **Implemented:** begine, batch_conf, freq, sat, set_pos_prm, set_name (NVS+reboot), status, reset, tx (rejected), log, foff, filter, update (rejected), weblogin
-    - **Stubs:** sleep/siesta (needs power mgmt), sat_pos_oled (needs display), frame/{num} (needs display)
-    - **Not implemented:** beginp (server always sends begine), begin_lora/begin_fsk (begine handles), set_adv_prm/get_adv_prm (low priority)
+10. **MQTT command implementation status (~21/23 implemented):**
+    - **Implemented:** begine, batch_conf, freq, sat, set_pos_prm, set_name (NVS+reboot), status, reset, tx (rejected), log, foff, filter, update (rejected), weblogin, sat_pos_oled, frame/{num}, begin_fsk (via begine FSK mode)
+    - **Stubs:** sleep/siesta (needs power mgmt)
+    - **Not implemented:** beginp (server always sends begine), begin_lora (begine handles), set_adv_prm/get_adv_prm (low priority)
 11. **[DONE] JSON parsing refactor:** Zephyr json.h (CONFIG_JSON_LIBRARY) for begine/set_name/filter parsing. Zero-allocation descriptor-based. snprintf output kept as-is.
 12. **[DONE] Ztest framework:** 36 unit tests on native_sim. Covers begine, set_pos, set_name, filter, foff parsing + output round-trips.
 13. **[DONE] Commissioning mode:** Detects unprovisioned device via `otDatasetIsCommissioned()`. Keeps display on 15 min, logs Joiner PSKd.
@@ -244,7 +244,7 @@ example + clean HAL source):
     - **600s keepalive: WORKS** — confirmed with PINGRESP at 600s connected
     - NAT64 conntrack timeout is > 600s for established TCP connections
     - TinyGS broker does not drop idle connections at 600s
-    - CONFIG_MQTT_KEEPALIVE=600 currently deployed (configurable in prj.conf)
+    - CONFIG_MQTT_KEEPALIVE=300 currently deployed (reverted from 600s for reliability)
 *   **Risk downgraded:** The original concern was NAT64 timeouts at 120-300s. Actual measured tolerance is >600s, giving 10x fewer wakeups than the feared 60s minimum.
 *   **Mitigations:**
     1.  ~~**Measure during Phase 1:**~~ **DONE** — 600s confirmed working.

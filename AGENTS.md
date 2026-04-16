@@ -38,7 +38,7 @@ Note: the LOG_INF in the callback was intentionally removed — logging to USB f
 IRQ context would deadlock.
 
 ## 3. Memory Management (The "Squeeze" Playbook)
-The nRF52840 has 256KB RAM. The current baseline (Thread + USB MSC + mbedTLS) uses ~230KB. If RAM becomes critical (< 5KB free), apply these optimizations in order:
+The nRF52840 has 256KB RAM. The current baseline (Thread + USB MSC + mbedTLS) uses ~162KB (62%). If RAM becomes critical (< 5KB free), apply these optimizations in order:
 
 1.  **LTO:** Enable `CONFIG_LTO=y` in `prj.conf` to strip unused static data.
 2.  **Heap Sharing:** Set `CONFIG_MBEDTLS_ENABLE_HEAP=n` to force mbedTLS to use the global system heap (`CONFIG_HEAP_MEM_POOL_SIZE`) instead of a static 60KB array.
@@ -47,7 +47,7 @@ The nRF52840 has 256KB RAM. The current baseline (Thread + USB MSC + mbedTLS) us
 
 ## 4. Coding Standards
 - **RadioLib HAL:** All LoRa interaction must go through the custom `ZephyrHal` class in `src/hal/`.
-- **JSON:** Use the `ArduinoJson` library (provided in `lib/ArduinoJson`) for all MQTT and config parsing.
+- **JSON:** Use Zephyr json.h for protocol parsing, snprintf for JSON output.
 - **Portability:**
     - Use explicit byte shifting for wire protocols.
     - Always cast `uint32_t` to `(unsigned long)` and use `%lu` or `%lX` in log statements for compatibility across ESP32/nRF52.
@@ -152,24 +152,30 @@ commissioning. Items marked **[build]** are compile-time only (prj.conf).
 | Station altitude (m) | **[user/server]** | config.json `alt` field, tinygs_station_alt | Read at boot; also updated by set_pos_prm command |
 
 ### Radio Configuration (from server)
+All radio parameters are fully dynamic, set by the server via begine/batch_conf MQTT commands.
+
 | Item | Source | Current Location | Notes |
 |------|--------|-----------------|-------|
-| Frequency (MHz) | **[server]** | Hardcoded 436.703 | Via begine/batch_conf MQTT command |
-| Spreading factor | **[server]** | Hardcoded 10 | 7-12 |
-| Coding rate | **[server]** | Hardcoded 5 | 5-8 |
-| Bandwidth (kHz) | **[server]** | Hardcoded 250.0 | |
+| Frequency (MHz) | **[server]** | tinygs_radio.frequency | Via begine/batch_conf/freq commands |
+| Spreading factor | **[server]** | tinygs_radio.sf | 7-12, via begine/batch_conf |
+| Coding rate | **[server]** | tinygs_radio.cr | 5-8, via begine/batch_conf |
+| Bandwidth (kHz) | **[server]** | tinygs_radio.bw | Via begine/batch_conf |
+| Sync word | **[server]** | tinygs_radio.sw | Via begine/batch_conf (default 18) |
+| Preamble length | **[server]** | tinygs_radio.pl | Via begine/batch_conf |
+| CRC settings | **[server]** | tinygs_radio.crc | sw CRC, poly, init, etc. via begine/batch_conf |
+| FLDRO | **[server]** | tinygs_radio.fldro | Force LDRO, via begine/batch_conf |
+| IQ inversion | **[server]** | tinygs_radio.iIQ | Via begine/batch_conf |
+| Gain | **[server]** | tinygs_radio.gain | Via begine/batch_conf (unused on SX1262) |
+| Freq offset (Hz) | **[server]** | tinygs_radio.freq_offset | Via foff command |
+| Packet filter | **[server]** | tinygs_radio.filter | Via filter command |
+| modem_conf | **[server]** | tinygs_radio.modem_conf | Last begine/batch_conf JSON payload; echoed in welcome |
 | Satellite name | **[server]** | tinygs_radio.satellite | Via begine/batch_conf/sat commands |
 | NORAD ID | **[server]** | tinygs_radio.norad | Catalog number from server |
-| Freq offset (Hz) | **[server]** | Not stored | Via foff command (TODO) |
-| Sync word | **[server]** | Default 18 | |
-| CRC settings | **[server]** | Defaults | sw CRC, poly, init, etc. |
-| Packet filter | **[server]** | Not stored | Via filter command (TODO) |
-| modem_conf | **[server]** | Hardcoded "{}" | Last begine/batch_conf JSON payload; echoed in welcome |
 
 ### Operational Settings
 | Item | Source | Current Location | Notes |
 |------|--------|-----------------|-------|
-| Station name | **[server]** | MQTT_CLIENT_ID (hardcoded) | Via set_name command; needs NVS persist + reconnect |
+| Station name | **[server]** | NVS settings / config.json | Via set_name command; persisted to NVS, reboots to reconnect with new name |
 | MQTT keepalive (s) | **[build]** | prj.conf CONFIG_MQTT_KEEPALIVE=300 | Also sets TinyGS ping interval; 300s reliable, 600s loses PINGRESPs |
 | TX allowed | **[user]** | Hardcoded false | Currently always false |
 | Low power mode | **[user]** | Not implemented | Phase 3 SED sleep config |
