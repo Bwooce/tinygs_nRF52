@@ -7,6 +7,7 @@
 
 #include <zephyr/ztest.h>
 #include "tinygs_json.h"
+#include <zephyr/sys/base64.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
@@ -890,6 +891,79 @@ ZTEST(json_parser, test_sw_crc_ccitt_corrupted)
     const uint8_t data[] = "12345678A"; /* '9' -> 'A' */
     uint16_t crc = crc16_ccitt(data, 9);
     zassert_not_equal(crc, 0x29B1, "corrupted data CRC should differ from known good");
+}
+
+/* ---- TLE extraction tests (replicates main.cpp strstr+base64 logic) ---- */
+
+/* Standalone TLE extraction function matching the logic in main.cpp begine handler */
+static int extract_tle_from_json(const char *json, uint8_t *out, size_t out_size,
+                                 bool *active_doppler)
+{
+    const char *tle_p = strstr(json, "\"tle\":\"");
+    const char *tlx_p = strstr(json, "\"tlx\":\"");
+    const char *key = tle_p ? tle_p : tlx_p;
+    *active_doppler = (tle_p != NULL);
+
+    if (!key) return -1;
+
+    const char *b64_start = key + 7; /* skip "tle":" or "tlx":" (7 chars) */
+    const char *b64_end = strchr(b64_start, '"');
+    if (!b64_end) return -2;
+
+    size_t decoded_len = 0;
+    int rc = base64_decode(out, out_size, &decoded_len,
+                           (const uint8_t *)b64_start, b64_end - b64_start);
+    if (rc != 0) return -3;
+    return (int)decoded_len;
+}
+
+ZTEST(json_parser, test_tle_extraction_tlx)
+{
+    /* Real tlx from a Tianqi begine (34 bytes base64-encoded) */
+    char json[] = "{\"freq\":400.265,\"tlx\":\"GgBoBX1djQAAADUG3Osb6msAABvcLND/KCx1WslCwAAJDw==\"}";
+    uint8_t tle[34];
+    bool active;
+    int len = extract_tle_from_json(json, tle, sizeof(tle), &active);
+    zassert_equal(len, 34, "TLE should decode to 34 bytes, got %d", len);
+    zassert_false(active, "tlx should not enable active Doppler");
+    /* First byte of TLE is format indicator */
+    zassert_equal(tle[0], 0x1A, "TLE first byte should be 0x1A");
+}
+
+ZTEST(json_parser, test_tle_extraction_tle_active_doppler)
+{
+    /* Same data but with "tle" key — should enable Doppler */
+    char json[] = "{\"freq\":400.265,\"tle\":\"GgBoBX1djQAAADUG3Osb6msAABvcLND/KCx1WslCwAAJDw==\"}";
+    uint8_t tle[34];
+    bool active;
+    int len = extract_tle_from_json(json, tle, sizeof(tle), &active);
+    zassert_equal(len, 34, "TLE should decode to 34 bytes");
+    zassert_true(active, "tle key should enable active Doppler");
+}
+
+ZTEST(json_parser, test_tle_extraction_no_tle)
+{
+    char json[] = "{\"freq\":400.265,\"sat\":\"Test\"}";
+    uint8_t tle[34];
+    bool active;
+    int len = extract_tle_from_json(json, tle, sizeof(tle), &active);
+    zassert_true(len < 0, "no TLE key should return error");
+}
+
+ZTEST(json_parser, test_tle_extraction_offset_correct)
+{
+    /* This test specifically catches the +6 vs +7 offset bug.
+     * With +6, the first decoded byte would be wrong (includes the quote).
+     * With +7, it correctly starts at the base64 data. */
+    char json[] = "{\"tlx\":\"AQIDBA==\"}";  /* base64 of [1,2,3,4] */
+    uint8_t out[4];
+    bool active;
+    int len = extract_tle_from_json(json, out, sizeof(out), &active);
+    zassert_equal(len, 4, "should decode 4 bytes, got %d", len);
+    zassert_equal(out[0], 1, "byte 0 should be 1 (not a quote char)");
+    zassert_equal(out[1], 2, "byte 1 should be 2");
+    zassert_equal(out[2], 3, "byte 2 should be 3");
+    zassert_equal(out[3], 4, "byte 3 should be 4");
 }
 
 /* NOTE: Status payload and last-packet metric tests require the full
