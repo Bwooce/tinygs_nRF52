@@ -185,21 +185,19 @@ int tinygs_parse_set_name(const char *json, size_t len, struct tinygs_name_msg *
 
 /* --- generic JSON value extractors --- */
 
-float json_extract_float(const char *json, const char *key, float default_val)
+float json_extract_float_n(const char *json, const char *key, size_t key_len, float default_val)
 {
     const char *p = strstr(json, key);
     if (!p) return default_val;
-    /* Skip past the key (uses strlen, no hardcoded offset) */
-    p += strlen(key);
+    p += key_len;
     return strtof(p, NULL);
 }
 
-int json_extract_string(const char *json, const char *key, char *buf, size_t buf_size)
+int json_extract_string_n(const char *json, const char *key, size_t key_len, char *buf, size_t buf_size)
 {
     const char *p = strstr(json, key);
     if (!p) return -1;
-    /* Skip past key (e.g., "station":") — strlen handles the offset */
-    p += strlen(key);
+    p += key_len;
     const char *end = strchr(p, '"');
     if (!end) return -1;
     size_t len = end - p;
@@ -209,11 +207,11 @@ int json_extract_string(const char *json, const char *key, char *buf, size_t buf
     return (int)len;
 }
 
-int json_extract_int(const char *json, const char *key, int default_val)
+int json_extract_int_n(const char *json, const char *key, size_t key_len, int default_val)
 {
     const char *p = strstr(json, key);
     if (!p) return default_val;
-    p += strlen(key);
+    p += key_len;
     return atoi(p);
 }
 

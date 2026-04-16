@@ -122,15 +122,21 @@ int tinygs_parse_fsw(const char *json, size_t len, uint8_t *buf, size_t buf_size
  * Use strlen(key)+1 internally for offset, avoiding hardcoded magic numbers.
  */
 
-/* Extract a float value for a given key. Returns default_val if not found. */
-float json_extract_float(const char *json, const char *key, float default_val);
+/* Extract a float value for a given key. Returns default_val if not found.
+ * key_len is the length of the key string (use sizeof(key)-1 for literals). */
+float json_extract_float_n(const char *json, const char *key, size_t key_len, float default_val);
 
 /* Extract a quoted string value for a given key into buf.
  * Returns length of extracted string, or -1 if not found. */
-int json_extract_string(const char *json, const char *key, char *buf, size_t buf_size);
+int json_extract_string_n(const char *json, const char *key, size_t key_len, char *buf, size_t buf_size);
 
 /* Extract an int value for a given key. Returns default_val if not found. */
-int json_extract_int(const char *json, const char *key, int default_val);
+int json_extract_int_n(const char *json, const char *key, size_t key_len, int default_val);
+
+/* Convenience macros — sizeof() on string literals is compile-time */
+#define json_extract_float(json, key, def)      json_extract_float_n(json, key, sizeof(key) - 1, def)
+#define json_extract_string(json, key, buf, sz) json_extract_string_n(json, key, sizeof(key) - 1, buf, sz)
+#define json_extract_int(json, key, def)        json_extract_int_n(json, key, sizeof(key) - 1, def)
 
 float tinygs_parse_foff(const char *json, size_t len, float *tol, uint32_t *refresh_ms);
 
