@@ -848,8 +848,11 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                             radio->invertIQ(msg.iIQ);
                             tinygs_radio.iIQ = msg.iIQ;
 
-                            if (msg.cl > 0) {
-                                radio->implicitHeader(msg.cl);
+                            /* Implicit vs explicit header: ESP32 uses "len" field,
+                             * NOT "cl". "cl" is content length for display.
+                             * "len" defaults to 0 = explicit header. */
+                            if (msg.len > 0) {
+                                radio->implicitHeader(msg.len);
                             } else {
                                 radio->explicitHeader();
                             }
