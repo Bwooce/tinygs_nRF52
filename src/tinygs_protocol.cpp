@@ -88,7 +88,7 @@ struct tinygs_radio_state tinygs_radio = {
 
 /* Shared buffers for topic and payload construction */
 static char topic_buf[128];
-static char payload_buf[768];
+static char payload_buf[512]; /* Shared for ping/status/RX — welcome uses its own stack buffer */
 
 int tinygs_build_welcome(char *buf, size_t buflen,
                           const char *mac, int vbat_mv, uint32_t free_mem,
@@ -213,7 +213,10 @@ int tinygs_send_welcome(struct mqtt_client *client,
                         TINYGS_TOPIC_TELE, TINYGS_TELE_WELCOME,
                         user, station);
 
-    int len = tinygs_build_welcome(payload_buf, sizeof(payload_buf),
+    /* Welcome includes modem_conf (~250 bytes) so needs a larger buffer.
+     * Use stack allocation — welcome is only sent once per connect. */
+    char welcome_buf[1024];
+    int len = tinygs_build_welcome(welcome_buf, sizeof(welcome_buf),
                                     mac, read_vbat_mv(), get_free_heap(),
                                     k_uptime_get_32() / 1000);
 
@@ -221,18 +224,18 @@ int tinygs_send_welcome(struct mqtt_client *client,
     param.message.topic.qos = MQTT_QOS_0_AT_MOST_ONCE;
     param.message.topic.topic.utf8 = (uint8_t *)topic_buf;
     param.message.topic.topic.size = strlen(topic_buf);
-    param.message.payload.data = (uint8_t *)payload_buf;
+    param.message.payload.data = (uint8_t *)welcome_buf;
     param.message.payload.len = len;
     param.message_id = 0;
     param.dup_flag = 0;
     param.retain_flag = 0;
 
-    if (len >= (int)sizeof(payload_buf)) {
-        LOG_WRN("Welcome payload truncated (%d >= %zu)", len, sizeof(payload_buf));
+    if (len >= (int)sizeof(welcome_buf)) {
+        LOG_WRN("Welcome payload truncated (%d >= %zu)", len, sizeof(welcome_buf));
     }
 
     LOG_INF("Publishing welcome to %s", topic_buf);
-    LOG_INF("Payload: %s", payload_buf);
+    LOG_INF("Payload: %s", welcome_buf);
 
     return mqtt_publish(client, &param);
 }
