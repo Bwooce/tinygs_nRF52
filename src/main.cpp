@@ -779,7 +779,8 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             LOG_INF("  command: %s", cmnd);
 
             if (strcmp(cmnd, "begine") == 0 ||
-                strcmp(cmnd, "batch_conf") == 0) {
+                strcmp(cmnd, "batch_conf") == 0 ||
+                strcmp(cmnd, "beginp") == 0) {
                 if (radio != nullptr) {
                     /* Store raw payload as modem_conf before parsing
                      * (json_obj_parse modifies the buffer in-place) */
@@ -929,10 +930,16 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     tinygs_radio.filter_len = (filt_count > 0) ? filt_count : 0;
                     if (filt_count <= 0) tinygs_radio.filter[0] = 0;
 
-                    /* Parse TLE base64 from modem_conf copy (original modified by json_obj_parse) */
+                    /* Parse TLE base64 from modem_conf copy.
+                     * "tle" key = active Doppler compensation
+                     * "tlx" key = passive TLE (position display only, no Doppler) */
+                    const char *tle_p = strstr(tinygs_radio.modem_conf, "\"tle\":\"");
                     const char *tlx_p = strstr(tinygs_radio.modem_conf, "\"tlx\":\"");
-                    if (tlx_p) {
-                        const char *b64_start = tlx_p + 7;
+                    const char *tle_key = tle_p ? tle_p : tlx_p;
+                    bool active_doppler = (tle_p != NULL);
+
+                    if (tle_key) {
+                        const char *b64_start = tle_key + 6; /* skip "tle":" or "tlx":" */
                         const char *b64_end = strchr(b64_start, '"');
                         if (b64_end) {
                             size_t decoded_len = 0;
@@ -943,14 +950,17 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                                               b64_end - b64_start) == 0
                                 && decoded_len == 34) {
                                 tinygs_radio.tle_valid = true;
+                                tinygs_radio.doppler_enabled = active_doppler;
                                 tinygs_radio.freq_doppler = 0.0f;
-                                LOG_INF("  TLE received (%zu bytes)", decoded_len);
+                                LOG_INF("  TLE received (%zu bytes)%s",
+                                        decoded_len, active_doppler ? " +Doppler" : "");
                             } else {
                                 tinygs_radio.tle_valid = false;
                             }
                         }
                     } else {
                         tinygs_radio.tle_valid = false;
+                        tinygs_radio.doppler_enabled = false;
                     }
 
                     radio->startReceive();
@@ -984,14 +994,20 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                             (double)freq, (double)tinygs_radio.freq_offset);
                 }
             } else if (strcmp(cmnd, "sat") == 0) {
-                /* Select satellite — payload is JSON string with sat name */
+                /* Select satellite — payload is ["name", NORAD] */
                 const char *p = strstr((char *)rx_payload, "\"");
                 if (p) {
                     const char *end = strchr(p + 1, '"');
                     if (end && (end - p - 1) < (int)sizeof(tinygs_radio.satellite)) {
                         memcpy(tinygs_radio.satellite, p + 1, end - p - 1);
                         tinygs_radio.satellite[end - p - 1] = '\0';
-                        LOG_INF("  → satellite: %s", tinygs_radio.satellite);
+                        /* Parse NORAD after the closing quote: ,"12345"] */
+                        const char *comma = strchr(end, ',');
+                        if (comma) {
+                            tinygs_radio.norad = (uint32_t)atoi(comma + 1);
+                        }
+                        LOG_INF("  → satellite: %s NORAD=%u",
+                                tinygs_radio.satellite, (unsigned)tinygs_radio.norad);
                     }
                 }
             } else if (strcmp(cmnd, "set_pos_prm") == 0) {

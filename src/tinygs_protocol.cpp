@@ -113,7 +113,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         "\"seconds\":%u,"
         "\"Vbat\":%d,"
         "\"tx\":false,"
-        "\"sat\":\"\","
+        "\"sat\":\"%s\","
         "\"ip\":\"%s\","
         "\"idfv\":\"NCS/Zephyr\","
         "\"modem_conf\":\"%s\""
@@ -129,6 +129,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         (unsigned)free_mem,
         (unsigned)uptime_s,
         vbat_mv,
+        tinygs_radio.satellite,
         ip_str,
         escaped_conf
     );
@@ -290,45 +291,87 @@ int tinygs_send_rx(struct mqtt_client *client,
     /* Get real epoch time (not uptime) — server expects Unix timestamp */
     uint32_t epoch = (uint32_t)get_utc_epoch();
 
-    /* Build RX JSON payload — types matched to ESP32 ArduinoJson output */
-    int len = snprintf(payload_buf, sizeof(payload_buf),
-        "{"
-        "\"station_location\":[%.4f,%.4f],"
-        "\"mode\":\"LoRa\","
-        "\"frequency\":%.4f,"
-        "\"frequency_offset\":%.1f,"
-        "\"satellite\":\"%s\","
-        "\"sf\":%d,"
-        "\"cr\":%d,"
-        "\"bw\":%.1f,"
-        "\"rssi\":%.1f,"
-        "\"snr\":%.2f,"
-        "\"frequency_error\":%.1f,"
-        "\"unix_GS_time\":%u,"
-        "\"usec_time\":0,"
-        "\"crc_error\":%s,"
-        "\"data\":\"%s\","
-        "\"NORAD\":%u,"
-        "\"noisy\":%s,"
-        "\"iIQ\":%s"
-        "}",
-        (double)tinygs_station_lat,
-        (double)tinygs_station_lon,
-        (double)tinygs_radio.frequency,
-        (double)tinygs_radio.freq_offset,
-        tinygs_radio.satellite,
-        tinygs_radio.sf, tinygs_radio.cr,
-        (double)tinygs_radio.bw,
-        (double)rssi,
-        (double)snr,
-        (double)freq_err,
-        (unsigned)epoch,
-        crc_error ? "true" : "false",
-        b64_buf,
-        (unsigned)tinygs_radio.norad,
-        crc_error ? "true" : "false",
-        tinygs_radio.iIQ ? "true" : "false"
-    );
+    /* Build RX JSON payload — field set depends on LoRa vs FSK mode */
+    bool is_fsk = (strcmp(tinygs_radio.modem_mode, "FSK") == 0);
+    int len;
+
+    if (!is_fsk) {
+        len = snprintf(payload_buf, sizeof(payload_buf),
+            "{"
+            "\"station_location\":[%.4f,%.4f],"
+            "\"mode\":\"LoRa\","
+            "\"frequency\":%.4f,"
+            "\"frequency_offset\":%.1f,"
+            "\"satellite\":\"%s\","
+            "\"sf\":%d,"
+            "\"cr\":%d,"
+            "\"bw\":%.1f,"
+            "\"rssi\":%.1f,"
+            "\"snr\":%.2f,"
+            "\"frequency_error\":%.1f,"
+            "\"unix_GS_time\":%u,"
+            "\"usec_time\":0,"
+            "\"crc_error\":%s,"
+            "\"data\":\"%s\","
+            "\"NORAD\":%u,"
+            "\"noisy\":%s,"
+            "\"iIQ\":%s",
+            (double)tinygs_station_lat, (double)tinygs_station_lon,
+            (double)tinygs_radio.frequency, (double)tinygs_radio.freq_offset,
+            tinygs_radio.satellite,
+            tinygs_radio.sf, tinygs_radio.cr, (double)tinygs_radio.bw,
+            (double)rssi, (double)snr, (double)freq_err,
+            (unsigned)epoch,
+            crc_error ? "true" : "false",
+            b64_buf, (unsigned)tinygs_radio.norad,
+            crc_error ? "true" : "false",
+            tinygs_radio.iIQ ? "true" : "false"
+        );
+        /* Append f_doppler when Doppler compensation is active */
+        if (tinygs_radio.freq_doppler != 0.0f && len < (int)sizeof(payload_buf) - 30) {
+            len += snprintf(payload_buf + len, sizeof(payload_buf) - len,
+                            ",\"f_doppler\":%.1f", (double)tinygs_radio.freq_doppler);
+        }
+        /* Close JSON */
+        if (len < (int)sizeof(payload_buf) - 1) {
+            payload_buf[len++] = '}';
+            payload_buf[len] = '\0';
+        }
+    } else {
+        len = snprintf(payload_buf, sizeof(payload_buf),
+            "{"
+            "\"station_location\":[%.4f,%.4f],"
+            "\"mode\":\"FSK\","
+            "\"frequency\":%.4f,"
+            "\"frequency_offset\":%.1f,"
+            "\"satellite\":\"%s\","
+            "\"bitrate\":%.0f,"
+            "\"freqdev\":%.0f,"
+            "\"rxBw\":%.1f,"
+            "\"rssi\":%.1f,"
+            "\"snr\":%.2f,"
+            "\"frequency_error\":%.1f,"
+            "\"unix_GS_time\":%u,"
+            "\"usec_time\":0,"
+            "\"crc_error\":%s,"
+            "\"data\":\"%s\","
+            "\"data_raw\":\"%s\","
+            "\"NORAD\":%u,"
+            "\"noisy\":%s"
+            "}",
+            (double)tinygs_station_lat, (double)tinygs_station_lon,
+            (double)tinygs_radio.frequency, (double)tinygs_radio.freq_offset,
+            tinygs_radio.satellite,
+            (double)tinygs_radio.bitrate, (double)tinygs_radio.freq_dev,
+            (double)tinygs_radio.bw,
+            (double)rssi, (double)snr, (double)freq_err,
+            (unsigned)epoch,
+            crc_error ? "true" : "false",
+            b64_buf, b64_buf, /* data and data_raw are the same for now */
+            (unsigned)tinygs_radio.norad,
+            crc_error ? "true" : "false"
+        );
+    }
 
     if (len >= (int)sizeof(payload_buf)) {
         LOG_ERR("RX payload truncated: %d >= %zu", len, sizeof(payload_buf));
@@ -357,38 +400,77 @@ int tinygs_send_status(struct mqtt_client *client,
                         TINYGS_TOPIC_STAT, TINYGS_STAT_STATUS,
                         user, station);
 
-    int len = snprintf(payload_buf, sizeof(payload_buf),
-        "{"
-        "\"station_location\":[%.4f,%.4f],"
-        "\"version\":%u,"
-        "\"board\":%d,"
-        "\"tx\":false,"
-        "\"mode\":\"LoRa\","
-        "\"frequency\":%.4f,"
-        "\"frequency_offset\":%.1f,"
-        "\"satellite\":\"%s\","
-        "\"sf\":%d,"
-        "\"cr\":%d,"
-        "\"bw\":%.1f,"
-        "\"NORAD\":%u,"
-        "\"rssi\":0,"
-        "\"snr\":0,"
-        "\"frequency_error\":0,"
-        "\"crc_error\":false,"
-        "\"unix_GS_time\":%u"
-        "}",
-        (double)tinygs_station_lat,
-        (double)tinygs_station_lon,
-        (unsigned)TINYGS_VERSION,
-        TINYGS_BOARD,
-        (double)tinygs_radio.frequency,
-        (double)tinygs_radio.freq_offset,
-        tinygs_radio.satellite,
-        tinygs_radio.sf, tinygs_radio.cr,
-        (double)tinygs_radio.bw,
-        (unsigned)tinygs_radio.norad,
-        (unsigned)(uint32_t)get_utc_epoch()
-    );
+    bool is_fsk = (strcmp(tinygs_radio.modem_mode, "FSK") == 0);
+    int len;
+
+    if (!is_fsk) {
+        len = snprintf(payload_buf, sizeof(payload_buf),
+            "{"
+            "\"station_location\":[%.4f,%.4f],"
+            "\"version\":%u,"
+            "\"board\":%d,"
+            "\"tx\":false,"
+            "\"mode\":\"LoRa\","
+            "\"frequency\":%.4f,"
+            "\"frequency_offset\":%.1f,"
+            "\"satellite\":\"%s\","
+            "\"sf\":%d,"
+            "\"cr\":%d,"
+            "\"bw\":%.1f,"
+            "\"pl\":%d,"
+            "\"CRC\":%s,"
+            "\"FLDRO\":%d,"
+            "\"NORAD\":%u,"
+            "\"rssi\":0,"
+            "\"snr\":0,"
+            "\"frequency_error\":0,"
+            "\"crc_error\":false,"
+            "\"unix_GS_time\":%u"
+            "}",
+            (double)tinygs_station_lat, (double)tinygs_station_lon,
+            (unsigned)TINYGS_VERSION, TINYGS_BOARD,
+            (double)tinygs_radio.frequency, (double)tinygs_radio.freq_offset,
+            tinygs_radio.satellite,
+            tinygs_radio.sf, tinygs_radio.cr, (double)tinygs_radio.bw,
+            8, /* pl — preamble length, TODO: track from begine */
+            "true", /* CRC — TODO: track from begine */
+            0, /* FLDRO — TODO: track from begine */
+            (unsigned)tinygs_radio.norad,
+            (unsigned)(uint32_t)get_utc_epoch()
+        );
+    } else {
+        len = snprintf(payload_buf, sizeof(payload_buf),
+            "{"
+            "\"station_location\":[%.4f,%.4f],"
+            "\"version\":%u,"
+            "\"board\":%d,"
+            "\"tx\":false,"
+            "\"mode\":\"FSK\","
+            "\"frequency\":%.4f,"
+            "\"frequency_offset\":%.1f,"
+            "\"satellite\":\"%s\","
+            "\"bitrate\":%.0f,"
+            "\"freqdev\":%.0f,"
+            "\"rxBw\":%.1f,"
+            "\"OOK\":%d,"
+            "\"NORAD\":%u,"
+            "\"rssi\":0,"
+            "\"snr\":0,"
+            "\"frequency_error\":0,"
+            "\"crc_error\":false,"
+            "\"unix_GS_time\":%u"
+            "}",
+            (double)tinygs_station_lat, (double)tinygs_station_lon,
+            (unsigned)TINYGS_VERSION, TINYGS_BOARD,
+            (double)tinygs_radio.frequency, (double)tinygs_radio.freq_offset,
+            tinygs_radio.satellite,
+            (double)tinygs_radio.bitrate, (double)tinygs_radio.freq_dev,
+            (double)tinygs_radio.bw,
+            tinygs_radio.ook,
+            (unsigned)tinygs_radio.norad,
+            (unsigned)(uint32_t)get_utc_epoch()
+        );
+    }
 
     struct mqtt_publish_param param;
     param.message.topic.qos = MQTT_QOS_0_AT_MOST_ONCE;
