@@ -306,8 +306,8 @@ The `begine` (and `batch_conf`) command carries radio configuration. Key fields:
 | cr | int | 5 | 5-8 |
 | sw | int | 18 | Sync word (default 18) |
 | pwr | int | 5 | TX power |
-| cl | int | 120 | Content length — display hint for server, NOT used for implicit header |
-| len | int | 0 | **Implicit header payload length.** 0 or absent = explicit header (default). >0 = implicit header with this fixed length. |
+| cl | int | 120 | **Server-side only.** Content length for web display/packet decoding. The ESP32 firmware does NOT read this field. Do not use for radio configuration. |
+| len | int | 0 | **Implicit header payload length.** 0 or absent = explicit header (default). >0 = implicit header with this fixed length. Also used as FSK fixed packet length. |
 | pl | int | 9 | Preamble length |
 | gain | int | 0 | LNA gain |
 | crc | bool | true | CRC enable |
@@ -333,7 +333,7 @@ When applying a `begine` config, these settings are REQUIRED for packet receptio
 | Field | API call | Notes |
 |-------|----------|-------|
 | fldro | `forceLDRO(fldro)` or `autoLDRO()` when fldro==2 | **CRITICAL** — without LDRO, low-rate packets are undecodable |
-| len | `implicitHeader(len)` when len>0, else `explicitHeader()` | **CRITICAL** — ESP32 uses `"len"` NOT `"cl"` for this. Most satellites have no `"len"` field → explicit header. Using `"cl"` causes 100% CRC failure. |
+| len | `implicitHeader(len)` when len>0, else `explicitHeader()` | **CRITICAL** — ESP32 uses `"len"` NOT `"cl"`. The ESP32 does not read `"cl"` at all. Most satellites omit `"len"` → explicit header (receiver reads length from LoRa header). Using `"cl"` for implicit header causes 100% CRC failure because the radio reads too many bytes. |
 | — | `setRxBoostedGainMode(true)` | ~3dB better sensitivity on SX1262, always enable |
 | gain | Not used on SX1262 (fixed gain) | ESP32 passes it to begin() for SX127x compat |
 | iIQ | `invertIQ(iIQ)` | Must also store in radio state for RX payload |
