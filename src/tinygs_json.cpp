@@ -183,6 +183,40 @@ int tinygs_parse_set_name(const char *json, size_t len, struct tinygs_name_msg *
     return 0;
 }
 
+/* --- generic JSON value extractors --- */
+
+float json_extract_float(const char *json, const char *key, float default_val)
+{
+    const char *p = strstr(json, key);
+    if (!p) return default_val;
+    /* Skip past the key (uses strlen, no hardcoded offset) */
+    p += strlen(key);
+    return strtof(p, NULL);
+}
+
+int json_extract_string(const char *json, const char *key, char *buf, size_t buf_size)
+{
+    const char *p = strstr(json, key);
+    if (!p) return -1;
+    /* Skip past key (e.g., "station":") — strlen handles the offset */
+    p += strlen(key);
+    const char *end = strchr(p, '"');
+    if (!end) return -1;
+    size_t len = end - p;
+    if (len >= buf_size) len = buf_size - 1;
+    memcpy(buf, p, len);
+    buf[len] = '\0';
+    return (int)len;
+}
+
+int json_extract_int(const char *json, const char *key, int default_val)
+{
+    const char *p = strstr(json, key);
+    if (!p) return default_val;
+    p += strlen(key);
+    return atoi(p);
+}
+
 /* --- filter array parsing: [1, 0, 235] --- */
 
 float tinygs_parse_foff(const char *json, size_t len, float *tol, uint32_t *refresh_ms)

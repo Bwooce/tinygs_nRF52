@@ -966,6 +966,51 @@ ZTEST(json_parser, test_tle_extraction_offset_correct)
     zassert_equal(out[3], 4, "byte 3 should be 4");
 }
 
+/* ---- generic JSON extractor tests ---- */
+
+ZTEST(json_parser, test_extract_float)
+{
+    const char *json = "{\"lat\":-33.8688,\"lon\":151.2093,\"alt\":50}";
+    zassert_true(fabsf(json_extract_float(json, "\"lat\":", 0) - (-33.8688f)) < 0.001f, "lat");
+    zassert_true(fabsf(json_extract_float(json, "\"lon\":", 0) - 151.2093f) < 0.001f, "lon");
+    zassert_true(fabsf(json_extract_float(json, "\"alt\":", 0) - 50.0f) < 0.1f, "alt");
+    zassert_true(fabsf(json_extract_float(json, "\"missing\":", -999.0f) - (-999.0f)) < 0.1f, "default");
+}
+
+ZTEST(json_parser, test_extract_string)
+{
+    const char *json = "{\"station\":\"my_station\",\"mqtt_user\":\"user123\"}";
+    char buf[32];
+
+    int len = json_extract_string(json, "\"station\":\"", buf, sizeof(buf));
+    zassert_equal(len, 10, "station length should be 10, got %d", len);
+    zassert_true(strcmp(buf, "my_station") == 0, "station value");
+
+    len = json_extract_string(json, "\"mqtt_user\":\"", buf, sizeof(buf));
+    zassert_equal(len, 7, "mqtt_user length");
+    zassert_true(strcmp(buf, "user123") == 0, "mqtt_user value");
+
+    len = json_extract_string(json, "\"missing\":\"", buf, sizeof(buf));
+    zassert_equal(len, -1, "missing key should return -1");
+}
+
+ZTEST(json_parser, test_extract_string_truncation)
+{
+    const char *json = "{\"name\":\"a_very_long_station_name_that_exceeds_buffer\"}";
+    char buf[8];
+    int len = json_extract_string(json, "\"name\":\"", buf, sizeof(buf));
+    zassert_equal(len, 7, "should truncate to buf_size-1");
+    zassert_equal(buf[7], '\0', "should be null terminated");
+}
+
+ZTEST(json_parser, test_extract_int)
+{
+    const char *json = "{\"display_timeout\":30,\"count\":0}";
+    zassert_equal(json_extract_int(json, "\"display_timeout\":", -1), 30, "timeout");
+    zassert_equal(json_extract_int(json, "\"count\":", -1), 0, "zero value");
+    zassert_equal(json_extract_int(json, "\"missing\":", -1), -1, "default");
+}
+
 /* NOTE: Status payload and last-packet metric tests require the full
  * tinygs_protocol.h which depends on RadioLib/Zephyr MQTT — can't be
  * tested in this native_sim unit test build. These are verified by:

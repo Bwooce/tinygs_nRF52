@@ -117,6 +117,21 @@ int tinygs_parse_filter(const char *json, size_t len, uint8_t *buf, size_t buf_s
  */
 int tinygs_parse_fsw(const char *json, size_t len, uint8_t *buf, size_t buf_size);
 
+/*
+ * Generic JSON value extractors — lightweight, no allocation.
+ * Use strlen(key)+1 internally for offset, avoiding hardcoded magic numbers.
+ */
+
+/* Extract a float value for a given key. Returns default_val if not found. */
+float json_extract_float(const char *json, const char *key, float default_val);
+
+/* Extract a quoted string value for a given key into buf.
+ * Returns length of extracted string, or -1 if not found. */
+int json_extract_string(const char *json, const char *key, char *buf, size_t buf_size);
+
+/* Extract an int value for a given key. Returns default_val if not found. */
+int json_extract_int(const char *json, const char *key, int default_val);
+
 float tinygs_parse_foff(const char *json, size_t len, float *tol, uint32_t *refresh_ms);
 
 #ifdef __cplusplus

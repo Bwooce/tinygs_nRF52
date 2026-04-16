@@ -1430,50 +1430,20 @@ static void setup_usb_storage(void)
                     cfg_buf[n] = '\0';
                     LOG_INF("Read config.json (%d bytes)", (int)n);
 
-                    const char *p;
-                    p = strstr(cfg_buf, "\"lat\":");
-                    if (p) {
-                        float v = strtof(p + 6, NULL);
-                        if (v >= -90.0f && v <= 90.0f) tinygs_station_lat = v;
-                    }
-                    p = strstr(cfg_buf, "\"lon\":");
-                    if (p) {
-                        float v = strtof(p + 6, NULL);
-                        if (v >= -180.0f && v <= 180.0f) tinygs_station_lon = v;
-                    }
-                    p = strstr(cfg_buf, "\"alt\":");
-                    if (p) tinygs_station_alt = strtof(p + 6, NULL);
+                    float lat = json_extract_float(cfg_buf, "\"lat\":", -999.0f);
+                    if (lat >= -90.0f && lat <= 90.0f) tinygs_station_lat = lat;
 
-                    p = strstr(cfg_buf, "\"station\":\"");
-                    if (p) {
-                        const char *end = strchr(p + 11, '"');
-                        if (end && (end - p - 11) < (int)sizeof(cfg_station)) {
-                            memcpy(cfg_station, p + 11, end - p - 11);
-                            cfg_station[end - p - 11] = '\0';
-                        }
-                    }
-                    p = strstr(cfg_buf, "\"mqtt_user\":\"");
-                    if (p) {
-                        const char *end = strchr(p + 13, '"');
-                        if (end && (end - p - 13) < (int)sizeof(cfg_mqtt_user)) {
-                            memcpy(cfg_mqtt_user, p + 13, end - p - 13);
-                            cfg_mqtt_user[end - p - 13] = '\0';
-                        }
-                    }
-                    p = strstr(cfg_buf, "\"mqtt_pass\":\"");
-                    if (p) {
-                        const char *end = strchr(p + 13, '"');
-                        if (end && (end - p - 13) < (int)sizeof(cfg_mqtt_pass)) {
-                            memcpy(cfg_mqtt_pass, p + 13, end - p - 13);
-                            cfg_mqtt_pass[end - p - 13] = '\0';
-                        }
-                    }
+                    float lon = json_extract_float(cfg_buf, "\"lon\":", -999.0f);
+                    if (lon >= -180.0f && lon <= 180.0f) tinygs_station_lon = lon;
 
-                    p = strstr(cfg_buf, "\"display_timeout\":");
-                    if (p) {
-                        int t = atoi(p + 18);
-                        if (t >= 0) tinygs_display_set_timeout((uint32_t)t);
-                    }
+                    tinygs_station_alt = json_extract_float(cfg_buf, "\"alt\":", tinygs_station_alt);
+
+                    json_extract_string(cfg_buf, "\"station\":\"", cfg_station, sizeof(cfg_station));
+                    json_extract_string(cfg_buf, "\"mqtt_user\":\"", cfg_mqtt_user, sizeof(cfg_mqtt_user));
+                    json_extract_string(cfg_buf, "\"mqtt_pass\":\"", cfg_mqtt_pass, sizeof(cfg_mqtt_pass));
+
+                    int dt = json_extract_int(cfg_buf, "\"display_timeout\":", -1);
+                    if (dt >= 0) tinygs_display_set_timeout((uint32_t)dt);
                 }
             }
 
