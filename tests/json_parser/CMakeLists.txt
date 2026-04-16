@@ -5,6 +5,7 @@ project(tinygs_json_tests)
 target_sources(app PRIVATE
     src/main.cpp
     ../../src/tinygs_json.cpp
+    ../../src/bitcode.c
 )
 
 target_include_directories(app PRIVATE ../../src)

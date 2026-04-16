@@ -559,4 +559,133 @@ ZTEST(json_parser, test_filter_max_value)
     zassert_equal(buf[2], 128, "mid byte");
 }
 
+/* ---- FSK begine parsing tests ---- */
+
+ZTEST(json_parser, test_begine_fsk_basic)
+{
+    char json[] = "{\"mode\":\"FSK\",\"freq\":401.7,\"bw\":9.6,\"br\":9600,"
+                  "\"fd\":5000,\"pl\":4,\"pwr\":5,\"ook\":0,\"len\":64,"
+                  "\"enc\":2,\"ws\":256,\"sat\":\"TestFSK\",\"NORAD\":55555}";
+
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "FSK parse should succeed");
+    zassert_not_null(msg.mode, "mode should be parsed");
+    zassert_true(strcmp(msg.mode, "FSK") == 0, "mode should be FSK");
+    zassert_equal(msg.br, 9600, "bitrate should be 9600");
+    zassert_equal(msg.ook, 0, "ook should be 0");
+    zassert_equal(msg.len, 64, "len should be 64");
+    zassert_equal(msg.enc, 2, "enc should be 2");
+    zassert_equal(msg.ws, 256, "ws should be 256");
+
+    float fd = tinygs_begine_get_fd(&msg);
+    zassert_true(fabsf(fd - 5000.0f) < 0.1f, "fd should be 5000");
+}
+
+ZTEST(json_parser, test_begine_fsk_software_crc)
+{
+    char json[] = "{\"mode\":\"FSK\",\"freq\":435.0,\"bw\":25,\"br\":4800,"
+                  "\"fd\":2500,\"pl\":4,\"pwr\":5,\"sat\":\"CRC_Test\","
+                  "\"cSw\":true,\"cB\":2,\"cI\":65535,\"cP\":4129,"
+                  "\"cF\":0,\"cRI\":false,\"cRO\":false}";
+
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "FSK CRC parse should succeed");
+    zassert_true(msg.cSw, "cSw should be true");
+    zassert_equal(msg.cB, 2, "cB should be 2");
+    zassert_equal(msg.cI, 65535, "cI should be 65535 (0xFFFF)");
+    zassert_equal(msg.cP, 4129, "cP should be 4129 (0x1021)");
+    zassert_equal(msg.cF, 0, "cF should be 0");
+    zassert_false(msg.cRI, "cRI should be false");
+    zassert_false(msg.cRO, "cRO should be false");
+}
+
+ZTEST(json_parser, test_begine_fsk_crc_reflected)
+{
+    char json[] = "{\"mode\":\"FSK\",\"freq\":435.0,\"bw\":25,\"br\":4800,"
+                  "\"fd\":2500,\"pl\":4,\"pwr\":5,\"sat\":\"Ref_Test\","
+                  "\"cSw\":true,\"cB\":2,\"cI\":0,\"cP\":32773,"
+                  "\"cF\":65535,\"cRI\":true,\"cRO\":true}";
+
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "reflected CRC parse should succeed");
+    zassert_true(msg.cRI, "cRI should be true");
+    zassert_true(msg.cRO, "cRO should be true");
+    zassert_equal(msg.cP, 32773, "cP should be 32773 (0x8005)");
+    zassert_equal(msg.cF, 65535, "cF should be 65535 (0xFFFF)");
+}
+
+/* ---- FSK sync word parser tests ---- */
+
+ZTEST(json_parser, test_fsw_basic)
+{
+    char json[] = "{\"fsw\":[126,170,85,126],\"other\":1}";
+    uint8_t buf[8];
+    int ret = tinygs_parse_fsw(json, strlen(json), buf, sizeof(buf));
+    zassert_equal(ret, 4, "should parse 4 sync bytes");
+    zassert_equal(buf[0], 126, "byte 0 = 0x7E");
+    zassert_equal(buf[1], 170, "byte 1 = 0xAA");
+    zassert_equal(buf[2], 85, "byte 2 = 0x55");
+    zassert_equal(buf[3], 126, "byte 3 = 0x7E");
+}
+
+ZTEST(json_parser, test_fsw_empty)
+{
+    char json[] = "{\"freq\":435.0}";
+    uint8_t buf[8];
+    int ret = tinygs_parse_fsw(json, strlen(json), buf, sizeof(buf));
+    zassert_equal(ret, 0, "no fsw field should return 0");
+}
+
+ZTEST(json_parser, test_fsw_single)
+{
+    char json[] = "{\"fsw\":[255]}";
+    uint8_t buf[8];
+    int ret = tinygs_parse_fsw(json, strlen(json), buf, sizeof(buf));
+    zassert_equal(ret, 1, "single sync byte");
+    zassert_equal(buf[0], 255, "byte = 0xFF");
+}
+
+/* ---- bitcode tests ---- */
+
+extern "C" {
+#include "bitcode.h"
+}
+
+ZTEST(json_parser, test_pn9_descramble)
+{
+    /* PN9 with known initial state 0x1FF should XOR first byte with 0xFF */
+    uint8_t input[] = {0xFF, 0x00, 0xAA, 0x55};
+    uint8_t output[4];
+    bitcode_pn9(input, 4, output);
+    /* First byte: 0xFF ^ 0xFF (PN9 init low byte) = 0x00 */
+    zassert_equal(output[0], 0x00, "first byte should be 0x00 after PN9");
+    /* PN9 is deterministic — verify it produces non-zero for other bytes */
+    /* The exact values depend on the LFSR sequence, just verify it changed */
+    zassert_not_equal(output[1], 0x00, "PN9 should modify subsequent bytes");
+}
+
+ZTEST(json_parser, test_pn9_roundtrip)
+{
+    /* PN9 is its own inverse — applying twice should return original */
+    uint8_t original[] = {0x48, 0x65, 0x6C, 0x6C, 0x6F}; /* "Hello" */
+    uint8_t scrambled[5];
+    uint8_t recovered[5];
+    bitcode_pn9(original, 5, scrambled);
+    bitcode_pn9(scrambled, 5, recovered);
+    zassert_mem_equal(original, recovered, 5, "PN9 double-apply should recover original");
+}
+
+ZTEST(json_parser, test_reverse_byte)
+{
+    zassert_equal(bitcode_reverse_byte(0x01), 0x80, "0x01 reversed = 0x80");
+    zassert_equal(bitcode_reverse_byte(0x80), 0x01, "0x80 reversed = 0x01");
+    zassert_equal(bitcode_reverse_byte(0xFF), 0xFF, "0xFF reversed = 0xFF");
+    zassert_equal(bitcode_reverse_byte(0x00), 0x00, "0x00 reversed = 0x00");
+    zassert_equal(bitcode_reverse_byte(0xA5), 0xA5, "0xA5 reversed = 0xA5");
+    zassert_equal(bitcode_reverse_byte(0x0F), 0xF0, "0x0F reversed = 0xF0");
+}
+
 ZTEST_SUITE(json_parser, NULL, NULL, NULL, NULL, NULL);
