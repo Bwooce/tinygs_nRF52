@@ -306,7 +306,7 @@ The `begine` (and `batch_conf`) command carries radio configuration. Key fields:
 | cr | int | 5 | 5-8 |
 | sw | int | 18 | Sync word (default 18) |
 | pwr | int | 5 | TX power |
-| cl | int | 120 | **Server-side only.** Content length for web display/packet decoding. The ESP32 firmware does NOT read this field. Do not use for radio configuration. |
+| cl | int | 120 | **Server-side only.** Content length for web display/packet decoding. The ESP32 firmware does NOT read this field. Always 120 in observed begines. Do not use for radio configuration. Sent by the TinyGS server, not by ground stations. |
 | len | int | 0 | **Implicit header payload length.** 0 or absent = explicit header (default). >0 = implicit header with this fixed length. Also used as FSK fixed packet length. |
 | pl | int | 9 | Preamble length |
 | gain | int | 0 | LNA gain |
