@@ -50,8 +50,9 @@
 
 LOG_MODULE_REGISTER(tinygs_nrf52, LOG_LEVEL_DBG);
 
-/* Forward declaration — needed because begine handler re-registers after begin() */
+/* Forward declarations for radio RX */
 static void lora_rx_callback(void);
+static volatile bool lora_packet_received = false;
 
 /* Crash diagnostic — __noinit survives warm reset (SREQ doesn't clear RAM) */
 #define CRASH_MAGIC 0xDEAD0000
@@ -800,6 +801,17 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 strcmp(cmnd, "batch_conf") == 0 ||
                 strcmp(cmnd, "beginp") == 0) {
                 if (radio != nullptr) {
+                    /* Disable RX interrupt before reconfiguring radio.
+                     * Prevents race where a packet received on the old config
+                     * gets processed with the new satellite's filter/metadata.
+                     * ESP32 does the same: clearPacketReceivedAction() + disableInterrupt() */
+                    radio->clearPacketReceivedAction();
+
+                    /* Drain any pending packet before reconfig */
+                    if (lora_packet_received) {
+                        lora_packet_received = false;
+                    }
+
                     /* Store raw payload as modem_conf before parsing
                      * (json_obj_parse modifies the buffer in-place) */
                     size_t conf_len = strlen((char *)rx_payload);
@@ -987,6 +999,8 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         tinygs_radio.doppler_enabled = false;
                     }
 
+                    /* Re-enable RX interrupt and start receiving */
+                    radio->setPacketReceivedAction(lora_rx_callback);
                     radio->startReceive();
 
                     if (strcmp(tinygs_radio.modem_mode, "FSK") == 0) {
@@ -1010,6 +1024,8 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             } else if (strcmp(cmnd, "begin_lora") == 0) {
                 /* Legacy array format: [freq,bw,sf,cr,sw,pwr,climit,pl,gain] */
                 if (radio) {
+                    radio->clearPacketReceivedAction();
+                    if (lora_packet_received) lora_packet_received = false;
                     float vals[9] = {0};
                     const char *p = strchr((char *)rx_payload, '[');
                     if (p) {
@@ -1029,6 +1045,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                             radio->setPreambleLength((int)vals[7]);
                             radio->setRxBoostedGainMode(true);
                             strncpy(tinygs_radio.modem_mode, "LoRa", sizeof(tinygs_radio.modem_mode));
+                            radio->setPacketReceivedAction(lora_rx_callback);
                             radio->startReceive();
                             LOG_INF("  begin_lora: %.4fMHz SF%d BW%.1f",
                                     (double)freq, (int)vals[2], (double)vals[1]);
@@ -1038,6 +1055,8 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             } else if (strcmp(cmnd, "begin_fsk") == 0) {
                 /* Legacy array format: [freq,br,fd,rxBw,pwr,pl,ook,len] */
                 if (radio) {
+                    radio->clearPacketReceivedAction();
+                    if (lora_packet_received) lora_packet_received = false;
                     float vals[8] = {0};
                     const char *p = strchr((char *)rx_payload, '[');
                     if (p) {
@@ -1523,7 +1542,7 @@ static Module *radio_mod = nullptr;
 #endif
 
 /* LoRa packet reception flag — set by DIO1 ISR */
-static volatile bool lora_packet_received = false;
+/* lora_packet_received moved to top — see forward declaration */
 
 /* -------------------------------------------------------------------------- */
 /* SNTP Time Sync                                                              */
