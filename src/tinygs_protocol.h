@@ -136,6 +136,9 @@ struct tinygs_radio_state {
     int   sf;              /* Spreading factor 5-12 (LoRa) */
     float bw;              /* Bandwidth kHz */
     int   cr;              /* Coding rate 5-8 (LoRa) */
+    int   pl;              /* Preamble length */
+    bool  crc_on;          /* CRC enabled */
+    int   fldro;           /* FLDRO setting (0/1/2=auto) */
     bool  iIQ;             /* Inverted IQ — from begine, reported in RX payload */
     /* FSK-specific */
     float bitrate;         /* FSK bitrate bps */

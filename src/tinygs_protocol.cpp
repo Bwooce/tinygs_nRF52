@@ -432,9 +432,9 @@ int tinygs_send_status(struct mqtt_client *client,
             (double)tinygs_radio.frequency, (double)tinygs_radio.freq_offset,
             tinygs_radio.satellite,
             tinygs_radio.sf, tinygs_radio.cr, (double)tinygs_radio.bw,
-            8, /* pl — preamble length, TODO: track from begine */
-            "true", /* CRC — TODO: track from begine */
-            0, /* FLDRO — TODO: track from begine */
+            tinygs_radio.pl,
+            tinygs_radio.crc_on ? "true" : "false",
+            tinygs_radio.fldro,
             (unsigned)tinygs_radio.norad,
             (unsigned)(uint32_t)get_utc_epoch()
         );

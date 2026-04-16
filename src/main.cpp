@@ -834,6 +834,9 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                             }
                             radio->setSyncWord(msg.sw);
                             radio->setPreambleLength(msg.pl);
+                            tinygs_radio.pl = msg.pl;
+                            tinygs_radio.crc_on = msg.crc;
+                            tinygs_radio.fldro = msg.fldro;
 
                             if (msg.fldro == 2) {
                                 radio->autoLDRO();
