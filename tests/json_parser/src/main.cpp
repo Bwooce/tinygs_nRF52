@@ -1061,6 +1061,38 @@ ZTEST(json_parser, test_begine_fsk_len_for_fixed_packet)
  * 2. The existing welcome/RX output tests that check field presence
  * 3. Runtime verification via remote logging */
 
+ZTEST(json_parser, test_real_tianqi_explicit_header_begine)
+{
+    /* Real Tianqi begine from our logs that produced the first confirmed packet.
+     * Has cl:120 but NO len field → explicit header → 100 byte packets. */
+    char json[] = "{\"mode\":\"LoRa\",\"freq\":400.265,\"bw\":125,\"sf\":10,"
+                  "\"cr\":5,\"sw\":18,\"pwr\":5,\"cl\":120,\"pl\":9,\"gain\":0,"
+                  "\"crc\":true,\"fldro\":1,\"sat\":\"Tianqi\",\"NORAD\":64061,"
+                  "\"filter\":[1,0,235]}";
+
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "real Tianqi begine should parse");
+    zassert_equal(msg.cl, 120, "cl should be 120");
+    zassert_equal(msg.len, 0, "len absent → 0 → explicit header");
+    zassert_true(msg.crc, "crc should be true");
+    zassert_equal(msg.fldro, 1, "fldro should be 1");
+    zassert_equal(msg.sf, 10, "sf should be 10");
+
+    /* Filter parsing needs a separate copy — json_obj_parse modifies in-place */
+    char json2[] = "{\"filter\":[1,0,235]}";
+    uint8_t filter_buf[8];
+    int filt = tinygs_parse_filter(json2, strlen(json2), filter_buf, sizeof(filter_buf));
+    zassert_equal(filt, 3, "filter should have 3 bytes");
+    zassert_equal(filter_buf[0], 1, "filter count=1");
+    zassert_equal(filter_buf[1], 0, "filter offset=0");
+    zassert_equal(filter_buf[2], 235, "filter value=0xEB");
+
+    /* Simulate: real Tianqi packet first byte passes filter */
+    uint8_t pkt[] = {0xEB, 0xA3, 0xC0, 0x00};
+    zassert_true(filter_matches(pkt, 4, filter_buf, filt), "0xEB packet passes Tianqi filter");
+}
+
 /* TODO: Add tests with real satellite packet captures once we receive clean packets.
  * The hex dump diagnostic logging will provide test vectors for:
  * - Tianqi packet decode (LoRa, implicit header, filter match)
