@@ -983,6 +983,72 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                                 tinygs_radio.filter[0] ? " FLT" : "");
                     }
                 }
+            } else if (strcmp(cmnd, "begin_lora") == 0) {
+                /* Legacy array format: [freq,bw,sf,cr,sw,pwr,climit,pl,gain] */
+                if (radio) {
+                    float vals[9] = {0};
+                    const char *p = strchr((char *)rx_payload, '[');
+                    if (p) {
+                        p++;
+                        for (int i = 0; i < 9 && *p && *p != ']'; i++) {
+                            vals[i] = strtof(p, (char **)&p);
+                            while (*p == ',' || *p == ' ') p++;
+                        }
+                        float freq = vals[0];
+                        if (freq > 100.0f && freq < 1000.0f) {
+                            tinygs_radio.frequency = freq;
+                            radio->setFrequency(freq + tinygs_radio.freq_offset / 1e6f);
+                            radio->setBandwidth(vals[1]); tinygs_radio.bw = vals[1];
+                            radio->setSpreadingFactor((int)vals[2]); tinygs_radio.sf = (int)vals[2];
+                            radio->setCodingRate((int)vals[3]); tinygs_radio.cr = (int)vals[3];
+                            radio->setSyncWord((int)vals[4]);
+                            radio->setPreambleLength((int)vals[7]);
+                            radio->setRxBoostedGainMode(true);
+                            strncpy(tinygs_radio.modem_mode, "LoRa", sizeof(tinygs_radio.modem_mode));
+                            radio->startReceive();
+                            LOG_INF("  begin_lora: %.4fMHz SF%d BW%.1f",
+                                    (double)freq, (int)vals[2], (double)vals[1]);
+                        }
+                    }
+                }
+            } else if (strcmp(cmnd, "begin_fsk") == 0) {
+                /* Legacy array format: [freq,br,fd,rxBw,pwr,pl,ook,len] */
+                if (radio) {
+                    float vals[8] = {0};
+                    const char *p = strchr((char *)rx_payload, '[');
+                    if (p) {
+                        p++;
+                        for (int i = 0; i < 8 && *p && *p != ']'; i++) {
+                            vals[i] = strtof(p, (char **)&p);
+                            while (*p == ',' || *p == ' ') p++;
+                        }
+                        float freq = vals[0];
+                        if (freq > 100.0f && freq < 1000.0f) {
+                            tinygs_radio.frequency = freq;
+                            tinygs_radio.bw = vals[3];
+                            tinygs_radio.bitrate = vals[1];
+                            tinygs_radio.freq_dev = vals[2];
+                            tinygs_radio.ook = (int)vals[6];
+                            tinygs_radio.fsk_len = (int)vals[7];
+                            strncpy(tinygs_radio.modem_mode, "FSK", sizeof(tinygs_radio.modem_mode));
+                            int16_t rc = radio->beginFSK(
+                                freq + tinygs_radio.freq_offset / 1e6f,
+                                vals[1] / 1000.0f, vals[2] / 1000.0f, vals[3],
+                                (int)vals[4], (int)vals[5], LORA_TCXO_VOLTAGE);
+                            if (rc == RADIOLIB_ERR_NONE) {
+                                radio->setPacketReceivedAction(lora_rx_callback);
+                                radio->setCRC(0);
+                                if ((int)vals[7] > 0) radio->fixedPacketLengthMode((int)vals[7]);
+                                radio->setRxBoostedGainMode(true);
+                                radio->startReceive();
+                                LOG_INF("  begin_fsk: %.4fMHz BR%.0f FD%.0f",
+                                        (double)freq, (double)vals[1], (double)vals[2]);
+                            } else {
+                                LOG_ERR("  begin_fsk failed: %d", rc);
+                            }
+                        }
+                    }
+                }
             } else if (strcmp(cmnd, "freq") == 0) {
                 /* Direct frequency set (MHz as number) */
                 float freq = strtof((char *)rx_payload, NULL);

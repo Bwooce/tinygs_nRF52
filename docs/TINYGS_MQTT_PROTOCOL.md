@@ -122,9 +122,9 @@ The TinyGS ping interval (`tele/ping`) must NOT equal `CONFIG_MQTT_KEEPALIVE`. W
 
 **Station commands** (`tinygs/{user}/{station}/cmnd/`):
 - `begine` — Load modem config (JSON with freq, sf, bw, cr, sat, NORAD, tlx, filter, etc.)
-- `beginp` — Persist modem config to flash
-- `begin_lora` — Quick LoRa configuration
-- `begin_fsk` — Quick FSK configuration
+- `beginp` — Persist modem config to flash (same format as begine, also saves as startup config)
+- `begin_lora` — Quick LoRa config (array: `[freq, bw, sf, cr, syncWord, power, currentLimit, preambleLength, gain]`)
+- `begin_fsk` — Quick FSK config (array: `[freq, bitrate, freqDev, rxBw, power, preambleLength, ook, packetLength]`)
 - `freq` — Set frequency (payload: float MHz as string)
 - `sat` — Select satellite (payload: JSON string with name)
 - `set_pos_prm` — Set station coordinates (payload: `[lat, lon, alt]`, `[alt]`, or `[null]`)
