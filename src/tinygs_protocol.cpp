@@ -310,7 +310,7 @@ int tinygs_send_rx(struct mqtt_client *client,
             "\"snr\":%.2f,"
             "\"frequency_error\":%.1f,"
             "\"unix_GS_time\":%u,"
-            "\"usec_time\":0,"
+            "\"usec_time\":%lld,"
             "\"crc_error\":%s,"
             "\"data\":\"%s\","
             "\"NORAD\":%u,"
@@ -322,6 +322,7 @@ int tinygs_send_rx(struct mqtt_client *client,
             tinygs_radio.sf, tinygs_radio.cr, (double)tinygs_radio.bw,
             (double)rssi, (double)snr, (double)freq_err,
             (unsigned)epoch,
+            (long long)(k_uptime_get() * 1000LL),
             crc_error ? "true" : "false",
             b64_buf, (unsigned)tinygs_radio.norad,
             crc_error ? "true" : "false",
@@ -352,7 +353,7 @@ int tinygs_send_rx(struct mqtt_client *client,
             "\"snr\":%.2f,"
             "\"frequency_error\":%.1f,"
             "\"unix_GS_time\":%u,"
-            "\"usec_time\":0,"
+            "\"usec_time\":%lld,"
             "\"crc_error\":%s,"
             "\"data\":\"%s\","
             "\"data_raw\":\"%s\","
@@ -366,6 +367,7 @@ int tinygs_send_rx(struct mqtt_client *client,
             (double)tinygs_radio.bw,
             (double)rssi, (double)snr, (double)freq_err,
             (unsigned)epoch,
+            (long long)(k_uptime_get() * 1000LL),
             crc_error ? "true" : "false",
             b64_buf, b64_buf, /* data and data_raw are the same for now */
             (unsigned)tinygs_radio.norad,
@@ -421,10 +423,10 @@ int tinygs_send_status(struct mqtt_client *client,
             "\"CRC\":%s,"
             "\"FLDRO\":%d,"
             "\"NORAD\":%u,"
-            "\"rssi\":0,"
-            "\"snr\":0,"
-            "\"frequency_error\":0,"
-            "\"crc_error\":false,"
+            "\"rssi\":%.1f,"
+            "\"snr\":%.2f,"
+            "\"frequency_error\":%.1f,"
+            "\"crc_error\":%s,"
             "\"unix_GS_time\":%u"
             "}",
             (double)tinygs_station_lat, (double)tinygs_station_lon,
@@ -436,6 +438,10 @@ int tinygs_send_status(struct mqtt_client *client,
             tinygs_radio.crc_on ? "true" : "false",
             tinygs_radio.fldro,
             (unsigned)tinygs_radio.norad,
+            (double)tinygs_radio.last_rssi,
+            (double)tinygs_radio.last_snr,
+            (double)tinygs_radio.last_freq_err,
+            tinygs_radio.last_crc_error ? "true" : "false",
             (unsigned)(uint32_t)get_utc_epoch()
         );
     } else {
@@ -454,10 +460,10 @@ int tinygs_send_status(struct mqtt_client *client,
             "\"rxBw\":%.1f,"
             "\"OOK\":%d,"
             "\"NORAD\":%u,"
-            "\"rssi\":0,"
-            "\"snr\":0,"
-            "\"frequency_error\":0,"
-            "\"crc_error\":false,"
+            "\"rssi\":%.1f,"
+            "\"snr\":%.2f,"
+            "\"frequency_error\":%.1f,"
+            "\"crc_error\":%s,"
             "\"unix_GS_time\":%u"
             "}",
             (double)tinygs_station_lat, (double)tinygs_station_lon,
@@ -468,6 +474,10 @@ int tinygs_send_status(struct mqtt_client *client,
             (double)tinygs_radio.bw,
             tinygs_radio.ook,
             (unsigned)tinygs_radio.norad,
+            (double)tinygs_radio.last_rssi,
+            (double)tinygs_radio.last_snr,
+            (double)tinygs_radio.last_freq_err,
+            tinygs_radio.last_crc_error ? "true" : "false",
             (unsigned)(uint32_t)get_utc_epoch()
         );
     }

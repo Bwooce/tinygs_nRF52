@@ -942,7 +942,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     bool active_doppler = (tle_p != NULL);
 
                     if (tle_key) {
-                        const char *b64_start = tle_key + 6; /* skip "tle":" or "tlx":" */
+                        const char *b64_start = tle_key + 7; /* skip "tle":"  or "tlx":" (7 chars) */
                         const char *b64_end = strchr(b64_start, '"');
                         if (b64_end) {
                             size_t decoded_len = 0;
@@ -1749,6 +1749,12 @@ static bool lora_check_rx(void)
     float rssi = radio->getRSSI();
     float snr = radio->getSNR();
     float freq_err = radio->getFrequencyError();
+
+    /* Store last-packet metrics for status payload */
+    tinygs_radio.last_rssi = rssi;
+    tinygs_radio.last_snr = snr;
+    tinygs_radio.last_freq_err = freq_err;
+    tinygs_radio.last_crc_error = (state == RADIOLIB_ERR_CRC_MISMATCH);
 
     if (state == RADIOLIB_ERR_NONE) {
         lora_rx_count++;

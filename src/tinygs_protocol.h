@@ -164,6 +164,11 @@ struct tinygs_radio_state {
     uint8_t filter[8];     /* Packet filter bytes from server */
     uint8_t filter_len;    /* Number of active filter bytes (0 = no filter) */
     char  modem_conf[256]; /* Last begine/batch_conf JSON, echoed in welcome */
+    /* Last packet metrics — for status payload */
+    float last_rssi;
+    float last_snr;
+    float last_freq_err;
+    bool  last_crc_error;
     float sat_pos_x;       /* Satellite map position from sat_pos_oled (128x64 coords) */
     float sat_pos_y;
 };

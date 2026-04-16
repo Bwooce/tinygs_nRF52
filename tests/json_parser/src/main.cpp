@@ -892,6 +892,13 @@ ZTEST(json_parser, test_sw_crc_ccitt_corrupted)
     zassert_not_equal(crc, 0x29B1, "corrupted data CRC should differ from known good");
 }
 
+/* NOTE: Status payload and last-packet metric tests require the full
+ * tinygs_protocol.h which depends on RadioLib/Zephyr MQTT — can't be
+ * tested in this native_sim unit test build. These are verified by:
+ * 1. The audit confirming no hardcoded values remain in snprintf
+ * 2. The existing welcome/RX output tests that check field presence
+ * 3. Runtime verification via remote logging */
+
 /* TODO: Add tests with real satellite packet captures once we receive clean packets.
  * The hex dump diagnostic logging will provide test vectors for:
  * - Tianqi packet decode (LoRa, implicit header, filter match)
