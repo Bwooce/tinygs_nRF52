@@ -111,6 +111,12 @@ int tinygs_parse_filter(const char *json, size_t len, uint8_t *buf, size_t buf_s
  * Returns offset in Hz. If tolerance/refresh present, writes them to *tol/*refresh_ms.
  * Pass NULL for tol/refresh_ms if not needed.
  */
+/*
+ * Parse FSK sync word array "fsw":[b0,b1,...] from begine JSON.
+ * Returns number of sync word bytes (0 if not found).
+ */
+int tinygs_parse_fsw(const char *json, size_t len, uint8_t *buf, size_t buf_size);
+
 float tinygs_parse_foff(const char *json, size_t len, float *tol, uint32_t *refresh_ms);
 
 #ifdef __cplusplus

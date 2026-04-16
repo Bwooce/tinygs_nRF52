@@ -142,6 +142,16 @@ struct tinygs_radio_state {
     float freq_dev;        /* FSK frequency deviation Hz */
     int   ook;             /* OOK mode (255=enabled) */
     int   fsk_len;         /* FSK fixed packet length */
+    int   fsk_enc;         /* FSK encoding (0=none, 1=Manchester, 2=whitening) */
+    int   fsk_framing;     /* FSK framing (0=raw, 1=AX.25 NRZS, 2=PN9, 3=scrambled) */
+    /* Software CRC config (FSK only) */
+    bool  sw_crc_enabled;  /* Software CRC check after reception */
+    uint8_t sw_crc_bytes;  /* CRC byte count (1 or 2) */
+    uint16_t sw_crc_init;  /* CRC initial value */
+    uint16_t sw_crc_poly;  /* CRC polynomial */
+    uint16_t sw_crc_xor;   /* CRC final XOR */
+    bool  sw_crc_refin;    /* CRC reflect input */
+    bool  sw_crc_refout;   /* CRC reflect output */
     char  satellite[32];   /* Current satellite name */
     uint32_t norad;        /* NORAD catalog number */
     uint8_t tle[34];       /* Binary TLE from server (base64-decoded) */

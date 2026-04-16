@@ -88,6 +88,24 @@ float tinygs_begine_get_bw(const struct tinygs_begine_msg *msg)
     return 0.0f;
 }
 
+int tinygs_parse_fsw(const char *json, size_t len, uint8_t *buf, size_t buf_size)
+{
+    /* Find "fsw":[ in the JSON */
+    const char *key = "\"fsw\":[";
+    const char *p = strstr(json, key);
+    if (!p) return 0;
+    p += strlen(key);
+
+    int count = 0;
+    while (count < (int)buf_size) {
+        while (*p == ' ' || *p == ',') p++;
+        if (*p == ']' || *p == '\0') break;
+        buf[count++] = (uint8_t)atoi(p);
+        while (*p && *p != ',' && *p != ']') p++;
+    }
+    return count;
+}
+
 float tinygs_begine_get_fd(const struct tinygs_begine_msg *msg)
 {
     if (msg->fd.start && msg->fd.length > 0) {

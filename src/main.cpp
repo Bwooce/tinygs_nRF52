@@ -875,15 +875,47 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                             /* Re-register DIO1 interrupt (beginFSK resets it) */
                             radio->setPacketReceivedAction(lora_rx_callback);
 
-                            radio->setCRC(0); /* FSK CRC handled in software */
+                            radio->setCRC(0); /* FSK HW CRC off — done in software */
+
                             if (msg.len > 0) {
                                 radio->fixedPacketLengthMode(msg.len);
                             }
 
-                            /* TODO: FSK sync word (fsw array — needs manual JSON parsing)
-                             * TODO: FSK encoding/whitening (enc, ws fields)
-                             * TODO: FSK framing (fr field — AX.25, PN9, etc.)
-                             * TODO: Software CRC (cSw, cB, cI, cP, cF, cRI, cRO) */
+                            /* FSK sync word from "fsw" array in JSON */
+                            uint8_t fsw_buf[8];
+                            int fsw_len = tinygs_parse_fsw(
+                                tinygs_radio.modem_conf,
+                                strlen(tinygs_radio.modem_conf),
+                                fsw_buf, sizeof(fsw_buf));
+                            if (fsw_len > 0) {
+                                radio->setSyncWord(fsw_buf, fsw_len);
+                            }
+
+                            /* OOK / data shaping */
+                            if (msg.ook == 255) {
+                                radio->setDataShaping(RADIOLIB_SHAPING_1_0);
+                            } else if (msg.ook > 0) {
+                                radio->setDataShaping((float)msg.ook);
+                            } else {
+                                radio->setDataShaping(RADIOLIB_SHAPING_NONE);
+                            }
+
+                            /* Encoding: 0=NRZ, 1=Manchester, 2=whitening */
+                            radio->setEncoding(msg.enc);
+                            if (msg.enc == 2) {
+                                radio->setWhitening(true, msg.ws);
+                            }
+                            tinygs_radio.fsk_enc = msg.enc;
+                            tinygs_radio.fsk_framing = msg.fr;
+
+                            /* Software CRC config — stored for post-RX check */
+                            tinygs_radio.sw_crc_enabled = msg.cSw;
+                            tinygs_radio.sw_crc_bytes = (uint8_t)msg.cB;
+                            tinygs_radio.sw_crc_init = (uint16_t)msg.cI;
+                            tinygs_radio.sw_crc_poly = (uint16_t)msg.cP;
+                            tinygs_radio.sw_crc_xor = (uint16_t)msg.cF;
+                            tinygs_radio.sw_crc_refin = msg.cRI;
+                            tinygs_radio.sw_crc_refout = msg.cRO;
 
                             radio->setRxBoostedGainMode(true);
                         }
@@ -1660,13 +1692,65 @@ static bool lora_check_rx(void)
             }
         }
 
+        /* Software CRC check (FSK mode with cSw enabled).
+         * The last crc_bytes of the packet contain the CRC.
+         * Matches ESP32 Radio.cpp line 631-677 logic. */
+        bool sw_crc_fail = false;
+        if (tinygs_radio.sw_crc_enabled && tinygs_radio.sw_crc_bytes > 0 &&
+            len > tinygs_radio.sw_crc_bytes) {
+            size_t data_len = len - tinygs_radio.sw_crc_bytes;
+            uint16_t crc = tinygs_radio.sw_crc_init;
+            uint16_t poly = tinygs_radio.sw_crc_poly;
+            for (size_t i = 0; i < data_len; i++) {
+                uint8_t b = tinygs_radio.sw_crc_refin ?
+                    __RBIT((uint32_t)data[i]) >> 24 : data[i];
+                if (tinygs_radio.sw_crc_bytes == 2) {
+                    crc ^= (uint16_t)b << 8;
+                    for (int j = 0; j < 8; j++) {
+                        crc = (crc & 0x8000) ? (crc << 1) ^ poly : crc << 1;
+                    }
+                } else {
+                    crc ^= b;
+                    for (int j = 0; j < 8; j++) {
+                        crc = (crc & 0x80) ? (crc << 1) ^ poly : crc << 1;
+                    }
+                }
+            }
+            crc ^= tinygs_radio.sw_crc_xor;
+            if (tinygs_radio.sw_crc_refout) {
+                crc = (uint16_t)(__RBIT((uint32_t)crc) >> (32 - tinygs_radio.sw_crc_bytes * 8));
+            }
+            crc &= (tinygs_radio.sw_crc_bytes == 1) ? 0xFF : 0xFFFF;
+
+            /* Extract CRC from packet tail */
+            uint16_t pkt_crc;
+            if (tinygs_radio.sw_crc_refin) {
+                uint8_t b0 = __RBIT((uint32_t)data[len - 2]) >> 24;
+                uint8_t b1 = __RBIT((uint32_t)data[len - 1]) >> 24;
+                pkt_crc = (uint16_t)b0 << 8 | b1;
+            } else {
+                pkt_crc = (uint16_t)data[len - 2] << 8 | data[len - 1];
+            }
+
+            if (crc != pkt_crc) {
+                sw_crc_fail = true;
+                LOG_WRN("FSK SW CRC fail: calc=%04x pkt=%04x", crc, pkt_crc);
+            }
+        }
+
         /* Notify display of packet reception */
         tinygs_display_packet_rx(rssi, snr);
 
         /* Publish via MQTT if connected */
         if (app_state == STATE_MQTT_CONNECTED) {
-            tinygs_send_rx(&mqtt_client, cfg_mqtt_user, cfg_station,
-                           data, len, rssi, snr, freq_err, false);
+            if (sw_crc_fail) {
+                static const uint8_t err_crc[] = "Error_CRC";
+                tinygs_send_rx(&mqtt_client, cfg_mqtt_user, cfg_station,
+                               err_crc, sizeof(err_crc) - 1, rssi, snr, freq_err, true);
+            } else {
+                tinygs_send_rx(&mqtt_client, cfg_mqtt_user, cfg_station,
+                               data, len, rssi, snr, freq_err, false);
+            }
         }
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
         LOG_WRN("LoRa RX: CRC error, %u bytes, RSSI=%.1f, SNR=%.1f, FreqErr=%.1f",
