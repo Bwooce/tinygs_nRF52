@@ -229,21 +229,38 @@ static void led_init(void)
 static nrfx_pwm_t pwm_led = NRFX_PWM_INSTANCE(0);
 static bool pwm_breathing = false;
 
-/* Breathing LED: one gentle pulse then long off, repeating forever.
- * pin_inverted handles active-low, so values are normal: 0=off, N=bright.
- * PWM top value = 1000 for ~1kHz at 1MHz base clock.
- * Max brightness capped at 50/1000 (5%) to save power.
- * 64 steps at repeats=20 (~20ms each) = ~1.3s pulse.
- * end_delay = 32767 (max) at ~1ms each = ~33s between pulses. */
-#define BREATH_MAX_DUTY  50    /* 5% max brightness — just visible */
+/* Breathing LED: one gentle pulse, then 25s off, repeat.
+ * Uses PWM event handler + k_timer for the pause (end_delay doesn't
+ * work with NRFX_PWM_FLAG_LOOP). */
+#define BREATH_MAX_DUTY  50    /* 5% max brightness */
 #define BREATH_STEPS     64
+#define BREATH_PAUSE_S   25    /* Seconds between pulses */
 static nrf_pwm_values_individual_t breath_values[BREATH_STEPS];
 static nrf_pwm_sequence_t breath_seq = {
     .values = { .p_individual = breath_values },
     .length = NRF_PWM_VALUES_LENGTH(breath_values),
-    .repeats = 20,    /* Hold each step ~20ms. Pulse duration: 64*20ms ≈ 1.3s */
-    .end_delay = 32767, /* Max delay after sequence (~33s at 1kHz) before loop repeats */
+    .repeats = 40,    /* Hold each step ~40ms. Pulse duration: 64*40ms ≈ 2.6s */
+    .end_delay = 0,
 };
+
+static void breath_timer_handler(struct k_timer *timer);
+static K_TIMER_DEFINE(breath_timer, breath_timer_handler, NULL);
+
+static void breath_pwm_handler(nrfx_pwm_evt_type_t event_type, void *p_context)
+{
+    if (event_type == NRFX_PWM_EVT_FINISHED) {
+        /* Pulse complete — start timer for the pause */
+        k_timer_start(&breath_timer, K_SECONDS(BREATH_PAUSE_S), K_NO_WAIT);
+    }
+}
+
+static void breath_timer_handler(struct k_timer *timer)
+{
+    /* Pause complete — play one more pulse */
+    if (pwm_breathing) {
+        nrfx_pwm_simple_playback(&pwm_led, &breath_seq, 1, 0);
+    }
+}
 
 static void breathing_led_init(void)
 {
@@ -274,7 +291,7 @@ static void breathing_led_init(void)
         .step_mode    = NRF_PWM_STEP_AUTO,
     };
 
-    if (nrfx_pwm_init(&pwm_led, &config, NULL, NULL) == NRFX_SUCCESS) {
+    if (nrfx_pwm_init(&pwm_led, &config, breath_pwm_handler, NULL) == NRFX_SUCCESS) {
         /* Play a single-step "off" sequence to ensure LED starts dark.
          * Without this, the PWM idle state may leave the pin floating. */
         static nrf_pwm_values_individual_t off_val = { 0, 0, 0, 0 };
@@ -292,16 +309,17 @@ static void breathing_led_init(void)
 static void breathing_led_start(void)
 {
     if (!pwm_breathing) {
-        nrfx_pwm_simple_playback(&pwm_led, &breath_seq, 1, NRFX_PWM_FLAG_LOOP);
         pwm_breathing = true;
+        nrfx_pwm_simple_playback(&pwm_led, &breath_seq, 1, 0); /* play once, handler restarts */
     }
 }
 
 static void breathing_led_stop(void)
 {
     if (pwm_breathing) {
-        nrfx_pwm_stop(&pwm_led, false);
         pwm_breathing = false;
+        k_timer_stop(&breath_timer);
+        nrfx_pwm_stop(&pwm_led, false);
         /* PWM released — manually drive pin to turn LED off.
          * Active-low LED: HIGH = off */
         nrf_gpio_cfg_output(NRF_GPIO_PIN_MAP(1, 3));
@@ -1581,7 +1599,7 @@ static uint32_t last_doppler_ms = 0;
  */
 static void doppler_update(void)
 {
-    if (!tinygs_radio.tle_valid || !tinygs_radio.doppler_enabled || !radio) {
+    if (!tinygs_radio.tle_valid || !radio) {
         return;
     }
 
@@ -1616,8 +1634,8 @@ static void doppler_update(void)
     tinygs_radio.sat_pos_x = (float)((180.0 + sat_lon) / 360.0 * 128.0);
     tinygs_radio.sat_pos_y = (float)((90.0 - sat_lat) / 180.0 * 64.0);
 
-    if (elevation <= 0.0) {
-        return; /* Below horizon — no Doppler needed */
+    if (elevation <= 0.0 || !tinygs_radio.doppler_enabled) {
+        return; /* Below horizon or Doppler disabled (tlx) — position updated, no freq correction */
     }
 
     /* Compute Doppler — doppler() takes MHz, returns shifted MHz */
