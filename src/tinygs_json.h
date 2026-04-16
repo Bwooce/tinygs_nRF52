@@ -37,7 +37,7 @@ struct tinygs_begine_msg {
     int32_t enc;      /* Encoding (0=none, 1=Manchester, 2=whitening) */
     int32_t ws;       /* Whitening seed */
     int32_t fr;       /* Framing (0=raw, 1=AX.25 NRZS, 2=PN9, 3=scrambled AX.25) */
-    int32_t len;      /* Fixed packet length (FSK) — cl is for LoRa implicit header */
+    int32_t len;      /* Packet length: LoRa implicit header (>0) or FSK fixed length. 0=explicit header. */
     /* Software CRC fields (FSK) */
     bool cSw;         /* Software CRC enable */
     int32_t cB;       /* CRC byte count */

@@ -1011,6 +1011,49 @@ ZTEST(json_parser, test_extract_int)
     zassert_equal(json_extract_int(json, "\"missing\":", -1), -1, "default");
 }
 
+/* ---- implicit vs explicit header tests ---- */
+
+ZTEST(json_parser, test_begine_cl_not_used_for_implicit_header)
+{
+    /* Most satellites send "cl":120 but NO "len" field.
+     * ESP32 uses "len" (default 0) for implicit/explicit header decision.
+     * "cl" is content length for display, NOT implicit header setting.
+     * With len=0, the radio should use explicit header. */
+    char json[] = "{\"freq\":400.265,\"bw\":125,\"sf\":10,\"cr\":5,"
+                  "\"cl\":120,\"crc\":true,\"sat\":\"Tianqi\"}";
+
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "parse should succeed");
+    zassert_equal(msg.cl, 120, "cl should be 120");
+    zassert_equal(msg.len, 0, "len should default to 0 (explicit header)");
+}
+
+ZTEST(json_parser, test_begine_len_for_implicit_header)
+{
+    /* When "len" IS present and >0, use implicit header */
+    char json[] = "{\"freq\":400.0,\"bw\":125,\"sf\":10,\"cr\":5,"
+                  "\"len\":64,\"cl\":120,\"sat\":\"Test\"}";
+
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "parse should succeed");
+    zassert_equal(msg.len, 64, "len should be 64 (implicit header)");
+    zassert_equal(msg.cl, 120, "cl should still be 120 (display only)");
+}
+
+ZTEST(json_parser, test_begine_fsk_len_for_fixed_packet)
+{
+    /* FSK mode also uses "len" for fixed packet length */
+    char json[] = "{\"mode\":\"FSK\",\"freq\":436.5,\"bw\":25,\"br\":9600,"
+                  "\"fd\":5000,\"len\":74,\"sat\":\"GeoScan\"}";
+
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "parse should succeed");
+    zassert_equal(msg.len, 74, "FSK len should be 74");
+}
+
 /* NOTE: Status payload and last-packet metric tests require the full
  * tinygs_protocol.h which depends on RadioLib/Zephyr MQTT — can't be
  * tested in this native_sim unit test build. These are verified by:
