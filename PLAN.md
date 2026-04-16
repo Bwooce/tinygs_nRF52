@@ -128,10 +128,10 @@ All Phase 1 objectives proven:
 
 ### Phase 2: Core TinyGS Porting — COMPLETE
 1.  **[DONE] State Machine & Polling:** MQTT state machine with Thread join → DNS → TLS → MQTT → satellite tracking.
-2.  **[DONE] Protocol Emulation:** ~21/23 MQTT commands handled (see Phase 3 item 10 for remaining). JSON escaping for modem_conf. foff and filter implemented. FSK mode implemented.
-3.  **[DONE] Interrupt-driven LoRa RX:** Full radio param parsing (freq, sf, bw, cr, sw, pl, iIQ, crc) + packet filter.
+2.  **[DONE] Protocol Emulation:** 23/23 MQTT commands handled. JSON escaping for modem_conf. foff and filter implemented. FSK mode implemented (sync word, encoding, whitening, OOK, software CRC, AX.25/PN9 framing).
+3.  **[DONE] Interrupt-driven LoRa RX:** Full radio param parsing (freq, sf, bw, cr, sw, pl, iIQ, crc) + packet filter. Explicit header mode (ESP32 uses "len" not "cl" for implicit/explicit). **First confirmed satellite packet received 2026-04-16: Tianqi-33, server CONFIRMED.**
 4.  **[DONE] NVS Config Persistence:** Zephyr Settings on shared NVS partition. config.json bidirectional sync.
-5.  **[DONE] Doppler Compensation:** P13 propagator ported from ESP32. TLE parsing from begine. SNTP time sync via OT SNTP client (Google NTP IPv6). 4s update interval, 1200 Hz hysteresis. Activates when server sends TLE data.
+5.  **[DONE] Doppler Compensation:** P13 propagator ported from ESP32. TLE parsing from begine (tle=active Doppler, tlx=passive position only). SNTP time sync via OT SNTP client (Google NTP IPv6). 4s update interval, 1200 Hz hysteresis. Satellite position computed for map display regardless of Doppler mode.
 6.  **[DONE] Battery Voltage (ADC):** Real mV readings in welcome/ping/display.
 7.  **[DONE] FATFS:** 64KB partition, auto-format, LFN, corruption detection.
 8.  **[DONE] Auto-tune:** Weblogin URL for server-side toggle. Satellites assigned ~1/min.
@@ -150,8 +150,9 @@ All Phase 1 objectives proven:
     - **[DONE]** Display wakes on LoRa packet reception
     - **[DONE]** Configurable timeout via config.json `display_timeout`
 2.  **LEDs:**
-    - **[DONE]** Green LED (P1.03) — blink on state transitions
+    - **[DONE]** Green LED (P1.03) — breathing pulse via nRFx PWM0 with timer callback for 25s pause. 5% max brightness (~0.012mA average).
     - **[DONE]** NeoPixel RGB LEDs — WS2812 via SPI2 with dummy SCK (P0.09). I2S driver broken on nRF52840, GPIO driver nRF51-only.
+    - **[DONE]** Boot splash — TinyGS logo (2x scaled XBM) + version for 2s at startup.
 3.  **[DONE] Hardware Watchdog:** WDT0, 600s timeout (2x keepalive). Fed on CONNACK, PINGRESP, and any MQTT RX.
 4.  **[DONE] Debug Safety Checks:** CONFIG_STACK_SENTINEL + CONFIG_FORTIFY_SOURCE_RUN_TIME enabled.
     - **[TODO]** Before production: measure flash/RAM impact of removing STACK_SENTINEL, FORTIFY_SOURCE_RUN_TIME, SYS_HEAP_RUNTIME_STATS, and THREAD_NAME. Keep or remove based on cost vs safety.
