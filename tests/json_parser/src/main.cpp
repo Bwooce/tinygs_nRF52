@@ -941,6 +941,25 @@ ZTEST(json_parser, test_tle_extraction_tle_active_doppler)
     zassert_true(active, "tle key should enable active Doppler");
 }
 
+ZTEST(json_parser, test_tle_extraction_full_decode)
+{
+    /* Real MorSat-1 TLE from confirmed begine — verify ALL 34 bytes */
+    char json[] = "{\"tlx\":\"GgBpAxEkDwAADTMO3Igboy8AADb5IWGQFY3TWrPHsAAGaQ==\"}";
+    uint8_t tle[34];
+    bool active;
+    int len = extract_tle_from_json(json, tle, sizeof(tle), &active);
+    zassert_equal(len, 34, "should decode to 34 bytes");
+
+    static const uint8_t expected[] = {
+        0x1A, 0x00, 0x69, 0x03, 0x11, 0x24, 0x0F, 0x00,
+        0x00, 0x0D, 0x33, 0x0E, 0xDC, 0x88, 0x1B, 0xA3,
+        0x2F, 0x00, 0x00, 0x36, 0xF9, 0x21, 0x61, 0x90,
+        0x15, 0x8D, 0xD3, 0x5A, 0xB3, 0xC7, 0xB0, 0x00,
+        0x06, 0x69
+    };
+    zassert_mem_equal(tle, expected, 34, "decoded TLE bytes should match exactly");
+}
+
 ZTEST(json_parser, test_tle_extraction_no_tle)
 {
     char json[] = "{\"freq\":400.265,\"sat\":\"Test\"}";
