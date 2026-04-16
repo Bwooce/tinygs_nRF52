@@ -68,6 +68,7 @@ float tinygs_station_alt = 50.0f;
 
 /* Radio state — updated by begine/batch_conf, used in send_rx/send_status */
 struct tinygs_radio_state tinygs_radio = {
+    .modem_mode = "LoRa",
     .frequency = TINYGS_DEFAULT_FREQ,
     .freq_offset = 0.0f,
     .freq_doppler = 0.0f,

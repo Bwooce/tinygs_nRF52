@@ -31,6 +31,21 @@ struct tinygs_begine_msg {
     int32_t fldro;
     bool crc;
     bool iIQ;
+    /* FSK-specific fields */
+    int32_t br;       /* Bitrate (bps) */
+    int32_t ook;      /* OOK mode (255 = OOK enabled) */
+    int32_t enc;      /* Encoding (0=none, 1=Manchester, 2=whitening) */
+    int32_t ws;       /* Whitening seed */
+    int32_t fr;       /* Framing (0=raw, 1=AX.25 NRZS, 2=PN9, 3=scrambled AX.25) */
+    int32_t len;      /* Fixed packet length (FSK) — cl is for LoRa implicit header */
+    /* Software CRC fields (FSK) */
+    bool cSw;         /* Software CRC enable */
+    int32_t cB;       /* CRC byte count */
+    int32_t cI;       /* CRC initial value */
+    int32_t cP;       /* CRC polynomial */
+    int32_t cF;       /* CRC final XOR */
+    bool cRI;         /* CRC reflect input */
+    bool cRO;         /* CRC reflect output */
     /* Floats stored as raw tokens — call tinygs_begine_get_freq() etc. */
     struct {
         char *start;
@@ -40,8 +55,15 @@ struct tinygs_begine_msg {
         char *start;
         size_t length;
     } bw;
-    /* filter and tlx need special handling (array and base64) */
+    struct {
+        char *start;
+        size_t length;
+    } fd;  /* FSK frequency deviation */
+    /* filter, tlx, and fsw need special handling (arrays/base64) */
 };
+
+/* Extract float values from parsed begine message */
+float tinygs_begine_get_fd(const struct tinygs_begine_msg *msg);
 
 /*
  * Parse a begine/batch_conf JSON payload into structured fields.

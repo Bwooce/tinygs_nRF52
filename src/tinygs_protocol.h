@@ -129,13 +129,19 @@ extern float tinygs_station_alt;
  * Used in send_rx and send_status to report actual radio state.
  */
 struct tinygs_radio_state {
+    char  modem_mode[8];   /* "LoRa" or "FSK" */
     float frequency;       /* MHz */
     float freq_offset;     /* Hz — applied on top of frequency from foff command */
     float freq_doppler;    /* Hz — current Doppler correction */
-    int   sf;              /* Spreading factor 5-12 */
+    int   sf;              /* Spreading factor 5-12 (LoRa) */
     float bw;              /* Bandwidth kHz */
-    int   cr;              /* Coding rate 5-8 */
+    int   cr;              /* Coding rate 5-8 (LoRa) */
     bool  iIQ;             /* Inverted IQ — from begine, reported in RX payload */
+    /* FSK-specific */
+    float bitrate;         /* FSK bitrate bps */
+    float freq_dev;        /* FSK frequency deviation Hz */
+    int   ook;             /* OOK mode (255=enabled) */
+    int   fsk_len;         /* FSK fixed packet length */
     char  satellite[32];   /* Current satellite name */
     uint32_t norad;        /* NORAD catalog number */
     uint8_t tle[34];       /* Binary TLE from server (base64-decoded) */

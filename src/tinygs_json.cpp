@@ -38,6 +38,21 @@ static const struct json_obj_descr begine_descr[] = {
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, iIQ, JSON_TOK_TRUE),
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, freq, JSON_TOK_FLOAT),
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, bw, JSON_TOK_FLOAT),
+    /* FSK-specific fields */
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, br, JSON_TOK_NUMBER),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, ook, JSON_TOK_NUMBER),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, enc, JSON_TOK_NUMBER),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, ws, JSON_TOK_NUMBER),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, fr, JSON_TOK_NUMBER),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, len, JSON_TOK_NUMBER),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cSw, JSON_TOK_TRUE),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cB, JSON_TOK_NUMBER),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cI, JSON_TOK_NUMBER),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cP, JSON_TOK_NUMBER),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cF, JSON_TOK_NUMBER),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cRI, JSON_TOK_TRUE),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cRO, JSON_TOK_TRUE),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, fd, JSON_TOK_FLOAT),
 };
 
 int64_t tinygs_parse_begine(char *json, size_t len, struct tinygs_begine_msg *msg)
@@ -69,6 +84,14 @@ float tinygs_begine_get_bw(const struct tinygs_begine_msg *msg)
 {
     if (msg->bw.start && msg->bw.length > 0) {
         return strtof(msg->bw.start, NULL);
+    }
+    return 0.0f;
+}
+
+float tinygs_begine_get_fd(const struct tinygs_begine_msg *msg)
+{
+    if (msg->fd.start && msg->fd.length > 0) {
+        return strtof(msg->fd.start, NULL);
     }
     return 0.0f;
 }

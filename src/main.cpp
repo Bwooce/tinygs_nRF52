@@ -796,50 +796,11 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     if (parsed < 0) {
                         LOG_ERR("begine parse failed");
                     } else {
-                        /* Apply radio config via individual setters.
-                         * TCXO 1.8V is configured once at init (persists).
-                         * CRC and header set last — implicitHeader() writes
-                         * all packet params to the SX1262 in one shot. */
+                        /* Common fields */
                         float freq = tinygs_begine_get_freq(&msg);
                         if (freq > 100.0f && freq < 1000.0f) {
                             tinygs_radio.frequency = freq;
-                            radio->setFrequency(freq + tinygs_radio.freq_offset / 1e6f);
                         }
-                        float bw = tinygs_begine_get_bw(&msg);
-                        if (bw > 0.0f) {
-                            radio->setBandwidth(bw);
-                            tinygs_radio.bw = bw;
-                        }
-                        if (msg.sf >= 5 && msg.sf <= 12) {
-                            radio->setSpreadingFactor(msg.sf);
-                            tinygs_radio.sf = msg.sf;
-                        }
-                        if (msg.cr >= 4 && msg.cr <= 8) {
-                            radio->setCodingRate(msg.cr);
-                            tinygs_radio.cr = msg.cr;
-                        }
-                        radio->setSyncWord(msg.sw);
-                        radio->setPreambleLength(msg.pl);
-
-                        if (msg.fldro == 2) {
-                            radio->autoLDRO();
-                        } else {
-                            radio->forceLDRO(msg.fldro ? true : false);
-                        }
-
-                        /* CRC and IQ before header — implicitHeader writes
-                         * all packet params including CRC to the radio */
-                        radio->setCRC(msg.crc ? 2 : 0);
-                        radio->invertIQ(msg.iIQ);
-                        tinygs_radio.iIQ = msg.iIQ;
-
-                        if (msg.cl > 0) {
-                            radio->implicitHeader(msg.cl);
-                        } else {
-                            radio->explicitHeader();
-                        }
-
-                        radio->setRxBoostedGainMode(true);
 
                         if (msg.sat) {
                             strncpy(tinygs_radio.satellite, msg.sat,
@@ -847,6 +808,85 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                             tinygs_radio.satellite[sizeof(tinygs_radio.satellite) - 1] = '\0';
                         }
                         tinygs_radio.norad = (uint32_t)msg.NORAD;
+
+                        bool is_fsk = msg.mode && strcmp(msg.mode, "LoRa") != 0;
+                        strncpy(tinygs_radio.modem_mode,
+                                is_fsk ? "FSK" : "LoRa",
+                                sizeof(tinygs_radio.modem_mode) - 1);
+
+                        if (!is_fsk) {
+                            /* ---- LoRa mode ---- */
+                            radio->setFrequency(freq + tinygs_radio.freq_offset / 1e6f);
+                            float bw = tinygs_begine_get_bw(&msg);
+                            if (bw > 0.0f) {
+                                radio->setBandwidth(bw);
+                                tinygs_radio.bw = bw;
+                            }
+                            if (msg.sf >= 5 && msg.sf <= 12) {
+                                radio->setSpreadingFactor(msg.sf);
+                                tinygs_radio.sf = msg.sf;
+                            }
+                            if (msg.cr >= 4 && msg.cr <= 8) {
+                                radio->setCodingRate(msg.cr);
+                                tinygs_radio.cr = msg.cr;
+                            }
+                            radio->setSyncWord(msg.sw);
+                            radio->setPreambleLength(msg.pl);
+
+                            if (msg.fldro == 2) {
+                                radio->autoLDRO();
+                            } else {
+                                radio->forceLDRO(msg.fldro ? true : false);
+                            }
+
+                            radio->setCRC(msg.crc ? 2 : 0);
+                            radio->invertIQ(msg.iIQ);
+                            tinygs_radio.iIQ = msg.iIQ;
+
+                            if (msg.cl > 0) {
+                                radio->implicitHeader(msg.cl);
+                            } else {
+                                radio->explicitHeader();
+                            }
+
+                            radio->setRxBoostedGainMode(true);
+                        } else {
+                            /* ---- FSK mode ---- */
+                            float bw = tinygs_begine_get_bw(&msg);
+                            float fd = tinygs_begine_get_fd(&msg);
+                            tinygs_radio.bw = bw;
+                            tinygs_radio.bitrate = (float)msg.br;
+                            tinygs_radio.freq_dev = fd;
+                            tinygs_radio.ook = msg.ook;
+                            tinygs_radio.fsk_len = msg.len;
+
+                            int16_t rc = radio->beginFSK(
+                                freq + tinygs_radio.freq_offset / 1e6f,
+                                (float)msg.br / 1000.0f, /* kbps */
+                                fd / 1000.0f,            /* kHz */
+                                bw,                      /* kHz */
+                                msg.pwr,
+                                msg.pl,
+                                LORA_TCXO_VOLTAGE);
+                            if (rc != RADIOLIB_ERR_NONE) {
+                                LOG_ERR("beginFSK failed: %d", rc);
+                            }
+
+                            /* Re-register DIO1 interrupt (beginFSK resets it) */
+                            radio->setPacketReceivedAction(lora_rx_callback);
+
+                            radio->setCRC(0); /* FSK CRC handled in software */
+                            if (msg.len > 0) {
+                                radio->fixedPacketLengthMode(msg.len);
+                            }
+
+                            /* TODO: FSK sync word (fsw array — needs manual JSON parsing)
+                             * TODO: FSK encoding/whitening (enc, ws fields)
+                             * TODO: FSK framing (fr field — AX.25, PN9, etc.)
+                             * TODO: Software CRC (cSw, cB, cI, cP, cF, cRI, cRO) */
+
+                            radio->setRxBoostedGainMode(true);
+                        }
                     }
 
                     /* Parse filter (array — not handled by json.h descriptors) */
@@ -882,13 +922,23 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 
                     radio->startReceive();
 
-                    LOG_INF("  → %s %.4fMHz SF%d BW%.1f%s%s",
-                            tinygs_radio.satellite,
-                            (double)tinygs_radio.frequency,
-                            tinygs_radio.sf,
-                            (double)tinygs_radio.bw,
-                            tinygs_radio.tle_valid ? " TLE" : "",
-                            tinygs_radio.filter[0] ? " FLT" : "");
+                    if (strcmp(tinygs_radio.modem_mode, "FSK") == 0) {
+                        LOG_INF("  → %s %.4fMHz FSK BR%.0f BW%.1f%s%s",
+                                tinygs_radio.satellite,
+                                (double)tinygs_radio.frequency,
+                                (double)tinygs_radio.bitrate,
+                                (double)tinygs_radio.bw,
+                                tinygs_radio.tle_valid ? " TLE" : "",
+                                tinygs_radio.filter[0] ? " FLT" : "");
+                    } else {
+                        LOG_INF("  → %s %.4fMHz SF%d BW%.1f%s%s",
+                                tinygs_radio.satellite,
+                                (double)tinygs_radio.frequency,
+                                tinygs_radio.sf,
+                                (double)tinygs_radio.bw,
+                                tinygs_radio.tle_valid ? " TLE" : "",
+                                tinygs_radio.filter[0] ? " FLT" : "");
+                    }
                 }
             } else if (strcmp(cmnd, "freq") == 0) {
                 /* Direct frequency set (MHz as number) */
