@@ -688,4 +688,132 @@ ZTEST(json_parser, test_reverse_byte)
     zassert_equal(bitcode_reverse_byte(0x0F), 0xF0, "0x0F reversed = 0xF0");
 }
 
+/* ---- packet filter logic tests ---- */
+
+/* Replicates the filter logic from main.cpp lora_check_rx() */
+static bool filter_matches(const uint8_t *data, size_t len,
+                           const uint8_t *filter, size_t filter_size)
+{
+    if (filter[0] == 0) return true; /* no filter = match all */
+    uint8_t count = filter[0];
+    uint8_t start = filter[1];
+    for (uint8_t i = 0; i < count && i + 2 < filter_size; i++) {
+        if (start + i >= len || data[start + i] != filter[2 + i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+ZTEST(json_parser, test_filter_match)
+{
+    /* Tianqi filter: [1, 0, 235] — match 1 byte at offset 0, value 235 (0xEB) */
+    uint8_t filter[] = {1, 0, 235};
+    uint8_t data_good[] = {235, 0x12, 0x34, 0x56}; /* 0xEB at offset 0 */
+    uint8_t data_bad[] = {234, 0x12, 0x34, 0x56};  /* 0xEA at offset 0 */
+
+    zassert_true(filter_matches(data_good, 4, filter, 3), "should match");
+    zassert_false(filter_matches(data_bad, 4, filter, 3), "should not match");
+}
+
+ZTEST(json_parser, test_filter_multi_byte)
+{
+    /* RS52 filter: [4, 0, 82, 83, 53, 50] — "RS52" at offset 0 */
+    uint8_t filter[] = {4, 0, 82, 83, 53, 50};
+    uint8_t data_good[] = {'R', 'S', '5', '2', 0x00, 0x01};
+    uint8_t data_bad[] = {'R', 'S', '5', '3', 0x00, 0x01};
+
+    zassert_true(filter_matches(data_good, 6, filter, 6), "RS52 should match");
+    zassert_false(filter_matches(data_bad, 6, filter, 6), "RS53 should not match");
+}
+
+ZTEST(json_parser, test_filter_no_filter)
+{
+    uint8_t filter[] = {0, 0, 0};
+    uint8_t data[] = {0xFF, 0xFE};
+    zassert_true(filter_matches(data, 2, filter, 3), "no filter = accept all");
+}
+
+ZTEST(json_parser, test_filter_packet_too_short)
+{
+    /* Filter wants byte at offset 5, but packet is only 3 bytes */
+    uint8_t filter[] = {1, 5, 0xAA};
+    uint8_t data[] = {0x01, 0x02, 0x03};
+    zassert_false(filter_matches(data, 3, filter, 3), "short packet should not match");
+}
+
+/* ---- software CRC tests ---- */
+
+/* CRC-16/CCITT-FALSE: poly=0x1021, init=0xFFFF, refin=false, refout=false, xorout=0 */
+static uint16_t crc16_ccitt(const uint8_t *data, size_t len)
+{
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= (uint16_t)data[i] << 8;
+        for (int j = 0; j < 8; j++) {
+            crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1;
+        }
+    }
+    return crc;
+}
+
+ZTEST(json_parser, test_sw_crc_ccitt_known)
+{
+    /* "123456789" has CRC-16/CCITT-FALSE = 0x29B1 */
+    const uint8_t data[] = "123456789";
+    uint16_t crc = crc16_ccitt(data, 9);
+    zassert_equal(crc, 0x29B1, "CRC-16/CCITT of '123456789' should be 0x29B1, got 0x%04X", crc);
+}
+
+ZTEST(json_parser, test_sw_crc_empty)
+{
+    uint16_t crc = crc16_ccitt(NULL, 0);
+    zassert_equal(crc, 0xFFFF, "CRC of empty data should be init value 0xFFFF");
+}
+
+ZTEST(json_parser, test_sw_crc_single_byte)
+{
+    const uint8_t data[] = {0x00};
+    uint16_t crc = crc16_ccitt(data, 1);
+    /* CRC-16/CCITT-FALSE of 0x00: init=0xFFFF, process one zero byte */
+    zassert_equal(crc, 0xE1F0, "CRC of 0x00 should be 0xE1F0, got 0x%04X", crc);
+}
+
+/* ---- real satellite packet tests ---- */
+
+ZTEST(json_parser, test_real_tianqi39_filter_match)
+{
+    /* Real Tianqi-39 packet from tinygs.com/packet/019d8e04-70be-745a-8446-68cf79c00272
+     * 100 bytes, received by fitzsimons_org_GS ESP32 station.
+     * Filter: [1, 0, 235] — match first byte == 0xEB */
+    uint8_t data[] = {0xEB, 0xF2, 0x68, 0x0F, 0x95, 0x3F, 0x73, 0x27, 0x40};
+    uint8_t filter[] = {1, 0, 235};
+    zassert_true(filter_matches(data, 9, filter, 3), "Tianqi-39 packet should pass filter");
+}
+
+ZTEST(json_parser, test_real_tianqi39_filter_reject_noise)
+{
+    /* Noise packet from our CRC error logs — starts with 0xB9, not 0xEB.
+     * Tianqi filter should reject this. */
+    uint8_t data[] = {0xB9, 0xFD, 0xBC, 0x39, 0xB0, 0x98, 0xBD, 0xE3,
+                      0x36, 0xF2, 0x96, 0x2F, 0x4D, 0x9A, 0x34, 0x68};
+    uint8_t filter[] = {1, 0, 235};
+    zassert_false(filter_matches(data, 16, filter, 3),
+                  "noise packet (0xB9) should be rejected by Tianqi filter (wants 0xEB)");
+}
+
+ZTEST(json_parser, test_real_rs52_filter_match)
+{
+    /* RS52 satellites use filter [4, 0, 82, 83, 53, 50] = "RS52" at offset 0 */
+    uint8_t data[] = {'R', 'S', '5', '2', 'S', 'V', 0x01, 0x02};
+    uint8_t filter[] = {4, 0, 82, 83, 53, 50};
+    zassert_true(filter_matches(data, 8, filter, 6), "RS52SV packet should pass RS52 filter");
+}
+
+/* TODO: Add tests with real satellite packet captures once we receive clean packets.
+ * The hex dump diagnostic logging will provide test vectors for:
+ * - Tianqi packet decode (LoRa, implicit header, filter match)
+ * - FSK satellite packet decode (once assigned)
+ * - AX.25 frame decode with real NRZ-S data */
+
 ZTEST_SUITE(json_parser, NULL, NULL, NULL, NULL, NULL);
