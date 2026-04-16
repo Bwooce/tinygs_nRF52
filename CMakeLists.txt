@@ -38,6 +38,7 @@ target_sources(app PRIVATE
     src/tinygs_config.cpp
     src/tinygs_display.cpp
     src/font8x16.c
+    src/bitcode.c
     lib/AioP13/src/AioP13.cpp
 )
 

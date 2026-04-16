@@ -43,6 +43,7 @@
 #include "tinygs_protocol.h"
 #include "tinygs_json.h"
 #include "tinygs_config.h"
+#include "bitcode.h"
 #if defined(CONFIG_IOT_LOG)
 #include <iot_log_zephyr.h>
 #endif
@@ -1671,6 +1672,39 @@ static bool lora_check_rx(void)
         LOG_INF("LoRa RX: %u bytes, RSSI=%.1f, SNR=%.1f, FreqErr=%.1f",
                 (unsigned)len, (double)rssi, (double)snr, (double)freq_err);
 
+        /* FSK framing post-processing (AX.25, PN9 descramble).
+         * Applied before filter and CRC checks, matching ESP32 order. */
+        bool frame_error = false;
+        if (strcmp(tinygs_radio.modem_mode, "FSK") == 0) {
+            if (tinygs_radio.fsk_framing == 1 || tinygs_radio.fsk_framing == 3) {
+                /* AX.25 NRZS decode (framing=1) or scrambled AX.25 (framing=3) */
+                /* Need FSK sync word from radio state for prepending */
+                uint8_t fsw_buf[8];
+                int fsw_len = tinygs_parse_fsw(
+                    tinygs_radio.modem_conf, strlen(tinygs_radio.modem_conf),
+                    fsw_buf, sizeof(fsw_buf));
+
+                uint8_t ax25[256];
+                size_t ax25_len = 0;
+                int rc = bitcode_nrz2ax25(data, len, fsw_buf, fsw_len,
+                                          tinygs_radio.fsk_framing,
+                                          ax25, &ax25_len, sizeof(ax25));
+                if (rc == 0 && ax25_len > 0) {
+                    memcpy(data, ax25, ax25_len);
+                    len = ax25_len;
+                    LOG_INF("AX.25 decoded: %u bytes", (unsigned)len);
+                } else {
+                    frame_error = true;
+                    LOG_WRN("AX.25 frame error");
+                }
+            } else if (tinygs_radio.fsk_framing == 2) {
+                /* PN9 descramble */
+                uint8_t descrambled[256];
+                bitcode_pn9(data, len, descrambled);
+                memcpy(data, descrambled, len);
+            }
+        }
+
         /* Apply packet filter if active.
          * filter[0] = count of bytes to match
          * filter[1] = byte position in packet to start matching
@@ -1743,7 +1777,11 @@ static bool lora_check_rx(void)
 
         /* Publish via MQTT if connected */
         if (app_state == STATE_MQTT_CONNECTED) {
-            if (sw_crc_fail) {
+            if (frame_error) {
+                static const uint8_t err_frame[] = "Frame error!";
+                tinygs_send_rx(&mqtt_client, cfg_mqtt_user, cfg_station,
+                               err_frame, sizeof(err_frame) - 1, rssi, snr, freq_err, true);
+            } else if (sw_crc_fail) {
                 static const uint8_t err_crc[] = "Error_CRC";
                 tinygs_send_rx(&mqtt_client, cfg_mqtt_user, cfg_station,
                                err_crc, sizeof(err_crc) - 1, rssi, snr, freq_err, true);
