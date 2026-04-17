@@ -927,7 +927,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                             LOG_INF("  beginFSK args: freq=%.4f br=%.3f fd=%.3f bw=%.1f pwr=%d pl=%d tcxo=%.1f",
                                     (double)(freq + tinygs_radio.freq_offset / 1e6f),
                                     (double)br, (double)fd, (double)bw,
-                                    msg.pwr, msg.pl, (double)LORA_TCXO_VOLTAGE);
+                                    msg.pwr, msg.pl, (double)1.8f /* TCXO — T114 has DIO3 TCXO at 1.8V (init_radio uses same) */);
                             int16_t rc = radio->beginFSK(
                                 freq + tinygs_radio.freq_offset / 1e6f,
                                 br,                      /* kbps */
@@ -935,7 +935,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                                 bw,                      /* kHz */
                                 msg.pwr,
                                 msg.pl,
-                                LORA_TCXO_VOLTAGE);
+                                1.8f /* TCXO — T114 has DIO3 TCXO at 1.8V (init_radio uses same) */);
                             if (rc != RADIOLIB_ERR_NONE) {
                                 LOG_ERR("beginFSK failed: %d", rc);
                             }
@@ -1108,7 +1108,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                             int16_t rc = radio->beginFSK(
                                 freq + tinygs_radio.freq_offset / 1e6f,
                                 vals[1] / 1000.0f, vals[2] / 1000.0f, vals[3],
-                                (int)vals[4], (int)vals[5], LORA_TCXO_VOLTAGE);
+                                (int)vals[4], (int)vals[5], 1.8f /* TCXO — T114 has DIO3 TCXO at 1.8V (init_radio uses same) */);
                             if (rc == RADIOLIB_ERR_NONE) {
                                 radio->setPacketReceivedAction(lora_rx_callback);
                                 radio->setCRC(0);
