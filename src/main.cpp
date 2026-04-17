@@ -921,6 +921,13 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                             /* Server's "br" and "fd" are already in kbps and
                              * kHz respectively (ESP32 station hands them to
                              * RadioLib unscaled). Don't divide. */
+                            /* TODO(debug): verbose log — confirms -707 is or isn't
+                             * caused by out-of-range params. Remove once FSK
+                             * RX works for a real sat. */
+                            LOG_INF("  beginFSK args: freq=%.4f br=%.3f fd=%.3f bw=%.1f pwr=%d pl=%d tcxo=%.1f",
+                                    (double)(freq + tinygs_radio.freq_offset / 1e6f),
+                                    (double)br, (double)fd, (double)bw,
+                                    msg.pwr, msg.pl, (double)LORA_TCXO_VOLTAGE);
                             int16_t rc = radio->beginFSK(
                                 freq + tinygs_radio.freq_offset / 1e6f,
                                 br,                      /* kbps */
