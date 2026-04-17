@@ -97,9 +97,22 @@ int tinygs_build_welcome(char *buf, size_t buflen,
 {
     const char *ip_str = "0.0.0.0";
 
-    /* Escape modem_conf for embedding as a JSON string value */
-    static char escaped_conf[384]; /* modem_conf(256) + escape overhead */
+    /* Escape modem_conf and boardTemplate for embedding as JSON string values.
+     * Worst-case escape doubles every char (every byte gets backslash-prefixed),
+     * so allocate 2x the source buffer. */
+    static char escaped_conf[1024];
     json_escape(escaped_conf, sizeof(escaped_conf), tinygs_radio.modem_conf);
+
+    /* Heltec T114 board template (nRF52 port pins: 32*port + pin).
+     * lTCXOV=1.8 signals to the server that we have a TCXO — may be what
+     * it uses to decide tle (active Doppler) vs tlx (passive). */
+    static const char board_template[] =
+        "{\"radio\":6,\"lTCXOV\":1.8,"
+        "\"lNSS\":24,\"lDIO1\":20,\"lBUSSY\":17,\"lRST\":25,"
+        "\"lMISO\":23,\"lMOSI\":22,\"lSCK\":19,"
+        "\"led\":35,\"pBut\":42}";
+    static char escaped_template[256];
+    json_escape(escaped_template, sizeof(escaped_template), board_template);
 
     return snprintf(buf, buflen,
         "{"
@@ -108,6 +121,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         "\"git_version\":\"%s\","
         "\"chip\":\"%s\","
         "\"board\":%d,"
+        "\"boardTemplate\":\"%s\","
         "\"mac\":\"%s\","
         "\"radioChip\":%d,"
         "\"Mem\":%u,"
@@ -125,6 +139,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         TINYGS_GIT_VERSION,
         TINYGS_CHIP,
         TINYGS_BOARD,
+        escaped_template,
         mac,
         TINYGS_RADIO_CHIP,
         (unsigned)free_mem,
