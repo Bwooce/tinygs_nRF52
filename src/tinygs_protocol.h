@@ -30,6 +30,10 @@
 #define TINYGS_GIT_VERSION    "tinygs_nRF52"
 #define TINYGS_CHIP           "nRF52840"  /* CONFIG_SOC gives "nRF52840_QIAA" — server rejects suffix */
 #define TINYGS_BOARD          255  /* Custom/unknown board ID */
+/* LORA_DTS_NODE must be defined BEFORE any macro that references it —
+ * earlier ordering put the TCXO check first, so it evaluated against an
+ * undefined node and silently fell through to 0.0V, breaking FSK begin. */
+#define LORA_DTS_NODE DT_ALIAS(lora0)
 /* TCXO voltage from DTS (dio3-tcxo-voltage property).
  * RadioLib needs the actual voltage as a float, not the register code. */
 #if DT_NODE_HAS_PROP(LORA_DTS_NODE, dio3_tcxo_voltage)
@@ -39,7 +43,6 @@
 #endif
 /* Radio chip ID for TinyGS welcome message (matches ESP32 Radio.h enum):
  * 0=SX1262, 1=SX1278, 2=SX1276, 5=SX1268, 6=SX1262, 10=LR1121 */
-#define LORA_DTS_NODE DT_ALIAS(lora0)
 #if DT_NODE_HAS_COMPAT(LORA_DTS_NODE, semtech_sx1262)
 #define TINYGS_RADIO_CHIP     6
 #elif DT_NODE_HAS_COMPAT(LORA_DTS_NODE, semtech_sx1268)
