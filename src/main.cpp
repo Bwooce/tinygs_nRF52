@@ -984,7 +984,8 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                                               &decoded_len,
                                               (const uint8_t *)b64_start,
                                               b64_end - b64_start) == 0
-                                && decoded_len == 34) {
+                                && decoded_len >= 34
+                                && decoded_len <= sizeof(tinygs_radio.tle)) {
                                 tinygs_radio.tle_valid = true;
                                 tinygs_radio.doppler_enabled = active_doppler;
                                 tinygs_radio.freq_doppler = 0.0f;

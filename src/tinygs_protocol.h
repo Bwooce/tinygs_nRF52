@@ -157,13 +157,13 @@ struct tinygs_radio_state {
     bool  sw_crc_refout;   /* CRC reflect output */
     char  satellite[32];   /* Current satellite name */
     uint32_t norad;        /* NORAD catalog number */
-    uint8_t tle[34];       /* Binary TLE from server (base64-decoded) */
+    uint8_t tle[64];       /* Binary TLE from server (base64-decoded); ESP32 uses same size */
     bool  tle_valid;       /* True if TLE data was received */
     bool  doppler_enabled; /* True if Doppler compensation is active */
     float doppler_tol;     /* Hz — hysteresis threshold (default 1200) */
     uint8_t filter[8];     /* Packet filter bytes from server */
     uint8_t filter_len;    /* Number of active filter bytes (0 = no filter) */
-    char  modem_conf[256]; /* Last begine/batch_conf JSON, echoed in welcome */
+    char  modem_conf[512]; /* Last begine/batch_conf JSON, echoed in welcome */
     /* Last packet metrics — for status payload */
     float last_rssi;
     float last_snr;
