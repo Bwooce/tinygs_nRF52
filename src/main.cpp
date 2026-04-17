@@ -59,14 +59,24 @@ static volatile bool lora_packet_received = false;
 static volatile uint32_t __noinit crash_reason;
 static volatile uint32_t __noinit crash_pc;
 static volatile uint32_t __noinit crash_lr;
+static volatile uint32_t __noinit crash_icsr;  /* SCB->ICSR — VECTACTIVE identifies the IRQ */
+static char __noinit crash_thread[16];
 
 extern "C" void k_sys_fatal_error_handler(unsigned int reason,
                                            const z_arch_esf_t *esf)
 {
     crash_reason = CRASH_MAGIC | (reason & 0xFFFF);
+    crash_icsr = *(volatile uint32_t *)0xE000ED04; /* SCB->ICSR */
     if (esf) {
         crash_pc = esf->basic.pc;
         crash_lr = esf->basic.lr;
+    }
+    const char *tname = k_thread_name_get(k_current_get());
+    if (tname) {
+        strncpy(crash_thread, tname, sizeof(crash_thread) - 1);
+        crash_thread[sizeof(crash_thread) - 1] = '\0';
+    } else {
+        crash_thread[0] = '\0';
     }
     sys_reboot(SYS_REBOOT_COLD);
 }
@@ -292,6 +302,15 @@ static void breathing_led_init(void)
         .step_mode    = NRF_PWM_STEP_AUTO,
     };
 
+    /* Hook PWM0 IRQ vector to nrfx dispatcher. Zephyr's nrfx integration
+     * doesn't auto-connect when we use nrfx_pwm directly, so the IRQ fires
+     * into a NULL vector → K_ERR_SPURIOUS_IRQ. IRQ_CONNECT doesn't build in
+     * C++, so register the vector dynamically at runtime. Requires
+     * CONFIG_DYNAMIC_INTERRUPTS=y. */
+    irq_connect_dynamic(PWM0_IRQn, 6,
+                        (void (*)(const void *))nrfx_pwm_0_irq_handler,
+                        NULL, 0);
+    irq_enable(PWM0_IRQn);
     if (nrfx_pwm_init(&pwm_led, &config, breath_pwm_handler, NULL) == NRFX_SUCCESS) {
         /* Play a single-step "off" sequence to ensure LED starts dark.
          * Without this, the PWM idle state may leave the pin floating. */
@@ -1982,9 +2001,29 @@ int main(void)
 
     /* Check for crash diagnostic from previous boot (retained RAM) */
     if ((crash_reason & 0xFFFF0000) == CRASH_MAGIC) {
-        LOG_ERR("*** PREVIOUS CRASH: reason=%u PC=0x%08x LR=0x%08x ***",
-                (unsigned)(crash_reason & 0xFFFF),
-                (unsigned)crash_pc, (unsigned)crash_lr);
+        uint32_t vectactive = crash_icsr & 0x1FF;
+        int irq_num = (int)vectactive - 16;
+        unsigned r = crash_reason & 0xFFFF;
+        static const char *reason_names[] = {
+            "CPU_EXCEPTION", "SPURIOUS_IRQ", "STACK_CHK_FAIL",
+            "KERNEL_OOPS",   "KERNEL_PANIC"
+        };
+        const char *reason_str = (r < ARRAY_SIZE(reason_names)) ? reason_names[r] : "ARCH_SPECIFIC";
+        /* nRF52840 external IRQ number → peripheral name */
+        static const char *irq_names[] = {
+            "POWER_CLOCK","RADIO","UARTE0","SPI0","SPI1","NFCT","GPIOTE","SAADC",
+            "TIMER0","TIMER1","TIMER2","RTC0","TEMP","RNG","ECB","CCM_AAR",
+            "WDT","RTC1","QDEC","COMP","SWI0","SWI1","SWI2","SWI3","SWI4","SWI5",
+            "TIMER3","TIMER4","PWM0","PDM","res30","res31","MWU","PWM1","PWM2",
+            "SPI2","RTC2","I2S","FPU","USBD","UARTE1","QSPI","CRYPTOCELL"
+        };
+        const char *irq_str = (irq_num >= 0 && irq_num < (int)ARRAY_SIZE(irq_names))
+                               ? irq_names[irq_num] : "?";
+        LOG_ERR("*** PREVIOUS CRASH: thread='%s' reason=%u(%s) PC=0x%08x LR=0x%08x ICSR=0x%08x IRQ=%d(%s) ***",
+                crash_thread[0] ? crash_thread : "?",
+                r, reason_str,
+                (unsigned)crash_pc, (unsigned)crash_lr,
+                (unsigned)crash_icsr, irq_num, irq_str);
         LOG_ERR("Use: arm-zephyr-eabi-addr2line -e build/zephyr/zephyr.elf 0x%08x",
                 (unsigned)crash_pc);
         crash_reason = 0; /* Clear so we don't report again */
