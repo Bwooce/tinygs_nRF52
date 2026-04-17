@@ -1843,6 +1843,16 @@ static bool lora_check_rx(void)
                     tinygs_radio.modem_conf, strlen(tinygs_radio.modem_conf),
                     fsw_buf, sizeof(fsw_buf));
 
+                /* TODO(tests): temporary diagnostic — logs the raw pre-decode
+                 * FSK bytes alongside the decoded AX.25 frame so we can build
+                 * a unit test for bitcode_nrz2ax25 the next time a real packet
+                 * lands (SAMSAT, Colibri-S, Norby-2 etc.). Remove once a
+                 * regression test exists in tests/json_parser. */
+                LOG_HEXDUMP_INF(data, (len < 64 ? len : 64),
+                                "AX.25 pre-decode raw FSK bytes");
+                LOG_INF("AX.25 pre-decode: len=%u, fsw_len=%d, framing=%d",
+                        (unsigned)len, fsw_len, tinygs_radio.fsk_framing);
+
                 uint8_t ax25[256];
                 size_t ax25_len = 0;
                 int rc = bitcode_nrz2ax25(data, len, fsw_buf, fsw_len,
