@@ -60,76 +60,82 @@ int tinygs_build_adv_prm(char *buf, size_t buflen, const char *adv_prm)
     return n;
 }
 
-/* --- begine/batch_conf parsing via Zephyr json descriptors --- */
-
-static const struct json_obj_descr begine_descr[] = {
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, mode, JSON_TOK_STRING),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, sat, JSON_TOK_STRING),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, tlx, JSON_TOK_STRING),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, tle, JSON_TOK_STRING),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, sf, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cr, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, sw, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, pwr, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cl, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, pl, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, gain, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM_NAMED(struct tinygs_begine_msg, "NORAD",
-                               NORAD, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, fldro, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, crc, JSON_TOK_TRUE),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, iIQ, JSON_TOK_TRUE),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, freq, JSON_TOK_FLOAT),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, bw, JSON_TOK_FLOAT),
-    /* FSK-specific fields */
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, br, JSON_TOK_FLOAT),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, ook, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, enc, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, ws, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, fr, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, len, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cSw, JSON_TOK_TRUE),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cB, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cI, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cP, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cF, JSON_TOK_NUMBER),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cRI, JSON_TOK_TRUE),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cRO, JSON_TOK_TRUE),
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, fd, JSON_TOK_FLOAT),
-};
+/* --- begine/batch_conf parsing via ArduinoJson ---
+ *
+ * Switched from Zephyr's descriptor-based json_obj_parse to ArduinoJson v7
+ * because descriptor-based parsing fails the entire message on any unknown
+ * key or type mismatch. Two production bugs today (missing 'tle' field,
+ * fractional 'br') came from exactly that class of fragility. ArduinoJson
+ * reads per-field lazily with defaults, so a surprise key at position N
+ * never invalidates fields 1..N-1. Matches the ESP32 station semantically.
+ *
+ * Cost (measured): +~5 KB flash, +~5 KB RAM (JsonDocument pool).
+ */
+#include <ArduinoJson.h>
+#include <errno.h>
 
 int64_t tinygs_parse_begine(char *json, size_t len, struct tinygs_begine_msg *msg)
 {
     memset(msg, 0, sizeof(*msg));
-    /* Set defaults for optional fields */
-    msg->sw = 18;
-    msg->pwr = 5;
-    msg->pl = 8;
-    msg->crc = true;
 
-    int64_t ret = json_obj_parse(json, len, begine_descr,
-                                  ARRAY_SIZE(begine_descr), msg);
-    if (ret < 0) {
-        LOG_ERR("begine JSON parse failed: %lld", ret);
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, json, len);
+    if (err) {
+        LOG_ERR("begine JSON parse failed: %s", err.c_str());
+        return -EINVAL;
     }
-    return ret;
+
+    /* Strings: `| (const char *)nullptr` is the ArduinoJson default-on-miss
+     * operator. Same for numeric types below. */
+    msg->mode    = doc["mode"]  | (const char *)NULL;
+    msg->sat     = doc["sat"]   | (const char *)NULL;
+    msg->tlx     = doc["tlx"]   | (const char *)NULL;
+    msg->tle     = doc["tle"]   | (const char *)NULL;
+
+    msg->sf      = doc["sf"]    | 0;
+    msg->cr      = doc["cr"]    | 0;
+    msg->sw      = doc["sw"]    | 18;      /* LoRa default sync word */
+    msg->pwr     = doc["pwr"]   | 5;
+    msg->cl      = doc["cl"]    | 0;
+    msg->pl      = doc["pl"]    | 8;
+    msg->gain    = doc["gain"]  | 0;
+    msg->NORAD   = doc["NORAD"] | 0;
+    msg->fldro   = doc["fldro"] | 0;
+    msg->crc     = doc["crc"]   | true;
+    msg->iIQ     = doc["iIQ"]   | false;
+
+    msg->freq    = doc["freq"]  | 0.0f;
+    msg->bw      = doc["bw"]    | 0.0f;
+
+    /* FSK-specific */
+    msg->br      = doc["br"]    | 0.0f;
+    msg->fd      = doc["fd"]    | 0.0f;
+    msg->ook     = doc["ook"]   | 0;
+    msg->enc     = doc["enc"]   | 0;
+    msg->ws      = doc["ws"]    | 0;
+    msg->fr      = doc["fr"]    | 0;
+    msg->len     = doc["len"]   | 0;
+
+    /* Software CRC block */
+    msg->cSw     = doc["cSw"]   | false;
+    msg->cB      = doc["cB"]    | 0;
+    msg->cI      = doc["cI"]    | 0;
+    msg->cP      = doc["cP"]    | 0;
+    msg->cF      = doc["cF"]    | 0;
+    msg->cRI     = doc["cRI"]   | false;
+    msg->cRO     = doc["cRO"]   | false;
+
+    /* Return a non-zero "parsed" indicator; ESP32-style callers treat >0 as
+     * success. We pick the field count as a rough approximation, but any
+     * positive number works for our existing callers. */
+    return doc.size();
 }
 
-float tinygs_begine_get_freq(const struct tinygs_begine_msg *msg)
-{
-    if (msg->freq.start && msg->freq.length > 0) {
-        return strtof(msg->freq.start, NULL);
-    }
-    return 0.0f;
-}
-
-float tinygs_begine_get_bw(const struct tinygs_begine_msg *msg)
-{
-    if (msg->bw.start && msg->bw.length > 0) {
-        return strtof(msg->bw.start, NULL);
-    }
-    return 0.0f;
-}
+/* Backwards-compat accessors — callers still use these. */
+float tinygs_begine_get_freq(const struct tinygs_begine_msg *msg) { return msg->freq; }
+float tinygs_begine_get_bw(const struct tinygs_begine_msg *msg)   { return msg->bw;   }
+float tinygs_begine_get_fd(const struct tinygs_begine_msg *msg)   { return msg->fd;   }
+float tinygs_begine_get_br(const struct tinygs_begine_msg *msg)   { return msg->br;   }
 
 int tinygs_parse_fsw(const char *json, size_t len, uint8_t *buf, size_t buf_size)
 {
@@ -147,22 +153,6 @@ int tinygs_parse_fsw(const char *json, size_t len, uint8_t *buf, size_t buf_size
         while (*p && *p != ',' && *p != ']') p++;
     }
     return count;
-}
-
-float tinygs_begine_get_fd(const struct tinygs_begine_msg *msg)
-{
-    if (msg->fd.start && msg->fd.length > 0) {
-        return strtof(msg->fd.start, NULL);
-    }
-    return 0.0f;
-}
-
-float tinygs_begine_get_br(const struct tinygs_begine_msg *msg)
-{
-    if (msg->br.start && msg->br.length > 0) {
-        return strtof(msg->br.start, NULL);
-    }
-    return 0.0f;
 }
 
 /* --- set_pos_prm parsing: [lat, lon, alt] or [alt] or [null] --- */

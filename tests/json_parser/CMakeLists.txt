@@ -8,4 +8,4 @@ target_sources(app PRIVATE
     ../../src/bitcode.c
 )
 
-target_include_directories(app PRIVATE ../../src)
+target_include_directories(app PRIVATE ../../src ../../lib/ArduinoJson/src)

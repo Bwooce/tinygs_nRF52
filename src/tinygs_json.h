@@ -46,24 +46,14 @@ struct tinygs_begine_msg {
     int32_t cF;       /* CRC final XOR */
     bool cRI;         /* CRC reflect input */
     bool cRO;         /* CRC reflect output */
-    /* Floats stored as raw tokens — call tinygs_begine_get_freq() etc. */
-    struct {
-        char *start;
-        size_t length;
-    } freq;
-    struct {
-        char *start;
-        size_t length;
-    } bw;
-    struct {
-        char *start;
-        size_t length;
-    } fd;  /* FSK frequency deviation */
-    struct {
-        char *start;
-        size_t length;
-    } br;  /* FSK bitrate — may be fractional (e.g. 1.2 kbps) */
-    /* filter, tlx, and fsw need special handling (arrays/base64) */
+    /* Floats parsed directly by ArduinoJson. Accessors below kept for the
+     * existing callers in main.cpp and tests. */
+    float freq;
+    float bw;
+    float fd;   /* FSK frequency deviation */
+    float br;   /* FSK bitrate — may be fractional (e.g. 1.2 kbps) */
+    /* filter and fsw still need special handling (heterogeneous arrays) —
+     * parsed separately via tinygs_parse_filter / tinygs_parse_fsw. */
 };
 
 /* Extract float values from parsed begine message */
