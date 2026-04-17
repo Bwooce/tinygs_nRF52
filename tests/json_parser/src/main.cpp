@@ -1186,6 +1186,28 @@ ZTEST(json_parser, test_begine_br_fractional)
     zassert_true(fabsf(br - 4.8f) < 0.01f, "br=4.8 (got %f)", (double)br);
 }
 
+ZTEST(json_parser, test_begine_rejects_oversized_payload)
+{
+    /* A caller could hand us a buffer much larger than any real begine —
+     * defend against unbounded heap growth in ArduinoJson. */
+    static char big[4096];
+    memset(big, 'A', sizeof(big) - 1);
+    big[sizeof(big) - 1] = '\0';
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(big, sizeof(big) - 1, &msg);
+    zassert_true(ret < 0, "oversized begine must be rejected (got %lld)", ret);
+}
+
+ZTEST(json_parser, test_begine_rejects_deep_nesting)
+{
+    /* Nested-array bomb — if the parser blindly recurses we could blow
+     * main-thread stack. NestingLimit(5) should reject this. */
+    char bomb[] = "{\"x\":[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]}";
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(bomb, strlen(bomb), &msg);
+    zassert_true(ret < 0, "deeply-nested payload must be rejected (got %lld)", ret);
+}
+
 ZTEST(json_parser, test_begine_colibri_fsk_with_tle)
 {
     /* Colibri-S — active-Doppler FSK sat observed on ESP32 station

@@ -74,15 +74,35 @@ int tinygs_build_adv_prm(char *buf, size_t buflen, const char *adv_prm)
 #include <ArduinoJson.h>
 #include <errno.h>
 
+/* Hard cap on begine payload: real messages are <300 B, give 4x headroom.
+ * ArduinoJson's default allocator uses malloc — without this, a malformed
+ * or malicious payload could grow the document unboundedly and exhaust the
+ * process heap. MQTT RX buffers are already smaller than this in practice. */
+#define TINYGS_BEGINE_MAX_LEN 2048
+
 int64_t tinygs_parse_begine(char *json, size_t len, struct tinygs_begine_msg *msg)
 {
     memset(msg, 0, sizeof(*msg));
 
+    if (len > TINYGS_BEGINE_MAX_LEN) {
+        LOG_ERR("begine payload too large: %zu > %d", len, TINYGS_BEGINE_MAX_LEN);
+        return -E2BIG;
+    }
+
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, json, len);
+    /* NestingLimit caps recursion depth so a pathological nested-array
+     * payload can't blow the stack. 5 is plenty for our flat schema. */
+    DeserializationError err = deserializeJson(doc, json, len,
+                                                DeserializationOption::NestingLimit(5));
     if (err) {
         LOG_ERR("begine JSON parse failed: %s", err.c_str());
         return -EINVAL;
+    }
+    if (doc.overflowed()) {
+        /* Document grew beyond internal limits — reject so we don't return
+         * partially-populated state. */
+        LOG_ERR("begine JSON document overflowed");
+        return -ENOMEM;
     }
 
     /* Strings: `| (const char *)nullptr` is the ArduinoJson default-on-miss
