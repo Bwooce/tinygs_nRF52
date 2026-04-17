@@ -24,6 +24,7 @@ static const struct json_obj_descr begine_descr[] = {
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, mode, JSON_TOK_STRING),
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, sat, JSON_TOK_STRING),
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, tlx, JSON_TOK_STRING),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, tle, JSON_TOK_STRING),
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, sf, JSON_TOK_NUMBER),
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, cr, JSON_TOK_NUMBER),
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, sw, JSON_TOK_NUMBER),
@@ -39,7 +40,7 @@ static const struct json_obj_descr begine_descr[] = {
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, freq, JSON_TOK_FLOAT),
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, bw, JSON_TOK_FLOAT),
     /* FSK-specific fields */
-    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, br, JSON_TOK_NUMBER),
+    JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, br, JSON_TOK_FLOAT),
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, ook, JSON_TOK_NUMBER),
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, enc, JSON_TOK_NUMBER),
     JSON_OBJ_DESCR_PRIM(struct tinygs_begine_msg, ws, JSON_TOK_NUMBER),
@@ -110,6 +111,14 @@ float tinygs_begine_get_fd(const struct tinygs_begine_msg *msg)
 {
     if (msg->fd.start && msg->fd.length > 0) {
         return strtof(msg->fd.start, NULL);
+    }
+    return 0.0f;
+}
+
+float tinygs_begine_get_br(const struct tinygs_begine_msg *msg)
+{
+    if (msg->br.start && msg->br.length > 0) {
+        return strtof(msg->br.start, NULL);
     }
     return 0.0f;
 }

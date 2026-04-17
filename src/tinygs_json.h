@@ -19,7 +19,8 @@ extern "C" {
 struct tinygs_begine_msg {
     const char *mode;
     const char *sat;
-    const char *tlx;
+    const char *tlx;   /* Passive TLE (map display only) */
+    const char *tle;   /* Active-Doppler TLE (server requests freq compensation) */
     int32_t sf;
     int32_t cr;
     int32_t sw;
@@ -32,7 +33,6 @@ struct tinygs_begine_msg {
     bool crc;
     bool iIQ;
     /* FSK-specific fields */
-    int32_t br;       /* Bitrate (bps) */
     int32_t ook;      /* OOK mode (255 = OOK enabled) */
     int32_t enc;      /* Encoding (0=none, 1=Manchester, 2=whitening) */
     int32_t ws;       /* Whitening seed */
@@ -59,11 +59,16 @@ struct tinygs_begine_msg {
         char *start;
         size_t length;
     } fd;  /* FSK frequency deviation */
+    struct {
+        char *start;
+        size_t length;
+    } br;  /* FSK bitrate — may be fractional (e.g. 1.2 kbps) */
     /* filter, tlx, and fsw need special handling (arrays/base64) */
 };
 
 /* Extract float values from parsed begine message */
 float tinygs_begine_get_fd(const struct tinygs_begine_msg *msg);
+float tinygs_begine_get_br(const struct tinygs_begine_msg *msg);
 
 /*
  * Parse a begine/batch_conf JSON payload into structured fields.

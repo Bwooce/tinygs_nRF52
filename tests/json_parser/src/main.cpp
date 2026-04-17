@@ -573,7 +573,8 @@ ZTEST(json_parser, test_begine_fsk_basic)
     zassert_true(ret > 0, "FSK parse should succeed");
     zassert_not_null(msg.mode, "mode should be parsed");
     zassert_true(strcmp(msg.mode, "FSK") == 0, "mode should be FSK");
-    zassert_equal(msg.br, 9600, "bitrate should be 9600");
+    float br = tinygs_begine_get_br(&msg);
+    zassert_true(fabsf(br - 9600.0f) < 0.1f, "bitrate should be 9600 (got %f)", (double)br);
     zassert_equal(msg.ook, 0, "ook should be 0");
     zassert_equal(msg.len, 64, "len should be 64");
     zassert_equal(msg.enc, 2, "enc should be 2");
@@ -1117,5 +1118,89 @@ ZTEST(json_parser, test_real_tianqi_explicit_header_begine)
  * - Tianqi packet decode (LoRa, implicit header, filter match)
  * - FSK satellite packet decode (once assigned)
  * - AX.25 frame decode with real NRZ-S data */
+
+/* ---- Active-Doppler (tle) begine parsing regression test ----
+ * When the server sends a begine with "tle":"..." (active Doppler) instead
+ * of "tlx":"...", the struct descriptor must contain an entry for tle or
+ * Zephyr's json_obj_parse returns -EINVAL on the unknown key. The device
+ * then fails to reconfigure the radio even though the TLE itself is valid.
+ * Captured in production 2026-04-17 from SAMSAT-IONOSPHERE assignment. */
+
+ZTEST(json_parser, test_begine_tle_key_accepted)
+{
+    /* Minimal: swap tlx for tle — should still parse cleanly. */
+    char json[] = "{\"mode\":\"LoRa\",\"freq\":400.265,\"bw\":125,\"sf\":10,"
+                  "\"cr\":5,\"sw\":18,\"pwr\":5,\"cl\":120,\"pl\":9,\"gain\":0,"
+                  "\"crc\":true,\"fldro\":1,\"sat\":\"Tianqi\",\"NORAD\":62366,"
+                  "\"tle\":\"GgBpBNnGdgAAAAoG3QYkgl0AABDjDwAAAAAAAAA=\"}";
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "tle-keyed begine must parse (got %lld)", ret);
+    zassert_not_null(msg.tle, "tle field should be populated");
+    zassert_true(strncmp(msg.tle, "GgBpBN", 6) == 0, "tle base64 should start with GgBpBN");
+    zassert_is_null(msg.tlx, "tlx field should be NULL when server sends tle");
+}
+
+ZTEST(json_parser, test_begine_samsat_fsk_with_tle)
+{
+    /* Real payload captured 2026-04-17 21:53:35 from SAMSAT-IONOSPHERE.
+     * Exposed TWO bugs at once:
+     *   1. Missing "tle" descriptor (server sends tle not tlx for active Doppler)
+     *   2. "br":1.2 — fractional bitrate, but br was int32_t
+     */
+    char json[] = "{\"mode\":\"FSK\",\"sat\":\"SAMSAT-IONOSPHERE\",\"NORAD\":61784,"
+                  "\"freq\":437.4,\"bw\":4.8,\"pl\":16,\"pwr\":5,\"br\":1.2,"
+                  "\"fd\":0.8,\"ook\":0,\"len\":254,\"enc\":0,\"fr\":1,"
+                  "\"cSw\":true,\"cB\":2,\"cI\":65535,\"cP\":4129,\"cF\":0,"
+                  "\"cRI\":true,\"cRO\":true,"
+                  "\"tle\":\"GgBpBNnGdgAAAAoG3QYkgl0AABDjDwAAAAAAAAA=\"}";
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "SAMSAT FSK+tle begine must parse (got %lld)", ret);
+    zassert_true(strcmp(msg.mode, "FSK") == 0, "mode=FSK");
+    zassert_true(strcmp(msg.sat, "SAMSAT-IONOSPHERE") == 0, "sat name");
+    zassert_equal(msg.NORAD, 61784, "NORAD");
+    zassert_equal(msg.len, 254, "FSK fixed length 254");
+    zassert_true(msg.cSw, "software CRC enabled");
+    zassert_equal(msg.cP, 4129, "CRC polynomial 0x1021");
+    zassert_true(msg.cRI, "CRC reflect input");
+    zassert_not_null(msg.tle, "active-Doppler tle key present");
+    zassert_is_null(msg.tlx, "tlx absent when tle is sent");
+    float br = tinygs_begine_get_br(&msg);
+    zassert_true(fabsf(br - 1.2f) < 0.01f, "br=1.2 (got %f)", (double)br);
+    float fd = tinygs_begine_get_fd(&msg);
+    zassert_true(fabsf(fd - 0.8f) < 0.01f, "fd=0.8 (got %f)", (double)fd);
+    float freq = tinygs_begine_get_freq(&msg);
+    zassert_true(fabsf(freq - 437.4f) < 0.01f, "freq=437.4 (got %f)", (double)freq);
+}
+
+ZTEST(json_parser, test_begine_br_fractional)
+{
+    /* Fractional-bitrate regression: "br":4.8 (kbps) in AX.25-ish FSK sats */
+    char json[] = "{\"mode\":\"FSK\",\"freq\":435.5,\"bw\":10,\"br\":4.8,"
+                  "\"fd\":5.0,\"pl\":4,\"pwr\":5,\"sat\":\"Frac-BR\"}";
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "fractional br must parse (got %lld)", ret);
+    float br = tinygs_begine_get_br(&msg);
+    zassert_true(fabsf(br - 4.8f) < 0.01f, "br=4.8 (got %f)", (double)br);
+}
+
+ZTEST(json_parser, test_begine_colibri_fsk_with_tle)
+{
+    /* Colibri-S — active-Doppler FSK sat observed on ESP32 station
+     * with 9 frequency retunes over ~8 min. */
+    char json[] = "{\"mode\":\"FSK\",\"sat\":\"Colibri-S\",\"NORAD\":52017,"
+                  "\"freq\":436.835,\"bw\":25,\"pl\":4,\"pwr\":5,"
+                  "\"br\":9.6,\"fd\":5.0,\"ook\":0,\"len\":0,\"enc\":0,\"fr\":0,"
+                  "\"tle\":\"GgBlB+7m9QAAACoF3JgWR68AAB2/EAAAAAAAAAA=\"}";
+    struct tinygs_begine_msg msg;
+    int64_t ret = tinygs_parse_begine(json, strlen(json), &msg);
+    zassert_true(ret > 0, "Colibri-S+tle begine must parse (got %lld)", ret);
+    zassert_not_null(msg.tle, "tle populated");
+    zassert_is_null(msg.tlx, "tlx absent");
+    float br = tinygs_begine_get_br(&msg);
+    zassert_true(fabsf(br - 9.6f) < 0.01f, "br=9.6");
+}
 
 ZTEST_SUITE(json_parser, NULL, NULL, NULL, NULL, NULL);

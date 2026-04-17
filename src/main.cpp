@@ -911,15 +911,16 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                             /* ---- FSK mode ---- */
                             float bw = tinygs_begine_get_bw(&msg);
                             float fd = tinygs_begine_get_fd(&msg);
+                            float br = tinygs_begine_get_br(&msg);
                             tinygs_radio.bw = bw;
-                            tinygs_radio.bitrate = (float)msg.br;
+                            tinygs_radio.bitrate = br;
                             tinygs_radio.freq_dev = fd;
                             tinygs_radio.ook = msg.ook;
                             tinygs_radio.fsk_len = msg.len;
 
                             int16_t rc = radio->beginFSK(
                                 freq + tinygs_radio.freq_offset / 1e6f,
-                                (float)msg.br / 1000.0f, /* kbps */
+                                br / 1000.0f,            /* kbps */
                                 fd / 1000.0f,            /* kHz */
                                 bw,                      /* kHz */
                                 msg.pwr,
