@@ -37,6 +37,7 @@
 extern char cfg_station[32];
 extern char cfg_mqtt_user[64];
 extern char cfg_mqtt_pass[64];
+extern char cfg_adv_prm[256];  /* Opaque advanced-params blob from set_adv_prm */
 
 int tinygs_config_init(void);
 

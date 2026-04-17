@@ -18,6 +18,48 @@
 
 LOG_MODULE_REGISTER(tinygs_json, LOG_LEVEL_INF);
 
+/**
+ * Escape a JSON string: replace " with \" and \ with \\.
+ * Returns bytes written (excluding null terminator). Always null-terminates
+ * if dstlen >= 1 (truncates if output would overflow).
+ */
+extern "C" size_t tinygs_json_escape(char *dst, size_t dstlen, const char *src)
+{
+    size_t n = 0;
+    while (*src) {
+        if (*src == '"' || *src == '\\') {
+            if (dst && n + 2 < dstlen) { dst[n] = '\\'; dst[n+1] = *src; }
+            n += 2;
+        } else {
+            if (dst && n + 1 < dstlen) { dst[n] = *src; }
+            n += 1;
+        }
+        src++;
+    }
+    if (dst && dstlen > 0) {
+        dst[(n < dstlen) ? n : dstlen - 1] = '\0';
+    }
+    return n;
+}
+
+int tinygs_build_adv_prm(char *buf, size_t buflen, const char *adv_prm)
+{
+    /* ESP32 format (MQTT_Client.cpp:536-539):
+     *   doc["adv_prm"].set(configManager.getAvancedConfig());
+     * We always publish {"adv_prm":"<escaped-stored-string>"} even if the
+     * stored blob is itself JSON — server treats it as an opaque string. */
+    if (!buf || buflen < 16) {
+        return -1;
+    }
+    static char esc[1024];
+    tinygs_json_escape(esc, sizeof(esc), adv_prm ? adv_prm : "");
+    int n = snprintf(buf, buflen, "{\"adv_prm\":\"%s\"}", esc);
+    if (n < 0 || (size_t)n >= buflen) {
+        return -1;
+    }
+    return n;
+}
+
 /* --- begine/batch_conf parsing via Zephyr json descriptors --- */
 
 static const struct json_obj_descr begine_descr[] = {

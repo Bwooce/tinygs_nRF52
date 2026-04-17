@@ -1203,4 +1203,66 @@ ZTEST(json_parser, test_begine_colibri_fsk_with_tle)
     zassert_true(fabsf(br - 9.6f) < 0.01f, "br=9.6");
 }
 
+/* ---- adv_prm command response payload ---- */
+
+ZTEST(json_parser, test_build_adv_prm_empty)
+{
+    char buf[128];
+    int n = tinygs_build_adv_prm(buf, sizeof(buf), "");
+    zassert_true(n > 0, "empty adv_prm should still serialize");
+    zassert_true(strcmp(buf, "{\"adv_prm\":\"\"}") == 0,
+                 "empty payload '%s'", buf);
+}
+
+ZTEST(json_parser, test_build_adv_prm_plain_value)
+{
+    char buf[128];
+    int n = tinygs_build_adv_prm(buf, sizeof(buf), "hello");
+    zassert_true(n > 0, "plain adv_prm must build");
+    zassert_true(strcmp(buf, "{\"adv_prm\":\"hello\"}") == 0, "got '%s'", buf);
+}
+
+ZTEST(json_parser, test_build_adv_prm_escapes_quotes)
+{
+    /* Server stores JSON blobs like {"k":"v"} — when we echo it back as the
+     * adv_prm string value, inner quotes must be escaped so the outer JSON
+     * stays valid. */
+    char buf[128];
+    int n = tinygs_build_adv_prm(buf, sizeof(buf), "{\"foo\":1}");
+    zassert_true(n > 0, "JSON-ish adv_prm must build");
+    zassert_true(strcmp(buf, "{\"adv_prm\":\"{\\\"foo\\\":1}\"}") == 0,
+                 "escaping wrong: '%s'", buf);
+}
+
+ZTEST(json_parser, test_build_adv_prm_escapes_backslash)
+{
+    char buf[128];
+    int n = tinygs_build_adv_prm(buf, sizeof(buf), "a\\b");
+    zassert_true(n > 0, "backslash adv_prm must build");
+    zassert_true(strcmp(buf, "{\"adv_prm\":\"a\\\\b\"}") == 0,
+                 "backslash escape wrong: '%s'", buf);
+}
+
+ZTEST(json_parser, test_build_adv_prm_truncation)
+{
+    /* Output buffer too small — must return -1, not overflow. */
+    char buf[8];
+    int n = tinygs_build_adv_prm(buf, sizeof(buf), "a_much_longer_string_than_eight_bytes");
+    zassert_equal(n, -1, "must report truncation (got %d)", n);
+}
+
+/* ---- tinygs_json_escape direct tests ---- */
+
+ZTEST(json_parser, test_json_escape_null_terminates_when_truncated)
+{
+    /* Regression: tinygs_json_escape used to skip the NUL when output exactly
+     * filled the buffer, which made snprintf "%s" of the result read
+     * out of bounds. Ensure termination for any non-zero dstlen. */
+    char out[4];
+    memset(out, 0xAA, sizeof(out));
+    size_t n = tinygs_json_escape(out, sizeof(out), "ABCDEFG");
+    zassert_true(n > 0, "should report required size");
+    zassert_equal(out[3], '\0', "buffer must end in NUL, got 0x%02x", out[3]);
+}
+
 ZTEST_SUITE(json_parser, NULL, NULL, NULL, NULL, NULL);

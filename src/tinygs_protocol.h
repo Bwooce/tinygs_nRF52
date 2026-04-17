@@ -195,4 +195,15 @@ int tinygs_send_status(struct mqtt_client *client,
 int tinygs_send_weblogin_request(struct mqtt_client *client,
                                   const char *user, const char *station);
 
+/*
+ * Respond to get_adv_prm. Publishes {"adv_prm":"<stored_blob>"} to
+ * tele/get_adv_prm.
+ */
+int tinygs_send_adv_prm(struct mqtt_client *client,
+                         const char *user, const char *station,
+                         const char *adv_prm);
+
+/* tinygs_build_adv_prm is declared in tinygs_json.h (pure JSON builder,
+ * usable from unit tests that don't link this file). */
+
 #endif /* TINYGS_PROTOCOL_H */

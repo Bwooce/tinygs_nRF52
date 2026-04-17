@@ -145,6 +145,15 @@ int json_extract_int_n(const char *json, const char *key, size_t key_len, int de
 
 float tinygs_parse_foff(const char *json, size_t len, float *tol, uint32_t *refresh_ms);
 
+/* Escape a string for embedding as a JSON string value. Always null-terminates
+ * the output (truncating if necessary). Returns the number of bytes the full
+ * escaped output would occupy (excluding NUL) regardless of dstlen. */
+size_t tinygs_json_escape(char *dst, size_t dstlen, const char *src);
+
+/* Build a `{"adv_prm":"<escaped>"}` payload in buf. Returns bytes written
+ * (excluding NUL), or -1 on truncation. */
+int tinygs_build_adv_prm(char *buf, size_t buflen, const char *adv_prm);
+
 #ifdef __cplusplus
 }
 #endif

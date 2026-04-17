@@ -13,6 +13,7 @@ LOG_MODULE_REGISTER(tinygs_config, LOG_LEVEL_INF);
 char cfg_station[32] = "tinygs_nrf52_poc";
 char cfg_mqtt_user[64] = MQTT_USERNAME;
 char cfg_mqtt_pass[64] = MQTT_PASSWORD;
+char cfg_adv_prm[256] = "";  /* set_adv_prm stores last server-pushed JSON here */
 /* tinygs_station_lat/lon/alt and tinygs_radio are in tinygs_protocol.cpp */
 
 /*

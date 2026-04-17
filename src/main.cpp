@@ -1212,6 +1212,32 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                                                  (const char *)rx_payload, ret);
             } else if (strcmp(cmnd, "frame") == 0) {
                 LOG_DBG("  → frame command without number, ignored");
+            } else if (strcmp(cmnd, "set_adv_prm") == 0) {
+                /* Server pushes an advanced-params JSON blob. Store it opaquely;
+                 * ESP32 parses it into ConfigManager but we have no concrete use
+                 * for the fields yet — keep the raw string so get_adv_prm can
+                 * echo it back. */
+                size_t n = (ret < (int)sizeof(cfg_adv_prm) - 1) ? (size_t)ret
+                                                                : sizeof(cfg_adv_prm) - 1;
+                memcpy(cfg_adv_prm, rx_payload, n);
+                cfg_adv_prm[n] = '\0';
+                LOG_INF("  → set_adv_prm stored (%zu bytes)", n);
+            } else if (strcmp(cmnd, "get_adv_prm") == 0) {
+                /* Server asks us to echo our current adv_prm. Publish to
+                 * tele/get_adv_prm (ESP32 uses the same topic for response). */
+                tinygs_send_adv_prm(client, cfg_mqtt_user, cfg_station, cfg_adv_prm);
+                LOG_INF("  → get_adv_prm responded");
+            } else if (strcmp(cmnd, "remoteTune") == 0) {
+                /* Newer server command — payload is a single number applied as
+                 * an additional freq offset in Hz. */
+                float off = strtof((char *)rx_payload, NULL);
+                tinygs_radio.freq_offset = off;
+                if (radio) {
+                    radio->setFrequency(tinygs_radio.frequency +
+                                        tinygs_radio.freq_offset / 1e6f);
+                    radio->startReceive();
+                }
+                LOG_INF("  → remoteTune offset=%.0f Hz", (double)off);
             } else {
                 LOG_INF("  → Unhandled command: %s", cmnd);
             }

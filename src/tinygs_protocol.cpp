@@ -1,4 +1,5 @@
 #include "tinygs_protocol.h"
+#include "tinygs_json.h"
 #include <RadioLib.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -41,26 +42,9 @@ static uint32_t get_free_heap(void)
 
 LOG_MODULE_REGISTER(tinygs_proto, LOG_LEVEL_INF);
 
-/**
- * Escape a JSON string: replace " with \" and \ with \\.
- * Returns bytes written (excluding null), or required size if dst is NULL.
- */
-static size_t json_escape(char *dst, size_t dstlen, const char *src)
-{
-    size_t n = 0;
-    while (*src) {
-        if (*src == '"' || *src == '\\') {
-            if (dst && n + 2 < dstlen) { dst[n] = '\\'; dst[n+1] = *src; }
-            n += 2;
-        } else {
-            if (dst && n + 1 < dstlen) { dst[n] = *src; }
-            n += 1;
-        }
-        src++;
-    }
-    if (dst && n < dstlen) dst[n] = '\0';
-    return n;
-}
+/* tinygs_json_escape + tinygs_build_adv_prm are in tinygs_json.cpp so they can be
+ * exercised by the unit-test harness (which doesn't link tinygs_protocol.cpp). */
+extern "C" size_t tinygs_json_escape(char *dst, size_t dstlen, const char *src);
 
 /* Station location — defaults to Sydney, updated by set_pos_prm */
 float tinygs_station_lat = -33.8688f;
@@ -101,7 +85,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
      * Worst-case escape doubles every char (every byte gets backslash-prefixed),
      * so allocate 2x the source buffer. */
     static char escaped_conf[1024];
-    json_escape(escaped_conf, sizeof(escaped_conf), tinygs_radio.modem_conf);
+    tinygs_json_escape(escaped_conf, sizeof(escaped_conf), tinygs_radio.modem_conf);
 
     /* Heltec T114 board template (nRF52 port pins: 32*port + pin).
      * lTCXOV=1.8 signals to the server that we have a TCXO — may be what
@@ -112,7 +96,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         "\"lMISO\":23,\"lMOSI\":22,\"lSCK\":19,"
         "\"led\":35,\"pBut\":42}";
     static char escaped_template[256];
-    json_escape(escaped_template, sizeof(escaped_template), board_template);
+    tinygs_json_escape(escaped_template, sizeof(escaped_template), board_template);
 
     return snprintf(buf, buflen,
         "{"
@@ -593,6 +577,33 @@ int tinygs_send_weblogin_request(struct mqtt_client *client,
     param.retain_flag = 0;
 
     LOG_INF("Requesting weblogin URL...");
+
+    return mqtt_publish(client, &param);
+}
+
+int tinygs_send_adv_prm(struct mqtt_client *client,
+                         const char *user, const char *station,
+                         const char *adv_prm)
+{
+    tinygs_build_topic(topic_buf, sizeof(topic_buf),
+                        TINYGS_TOPIC_TELE, "get_adv_prm",
+                        user, station);
+
+    int len = tinygs_build_adv_prm(payload_buf, sizeof(payload_buf), adv_prm);
+    if (len < 0) {
+        LOG_ERR("adv_prm payload too large");
+        return -ENOMEM;
+    }
+
+    struct mqtt_publish_param param;
+    param.message.topic.qos = MQTT_QOS_0_AT_MOST_ONCE;
+    param.message.topic.topic.utf8 = (uint8_t *)topic_buf;
+    param.message.topic.topic.size = strlen(topic_buf);
+    param.message.payload.data = (uint8_t *)payload_buf;
+    param.message.payload.len = len;
+    param.message_id = 0;
+    param.dup_flag = 0;
+    param.retain_flag = 0;
 
     return mqtt_publish(client, &param);
 }
