@@ -816,9 +816,28 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
             cmnd += 6;  /* skip "/cmnd/" */
             LOG_INF("  command: %s", cmnd);
 
-            if (strcmp(cmnd, "begine") == 0 ||
-                strcmp(cmnd, "batch_conf") == 0 ||
-                strcmp(cmnd, "beginp") == 0) {
+            if (strcmp(cmnd, "beginp") == 0) {
+                /* beginp = "persist as boot default, do NOT reconfigure live"
+                 * (matches ESP32 MQTT_Client.cpp:669 setModemStartup).
+                 * Server sends this to update the station's next-boot modem
+                 * config; a follow-up `begine` handles the live tune. */
+                size_t n = strlen((char *)rx_payload);
+                if (n >= sizeof(tinygs_radio.modem_conf)) {
+                    LOG_WRN("  → beginp: payload %zu > modem_conf buf, skipped", n);
+                } else {
+                    /* Validate we can at least deserialize it before saving —
+                     * no point persisting a blob we couldn't load. */
+                    struct tinygs_begine_msg tmp;
+                    int64_t rc = tinygs_parse_begine((char *)rx_payload, ret, &tmp);
+                    if (rc < 0 || !tmp.mode) {
+                        LOG_WRN("  → beginp: invalid config, not persisting");
+                    } else {
+                        tinygs_config_save_modem_conf((char *)rx_payload);
+                        LOG_INF("  → beginp: modem_conf persisted (%zu bytes)", n);
+                    }
+                }
+            } else if (strcmp(cmnd, "begine") == 0 ||
+                strcmp(cmnd, "batch_conf") == 0) {
                 if (radio != nullptr) {
                     /* Disable RX interrupt before reconfiguring radio.
                      * Prevents race where a packet received on the old config
@@ -1851,6 +1870,85 @@ static void init_radio(void)
 }
 
 /*
+ * Apply the modem config persisted by the last beginp. Called after
+ * init_radio() — overrides the hardcoded defaults when NVS has a saved
+ * blob. Subset of the full begine handler: applies the core radio
+ * settings (mode/freq/bw/sf/cr/sw/pl/iIQ for LoRa; freq/br/fd/bw/pl/sync
+ * for FSK). The server will send a fresh `begine` on next connect which
+ * will fully reconfigure including filter + TLE, so we don't duplicate
+ * that logic here.
+ */
+static void apply_saved_modem_conf(void)
+{
+    if (!radio) return;
+    char *conf = tinygs_radio.modem_conf;
+    if (!conf || conf[0] == '\0' || strcmp(conf, "{}") == 0) {
+        LOG_INF("No saved modem_conf — using defaults");
+        return;
+    }
+
+    /* tinygs_parse_begine modifies the buffer in place (strtok-style) — we
+     * only want to inspect what we saved, not mangle it. Parse a copy. */
+    static char scratch[sizeof(tinygs_radio.modem_conf)];
+    size_t n = strlen(conf);
+    memcpy(scratch, conf, n + 1);
+
+    struct tinygs_begine_msg msg;
+    int64_t rc = tinygs_parse_begine(scratch, n, &msg);
+    if (rc < 0 || !msg.mode) {
+        LOG_WRN("Saved modem_conf unparsable — using defaults");
+        return;
+    }
+
+    bool is_fsk = (strcmp(msg.mode, "FSK") == 0);
+    float freq = tinygs_begine_get_freq(&msg);
+    float bw   = tinygs_begine_get_bw(&msg);
+    if (is_fsk) {
+        float br = tinygs_begine_get_br(&msg);
+        float fd = tinygs_begine_get_fd(&msg);
+        int16_t src = radio->beginFSK(freq, br, fd, bw,
+                                      msg.pwr, msg.pl, 1.8f);
+        if (src == RADIOLIB_ERR_NONE) {
+            tinygs_radio.frequency   = freq;
+            tinygs_radio.bw          = bw;
+            tinygs_radio.bitrate     = br;
+            tinygs_radio.freq_dev    = fd;
+            strncpy(tinygs_radio.modem_mode, "FSK",
+                    sizeof(tinygs_radio.modem_mode));
+            LOG_INF("Applied saved modem_conf: FSK %.4f MHz br=%.3f fd=%.3f bw=%.1f",
+                    (double)freq, (double)br, (double)fd, (double)bw);
+        } else {
+            LOG_WRN("Saved FSK config rejected (%d), using defaults", src);
+        }
+    } else {
+        int16_t src = radio->begin(freq, bw, msg.sf, msg.cr,
+                                   msg.sw, msg.pwr, msg.pl, 1.8f);
+        if (src == RADIOLIB_ERR_NONE) {
+            radio->invertIQ(msg.iIQ);
+            tinygs_radio.frequency = freq;
+            tinygs_radio.bw        = bw;
+            tinygs_radio.sf        = msg.sf;
+            tinygs_radio.cr        = msg.cr;
+            tinygs_radio.iIQ       = msg.iIQ;
+            strncpy(tinygs_radio.modem_mode, "LoRa",
+                    sizeof(tinygs_radio.modem_mode));
+            LOG_INF("Applied saved modem_conf: LoRa %.4f MHz SF%d CR%d BW%.1f",
+                    (double)freq, msg.sf, msg.cr, (double)bw);
+        } else {
+            LOG_WRN("Saved LoRa config rejected (%d), using defaults", src);
+        }
+    }
+    /* Satellite name + NORAD for welcome/status continuity */
+    if (msg.sat) {
+        strncpy(tinygs_radio.satellite, msg.sat,
+                sizeof(tinygs_radio.satellite) - 1);
+        tinygs_radio.satellite[sizeof(tinygs_radio.satellite) - 1] = '\0';
+    }
+    tinygs_radio.norad = (uint32_t)msg.NORAD;
+    radio->startReceive();
+}
+
+/*
  * Check for received LoRa packets and process them.
  * Called from the main loop. Returns true if a packet was processed.
  */
@@ -2175,6 +2273,7 @@ int main(void)
     led_init();
     breathing_led_init();
     init_radio();
+    apply_saved_modem_conf();
 
     int retry_count = 0;
     int mqtt_poll_fd_count = 0;
