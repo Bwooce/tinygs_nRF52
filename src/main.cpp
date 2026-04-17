@@ -921,9 +921,11 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                             /* Server's "br" and "fd" are already in kbps and
                              * kHz respectively (ESP32 station hands them to
                              * RadioLib unscaled). Don't divide. */
-                            /* TODO(debug): verbose log — confirms -707 is or isn't
-                             * caused by out-of-range params. Remove once FSK
-                             * RX works for a real sat. */
+                            /* TODO(debug): verbose log — confirms -707 / unit
+                             * regressions if they recur. Keep while we're
+                             * still hitting new FSK sat configs for the
+                             * first time. Remove once we've seen a week
+                             * of clean FSK inits and a real RX. */
                             LOG_INF("  beginFSK args: freq=%.4f br=%.3f fd=%.3f bw=%.1f pwr=%d pl=%d tcxo=%.1f",
                                     (double)(freq + tinygs_radio.freq_offset / 1e6f),
                                     (double)br, (double)fd, (double)bw,
@@ -1229,7 +1231,26 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 tinygs_radio.filter_len = (fcount > 0) ? fcount : 0;
                 LOG_INF("  → filter: %d bytes", tinygs_radio.filter_len);
             } else if (strcmp(cmnd, "update") == 0) {
-                LOG_INF("  → OTA update not supported (UF2 bootloader)");
+                /* Server pushes a URL pointing at a new firmware image.
+                 * On our hardware there is no network-OTA path: the
+                 * Adafruit UF2 bootloader requires a physical USB mass-
+                 * storage copy of a .uf2 file. We log the URL so the
+                 * operator can fetch and flash it manually. A future
+                 * MCUboot-based variant could fetch via CoAP over Thread
+                 * and stage into slot1; that's a hardware change, not a
+                 * code change in this firmware. */
+                if (ret > 0) {
+                    /* Payload is not guaranteed NUL-terminated — copy to bounded buf */
+                    char url[128];
+                    size_t n = ((size_t)ret < sizeof(url) - 1) ? (size_t)ret
+                                                              : sizeof(url) - 1;
+                    memcpy(url, rx_payload, n);
+                    url[n] = '\0';
+                    LOG_INF("  → update URL: %s", url);
+                    LOG_INF("  → (UF2 bootloader: fetch + drag-and-drop to HT-n5262 to apply)");
+                } else {
+                    LOG_INF("  → update: (empty payload)");
+                }
             } else if (strcmp(cmnd, "weblogin") == 0) {
                 LOG_INF("  *** TinyGS Web Login URL: %s", (char *)rx_payload);
                 LOG_INF("  *** Open this URL to configure auto-tune and other settings");
