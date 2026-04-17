@@ -298,6 +298,24 @@ float tinygs_parse_foff(const char *json, size_t len, float *tol, uint32_t *refr
     return strtof(json, NULL);
 }
 
+uint32_t tinygs_parse_sleep(const char *json, size_t len)
+{
+    /* Accept "60", "[60]", or "[60, pin]" — ESP32 uses the bracket form
+     * but some server variants drop the brackets for a single number. */
+    if (!json || len == 0) return 0;
+    const char *p = json;
+    /* Skip leading whitespace + optional '[' */
+    while (p < json + len && (*p == ' ' || *p == '\t' || *p == '\n')) p++;
+    if (p < json + len && *p == '[') p++;
+    while (p < json + len && (*p == ' ' || *p == '\t')) p++;
+    if (p >= json + len) return 0;
+    char *end = NULL;
+    long v = strtol(p, &end, 10);
+    if (end == p || v <= 0) return 0;   /* no number, or non-positive */
+    if (v > 86400) return 86400;        /* clamp to 1 day — sanity */
+    return (uint32_t)v;
+}
+
 int tinygs_parse_filter(const char *json, size_t len, uint8_t *buf, size_t buf_size)
 {
     const char *p = (const char *)memchr(json, '[', len);

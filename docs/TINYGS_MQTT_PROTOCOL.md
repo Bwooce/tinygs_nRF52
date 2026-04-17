@@ -227,15 +227,15 @@ Fields and their exact types as serialized by ESP32 ArduinoJson:
 | cr | number | uint8_t | 5 | Coding rate (LoRa only) |
 | bw | number | float | 250.0 | Bandwidth kHz (LoRa only) |
 | iIQ | **boolean** | bool | false | Inverted IQ (LoRa only) |
-| bitrate | number | float | 9600.0 | Bitrate (FSK only) |
-| freqdev | number | float | 5000.0 | Freq deviation (FSK only) |
-| rxBw | number | float | 25000.0 | RX bandwidth (FSK only) |
+| bitrate | number | float | 9.6 | Bitrate in **kbps** (FSK only). Echoed from begine `br` — same units. |
+| freqdev | number | float | 5.0 | Freq deviation in **kHz** (FSK only). Echoed from begine `fd`. |
+| rxBw | number | float | 25.0 | RX bandwidth in **kHz** (FSK only). Echoed from begine `bw`. |
 | data_raw | string | char* | "AQID..." | Base64 raw bits (FSK only) |
 | rssi | number | float | -120.5 | Packet RSSI |
 | snr | number | float | -5.25 | Packet SNR |
 | frequency_error | number | float | 1234.5 | Hz |
-| unix_GS_time | number | time_t | 1700000000 | Unix epoch at reception (NOT uptime — must be SNTP-synced) |
-| usec_time | number | int64_t | 123456 | Microsecond timestamp |
+| unix_GS_time | number | time_t | 1700000000 | Unix epoch seconds at reception (NOT uptime — must be SNTP-synced) |
+| usec_time | number | int64_t | 1700000000123456 | **Microseconds since Unix epoch**, NOT uptime microseconds. The server uses this sub-second timestamp to look up the satellite's TLE position at reception; a bogus value puts the sat on the opposite side of Earth and the website shows a ~10 000 km "record distance". |
 | crc_error | **boolean** | bool | false/true | CRC check result — true for CRC error packets |
 | data | string | char* | "base64..." | Base64 encoded packet. For CRC errors: base64("Error_CRC") |
 | NORAD | number | uint32_t | 46494 | NORAD catalog number |
@@ -277,12 +277,17 @@ The RX payload field set switches based on the `mode` field: LoRa packets includ
 ```json
 {
   "mode": "FSK",
-  "bitrate": 9600,
-  "freqdev": 5000,
-  "rxBw": 25000,
+  "bitrate": 9.6,
+  "freqdev": 5.0,
+  "rxBw": 25.0,
   "data_raw": "base64_raw_bits"
 }
 ```
+
+All three numeric FSK fields are in **k-units** (kbps / kHz / kHz) in both
+directions — `begine`'s `br`/`fd`/`bw` come in that way and are echoed
+back unchanged. Fractional values are common (`br: 1.2` for narrow-band
+AX.25 sats, `fd: 0.8`, `bw: 4.8`).
 
 ### 3.4 Status (`stat/status`)
 
@@ -316,8 +321,18 @@ The `begine` (and `batch_conf`) command carries radio configuration. Key fields:
 | sat | string | "Tianqi" | Satellite name |
 | NORAD | int | 57795 | NORAD catalog number |
 | filter | int[] | [1,0,235] | Packet filter bytes (optional) |
-| **tle** | string | "base64..." | **Binary TLE, 34 bytes, base64-encoded — active Doppler compensation** |
-| **tlx** | string | "base64..." | **Binary TLE, 34 bytes, base64-encoded — passive (no Doppler)** |
+| br | **float** | 1.2 | FSK bitrate in **kbps**. Can be fractional (SAMSAT uses 1.2, Colibri-S uses 9.6). Passed unscaled to RadioLib's `beginFSK()`. |
+| fd | **float** | 0.8 | FSK freq deviation in **kHz**. Can be fractional (0.8 on narrow-band AX.25 sats). |
+| ook | int | 0 or 255 | FSK OOK mode (255 = OOK, 0 = GFSK). SX126x family has no OOK demodulator — stations on SX1262/SX1268 cannot correctly receive OOK sats. SX1276/1277/1278/1279 can. |
+| fsw | int[] | [254,132,219] | FSK sync-word bytes (1–8 bytes). Handled as a separate array — not part of the structured descriptor. |
+| len | int | 254 | For FSK: fixed packet length in bytes (set via `fixedPacketLengthMode`). For LoRa: see row above. |
+| enc | int | 0/1/2 | FSK encoding: 0=NRZ, 1=Manchester, 2=data whitening (with `ws` seed). |
+| ws | int | 256 | FSK whitening seed (only used when `enc==2`). |
+| fr | int | 0/1/2/3 | FSK framing: 0=raw, 1=AX.25 NRZS, 2=PN9 scrambling, 3=scrambled AX.25 (x17+x12 descrambler then NRZ-S then HDLC unstuffing). |
+| cSw | bool | true | Software-CRC enable. When true, radio HW CRC is disabled and the station validates CRC after decoding. |
+| cB, cI, cP, cF, cRI, cRO | int / bool | 2 / 65535 / 4129 / 0 / true / true | Software CRC params: byte count, init, polynomial, final-XOR, reflect input, reflect output. |
+| **tle** | string | "base64..." | **Binary TLE, 34 bytes, base64-encoded — active Doppler compensation.** |
+| **tlx** | string | "base64..." | **Binary TLE, 34 bytes, base64-encoded — passive (no Doppler).** |
 
 **TLE field naming:** The server sends TLE data under two different field names:
 - `"tle"` — active Doppler compensation. The station should decode the TLE and apply real-time Doppler frequency correction.
@@ -346,6 +361,33 @@ When a `begine` payload includes a `tlx` field:
 3. Compute satellite position/velocity using Plan13 propagator every 4 seconds
 4. Apply Doppler frequency correction with 1200 Hz hysteresis (only retune radio when delta exceeds threshold)
 5. Radio frequency = base_freq + freq_offset(foff) + doppler_correction
+
+### 3.8 Station Command Payload Formats
+
+These are the incoming commands the station must understand. All parse-side
+behavior is tested in `tests/json_parser/`.
+
+| Command | Payload | Action |
+|---------|---------|--------|
+| `set_pos_prm` | `[lat, lon, alt]`, `[alt]`, or `[null]` | Overwrite station coordinates (all three → persist to NVS; single-element → altitude only; null → no-op, server has no stored position for us). |
+| `set_name` | `["MAC","new_name"]` | Rename station **only if MAC matches our 12-char client ID**. |
+| `foff` | `"1500.0"` or `[offset, tolerance, refresh_ms]` | Frequency offset in Hz. Array form also tunes the Doppler hysteresis threshold and update cadence (default 1200 Hz / 4000 ms). |
+| `filter` | `[count, offset, b0, b1, ...]` | Packet byte filter. `count` = number of bytes to match; `offset` = start byte in packet; `b0..bN` = expected bytes. CRC-error packets that don't match are silently dropped. |
+| `tx` | raw bytes | Transmit the payload on current radio config. Our station advertises `tx:false` so this isn't sent normally, but the handler is implemented defensively. |
+| `sleep` | `"60"` or `[60]` or `[60, pin]` | Deep sleep for N seconds. Station puts radio in `sleep()`, disconnects MQTT, blocks the main thread, and cold-reboots on wake. Optional `pin` (interrupt wakeup) is ignored — we only support timer wake. |
+| `siesta` | same as `sleep` | Shorter "light sleep". Our implementation treats it identically to `sleep`. |
+| `set_adv_prm` | JSON blob (opaque string) | Server pushes advanced radio parameters. Station stores verbatim in `cfg_adv_prm` for echo-back. |
+| `get_adv_prm` | any | Station publishes `{"adv_prm":"<stored>"}` to `tele/get_adv_prm`. |
+| `remoteTune` | bare number in Hz | Supplemental freq offset the server applies in addition to our TLE-computed Doppler. Stored in `freq_offset` and added to base frequency on next retune. Observed values so far: `0` (keep-alive). |
+| `reset` | any | Graceful MQTT disconnect then `sys_reboot()`. |
+| `status` | any | Station publishes a `stat/status` report with current modem config + last-packet metrics. |
+| `log` | string | Server log message — echoed to local log, no action. |
+| `weblogin` | URL string | One-time web-login URL for station configuration on tinygs.com. Logged so the user can click it. |
+| `update` | URL string | OTA update URL. Not supported on UF2-bootloader hardware (there's no network-OTA path into flash); payload is logged for awareness. |
+| `sat_pos_oled` | `[x, y]` | Satellite pixel position for the station's display (128×64 coords). Applied to the on-device world map. |
+| `frame/{num}` | byte blob | Remote display frame data for compositing custom OLED frames. |
+| `begin_lora` | `[freq, bw, sf, cr, sw, pwr, cl, pl, gain]` | Legacy array-format LoRa config. Same result as a `begine` with `mode:"LoRa"`. |
+| `begin_fsk` | `[freq, br, fd, rxBw, pwr, pl, ook, len]` | Legacy array-format FSK config. Same units as the JSON form (`br` kbps, `fd` kHz, `rxBw` kHz). |
 
 ## 4. Radio Configuration (ModemInfo)
 

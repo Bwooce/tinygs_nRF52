@@ -135,6 +135,11 @@ int json_extract_int_n(const char *json, const char *key, size_t key_len, int de
 
 float tinygs_parse_foff(const char *json, size_t len, float *tol, uint32_t *refresh_ms);
 
+/* Parse sleep/siesta payload: accepts a bare number "60", a JSON array "[60]",
+ * or "[60, pin]" (pin is ignored — we don't do external interrupt wakeup).
+ * Returns duration in seconds, or 0 on parse failure. */
+uint32_t tinygs_parse_sleep(const char *json, size_t len);
+
 /* Escape a string for embedding as a JSON string value. Always null-terminates
  * the output (truncating if necessary). Returns the number of bytes the full
  * escaped output would occupy (excluding NUL) regardless of dstlen. */

@@ -1175,11 +1175,40 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 k_msleep(2000);
                 sys_reboot(SYS_REBOOT_COLD);
             } else if (strcmp(cmnd, "tx") == 0) {
-                LOG_INF("  → TX not supported (tx=false)");
+                /* Payload is the raw bytes to transmit on the current radio
+                 * config. We advertise tx=false in welcome so the server
+                 * normally won't send this, but handle it properly if it
+                 * does arrive. Returning to RX after TX is best-effort. */
+                if (radio && ret > 0) {
+                    int16_t trc = radio->transmit((const uint8_t *)rx_payload, ret);
+                    radio->startReceive();
+                    LOG_INF("  → TX %zu bytes, rc=%d", (size_t)ret, trc);
+                } else {
+                    LOG_WRN("  → TX skipped (no radio or empty payload)");
+                }
             } else if (strcmp(cmnd, "log") == 0) {
                 LOG_INF("  → Server: %s", (char *)rx_payload);
             } else if (strcmp(cmnd, "sleep") == 0 || strcmp(cmnd, "siesta") == 0) {
-                LOG_INF("  → Sleep not implemented (Phase 4 power management)");
+                uint32_t secs = tinygs_parse_sleep((char *)rx_payload, ret);
+                if (secs == 0) {
+                    LOG_WRN("  → %s: invalid payload, ignoring", cmnd);
+                } else {
+                    LOG_INF("  → %s: %u seconds", cmnd, secs);
+                    /* Put radio in sleep first — dominant current draw */
+                    if (radio) radio->sleep();
+                    /* Disconnect MQTT so the broker drops us cleanly rather
+                     * than holding state through a missed keepalive. */
+                    mqtt_disconnect(client);
+                    k_msleep(200);
+                    /* Block the main thread — Zephyr's tick idle handler
+                     * lets the CPU enter low-power sleep. OpenThread will
+                     * still service MAC frames on its own thread. */
+                    k_sleep(K_SECONDS(secs));
+                    /* Reboot on wake — cleanest re-init of radio + network
+                     * (matches ESP32 deep-sleep-wake-then-reset behaviour). */
+                    LOG_INF("  → wake — rebooting");
+                    sys_reboot(SYS_REBOOT_COLD);
+                }
             } else if (strcmp(cmnd, "foff") == 0) {
                 float foff = tinygs_parse_foff((char *)rx_payload, ret,
                                                 &tinygs_radio.doppler_tol,

@@ -1283,14 +1283,84 @@ ZTEST(json_parser, test_build_adv_prm_truncation)
 
 ZTEST(json_parser, test_json_escape_null_terminates_when_truncated)
 {
-    /* Regression: tinygs_json_escape used to skip the NUL when output exactly
-     * filled the buffer, which made snprintf "%s" of the result read
-     * out of bounds. Ensure termination for any non-zero dstlen. */
     char out[4];
     memset(out, 0xAA, sizeof(out));
     size_t n = tinygs_json_escape(out, sizeof(out), "ABCDEFG");
     zassert_true(n > 0, "should report required size");
     zassert_equal(out[3], '\0', "buffer must end in NUL, got 0x%02x", out[3]);
+}
+
+ZTEST(json_parser, test_json_escape_empty_src)
+{
+    char out[16] = {0x55, 0x55, 0x55, 0x55};
+    size_t n = tinygs_json_escape(out, sizeof(out), "");
+    zassert_equal(n, 0, "empty src → 0 bytes required");
+    zassert_equal(out[0], '\0', "dst[0] must be NUL");
+}
+
+ZTEST(json_parser, test_json_escape_zero_dstlen)
+{
+    char out[4] = {(char)0xAA, (char)0xAA, (char)0xAA, (char)0xAA};
+    size_t n = tinygs_json_escape(out, 0, "hi");
+    zassert_equal(n, 2, "required 2 bytes for 'hi'");
+    zassert_equal(out[0], (char)0xAA, "dst not touched when dstlen=0");
+}
+
+ZTEST(json_parser, test_json_escape_preserves_control_chars)
+{
+    /* Only " and \ are escaped; everything else including control chars
+     * passes through. Matches ESP32 ArduinoJson default behavior. */
+    char out[16];
+    size_t n = tinygs_json_escape(out, sizeof(out), "a\tb\nc");
+    zassert_equal(n, 5, "5 bytes in, 5 out (no escaping)");
+    zassert_true(strcmp(out, "a\tb\nc") == 0, "got '%s'", out);
+}
+
+ZTEST(json_parser, test_json_escape_only_quotes)
+{
+    char out[16];
+    size_t n = tinygs_json_escape(out, sizeof(out), "\"\"\"");
+    zassert_equal(n, 6, "3 quotes -> 6 escaped bytes");
+    zassert_true(strcmp(out, "\\\"\\\"\\\"") == 0, "got '%s'", out);
+}
+
+/* ---- sleep/siesta payload parsing ---- */
+
+ZTEST(json_parser, test_parse_sleep_bare_number)
+{
+    const char s[] = "60";
+    zassert_equal(tinygs_parse_sleep(s, strlen(s)), 60u, "bare '60'");
+}
+
+ZTEST(json_parser, test_parse_sleep_bracketed_number)
+{
+    const char s[] = "[300]";
+    zassert_equal(tinygs_parse_sleep(s, strlen(s)), 300u, "'[300]'");
+}
+
+ZTEST(json_parser, test_parse_sleep_with_pin_arg)
+{
+    /* ESP32 accepts [seconds, interrupt_pin] — we ignore the pin. */
+    const char s[] = "[60, 99]";
+    zassert_equal(tinygs_parse_sleep(s, strlen(s)), 60u, "'[60, 99]'");
+}
+
+ZTEST(json_parser, test_parse_sleep_invalid)
+{
+    const char empty[] = "";
+    zassert_equal(tinygs_parse_sleep(empty, 0), 0u, "empty → 0");
+    const char bad[] = "xyz";
+    zassert_equal(tinygs_parse_sleep(bad, strlen(bad)), 0u, "garbage → 0");
+    const char zero[] = "0";
+    zassert_equal(tinygs_parse_sleep(zero, strlen(zero)), 0u, "zero → 0 (invalid)");
+    const char neg[] = "-5";
+    zassert_equal(tinygs_parse_sleep(neg, strlen(neg)), 0u, "negative → 0");
+}
+
+ZTEST(json_parser, test_parse_sleep_clamps_huge)
+{
+    const char s[] = "[999999]";
+    zassert_equal(tinygs_parse_sleep(s, strlen(s)), 86400u, "clamp to 86400s");
 }
 
 ZTEST_SUITE(json_parser, NULL, NULL, NULL, NULL, NULL);

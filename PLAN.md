@@ -166,23 +166,26 @@ All Phase 1 objectives proven:
 7.  **Commissioning Mode:** Extended wake window (15-30 min) for unprovisioned devices.
 8.  **[DONE] set_name persistence:** Saves to NVS, reboots to reconnect with new station name on all topics.
 9.  **[DONE] Weblogin:** Trigger via BOOT button press (rate-limited to 10s). Server responds on cmnd/weblogin with URL.
-10. **MQTT command implementation status (~21/23 implemented):**
-    - **Implemented:** begine, batch_conf, freq, sat, set_pos_prm, set_name (NVS+reboot), status, reset, tx (rejected), log, foff, filter, update (rejected), weblogin, sat_pos_oled, frame/{num}, begin_fsk (via begine FSK mode)
-    - **Stubs:** sleep/siesta (needs power mgmt)
-    - **Not implemented:** beginp (server always sends begine), begin_lora (begine handles), set_adv_prm/get_adv_prm (low priority)
-11. **[DONE] JSON parsing refactor:** Zephyr json.h (CONFIG_JSON_LIBRARY) for begine/set_name/filter parsing. Zero-allocation descriptor-based. snprintf output kept as-is.
-12. **[DONE] Ztest framework:** 36 unit tests on native_sim. Covers begine, set_pos, set_name, filter, foff parsing + output round-trips.
+10. **MQTT command implementation status (24/24 implemented, zero stubs):**
+    - **Implemented:** begine, batch_conf, beginp, begin_lora, begin_fsk, freq, sat, set_pos_prm, set_name (NVS+reboot), status, reset, tx (radio->transmit + RX resume), log, foff, filter, update (URL logged — no UF2 network-OTA path exists), weblogin, sat_pos_oled, frame/{num}, sleep, siesta, set_adv_prm (stored in cfg_adv_prm), get_adv_prm (publishes to tele/get_adv_prm), remoteTune (freq offset).
+    - **Hardware-limited:** OOK mode (`ook:255`) — SX126x family has no OOK demodulator; only SX127x stations can receive OOK. Our T114 is SX1262, so we log the begine but physically can't decode OOK signals.
+11. **[DONE] JSON parsing migrated to ArduinoJson.** Zephyr `json.h` descriptor-based parsing was too strict — a single unknown key or type mismatch returned `-EINVAL` and discarded the whole begine. Two production bugs today (`tle` key, fractional `br`) came from exactly that class of failure. Switch cost: +3.4 KB flash, 0 BSS. Parser is now bounded (2 KB max payload, NestingLimit(5), overflow check) so a hostile payload can't exhaust the heap. Still use `snprintf` for outbound payloads. set_pos_prm / set_name / filter / foff / fsw stay on lightweight hand-rolled parsers — forgiving by construction.
+12. **[DONE] Ztest framework:** 197 unit tests on native_sim. Covers begine (incl. SAMSAT/Colibri-S real payloads, tle key, fractional br, bounds), set_pos_prm, set_name, filter, foff, fsw, sleep, adv_prm payload build, tinygs_json_escape corner cases, PN9 descrambler, AX.25 header layout.
 13. **[DONE] Commissioning mode:** Detects unprovisioned device via `otDatasetIsCommissioned()`. Keeps display on 15 min, logs Joiner PSKd.
 14. **[DONE] Periodic status log:** Every 5 min: uptime, connection time, MQTT/LoRa RX counts, heap used/free/max, stack_free, vbat, satellite.
-15. **[TODO] TX support:** Implement `radio->transmit()` for `tx` MQTT command. Requires ham license + antenna.
+15. **[DONE] TX support:** `radio->transmit()` wired to the `tx` MQTT command, followed by `startReceive()` to resume. Our welcome advertises `tx:false` so the server doesn't schedule transmissions, but the handler is there if one arrives. Actual on-air use requires the operator's licensing + antenna.
 16. **[DONE] Power quick wins:** DCDC converter (board Kconfig), PM_DEVICE for SPI sleep states. 32kHz crystal reverted to RC (needs verification).
 17. **[DONE] DTS-driven hardware:** Radio type, chip name, GPIO pins, radioChip enum all derived from DTS overlay. Changing board only requires overlay edit.
 18. **[DONE] Crash investigation and stability fixes:**
     - **Server resets:** TinyGS server sends `cmnd/reset` when welcome fields change (chip name suffix, version number). Keep `version` and `chip` conservative.
     - **getRSSI crash:** `radio->getRSSI()` during active LoRa RX corrupts SX1262 SPI bus. ESP32 uses `WiFi.RSSI()` for ping, never radio RSSI. Fixed: use Thread parent RSSI for InstRSSI field.
     - **Watchdog timeout:** Zephyr MQTT library doesn't auto-disconnect on missed PINGRESPs (`unacked_ping` just increments). Fixed: feed watchdog on any MQTT RX, reduce keepalive from 600s to 300s.
-    - **Retained-RAM crash diagnostic:** `__noinit` variables survive warm reset, log PC/LR on next boot. RESETREAS fully decoded (PIN/DOG/SREQ/LOCKUP).
-    - **Stack usage:** Measured at 2368 bytes peak (4KB stack, 1728 free). 8KB overkill but safe margin.
+    - **Retained-RAM crash diagnostic:** `__noinit` variables survive warm reset, log PC/LR/ICSR (→ IRQ number/name) and faulting thread name on next boot. RESETREAS fully decoded (PIN/DOG/SREQ/LOCKUP). Reason code resolved to `CPU_EXCEPTION`/`SPURIOUS_IRQ`/`STACK_CHK_FAIL`/…
+    - **Stack usage:** 3824 B peak on main / 8 KB allocated (53% headroom). Log-processing thread bumped to 2 KB for text formatter scratch.
+    - **PWM0 spurious IRQ:** nrfx_pwm when used directly (not via Zephyr's pwm driver) does not auto-connect its IRQ. First breathing-LED sequence completion triggered a NULL-vector IRQ → `K_ERR_SPURIOUS_IRQ` → reboot loop. Fixed by `irq_connect_dynamic(PWM0_IRQn, 6, nrfx_pwm_0_irq_handler, …)` + `CONFIG_DYNAMIC_INTERRUPTS=y`.
+    - **TCXO define ordering:** `LORA_DTS_NODE` was referenced before its own `#define DT_ALIAS(lora0)` in `tinygs_protocol.h`. The `DT_NODE_HAS_PROP` check evaluated against an unset node and the TCXO macro silently fell to 0.0 V. `init_radio` hardcoded 1.8 so LoRa worked, but the FSK begin path passed the macro and the SX1262 rejected mode changes with -707. Fixed by reordering.
+    - **usec_time units:** Was uptime-microseconds; server uses it as Unix-epoch microseconds for TLE position lookup. Wrong value placed our station on the opposite side of Earth ("Record distance: 10 000 km" on the website). Now `get_utc_epoch_us()` returns `k_uptime_get() * 1000 + sntp_offset * 1_000_000`.
+    - **modem_conf buffer:** Widened 256 → 512 B and tle buffer 34 → 64 B to match ESP32 and survive future protocol extensions. NVS self-heal drops oversized entries left over from prior builds.
 19. **[TODO] SED mode + power gating:** Requires on-site testing (see Phase 4).
 
 ### Phase 4: Power Optimization & Commissioning
