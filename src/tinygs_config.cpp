@@ -56,6 +56,13 @@ static int tgs_settings_set(const char *name, size_t len,
         if (len < sizeof(tinygs_radio.modem_conf)) {
             read_cb(cb_arg, tinygs_radio.modem_conf, len);
             tinygs_radio.modem_conf[len] = '\0';
+        } else {
+            /* Entry bigger than our current buffer (leftover from a previous
+             * build with a larger modem_conf). Nuke it so the settings
+             * subsystem doesn't keep re-loading it every boot. */
+            LOG_WRN("modem entry too large (%zu >= %zu), deleting",
+                    len, sizeof(tinygs_radio.modem_conf));
+            settings_delete("tgs/modem");
         }
     } else if (!strcmp(name, "freq")) {
         float val;
