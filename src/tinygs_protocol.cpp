@@ -10,6 +10,7 @@
 
 extern int read_vbat_mv(void);
 extern int64_t get_utc_epoch(void);
+extern int64_t get_utc_epoch_us(void);
 /* Radio pointer type must match main.cpp's DTS-selected type */
 #define LORA_NODE DT_ALIAS(lora0)
 #if DT_NODE_HAS_COMPAT(LORA_NODE, semtech_sx1262)
@@ -325,7 +326,7 @@ int tinygs_send_rx(struct mqtt_client *client,
             tinygs_radio.sf, tinygs_radio.cr, (double)tinygs_radio.bw,
             (double)rssi, (double)snr, (double)freq_err,
             (unsigned)epoch,
-            (long long)(k_uptime_get() * 1000LL),
+            (long long)get_utc_epoch_us(),
             crc_error ? "true" : "false",
             b64_buf, (unsigned)tinygs_radio.norad,
             crc_error ? "true" : "false",
@@ -370,7 +371,7 @@ int tinygs_send_rx(struct mqtt_client *client,
             (double)tinygs_radio.bw,
             (double)rssi, (double)snr, (double)freq_err,
             (unsigned)epoch,
-            (long long)(k_uptime_get() * 1000LL),
+            (long long)get_utc_epoch_us(),
             crc_error ? "true" : "false",
             b64_buf, b64_buf, /* data and data_raw are the same for now */
             (unsigned)tinygs_radio.norad,

@@ -1557,6 +1557,14 @@ int64_t get_utc_epoch(void)
     return (int64_t)(k_uptime_get_32() / 1000) + sntp_epoch_offset;
 }
 
+/* Microseconds since Unix epoch — sub-second precision via k_uptime_get().
+ * Server uses this (not unix_GS_time) to position satellite via TLE. */
+int64_t get_utc_epoch_us(void)
+{
+    if (!time_synced) return 0;
+    return k_uptime_get() * 1000LL + sntp_epoch_offset * 1000000LL;
+}
+
 /* SNTP callback — called from OpenThread context */
 static void sntp_response_handler(void *aContext, uint64_t aTime, otError aResult)
 {
