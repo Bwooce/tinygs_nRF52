@@ -564,8 +564,14 @@ ZTEST(json_parser, test_filter_max_value)
 
 ZTEST(json_parser, test_begine_fsk_basic)
 {
-    char json[] = "{\"mode\":\"FSK\",\"freq\":401.7,\"bw\":9.6,\"br\":9600,"
-                  "\"fd\":5000,\"pl\":4,\"pwr\":5,\"ook\":0,\"len\":64,"
+    /* Server sends "br" in kbps and "fd" in kHz (both passed unscaled to
+     * RadioLib beginFSK). Older versions of this test used 9600 / 5000 —
+     * that was bps / Hz, which would be 9.6 Mbps and 5 MHz respectively
+     * once passed to beginFSK. ESP32 proves the intended units are kbps/kHz:
+     * MQTT_Client.cpp:762 sets m.bitrate = doc["br"] directly, and
+     * Radio.cpp:183 passes m.bitrate verbatim to beginFSK. */
+    char json[] = "{\"mode\":\"FSK\",\"freq\":401.7,\"bw\":9.6,\"br\":9.6,"
+                  "\"fd\":5.0,\"pl\":4,\"pwr\":5,\"ook\":0,\"len\":64,"
                   "\"enc\":2,\"ws\":256,\"sat\":\"TestFSK\",\"NORAD\":55555}";
 
     struct tinygs_begine_msg msg;
@@ -574,14 +580,14 @@ ZTEST(json_parser, test_begine_fsk_basic)
     zassert_not_null(msg.mode, "mode should be parsed");
     zassert_true(strcmp(msg.mode, "FSK") == 0, "mode should be FSK");
     float br = tinygs_begine_get_br(&msg);
-    zassert_true(fabsf(br - 9600.0f) < 0.1f, "bitrate should be 9600 (got %f)", (double)br);
+    zassert_true(fabsf(br - 9.6f) < 0.01f, "bitrate 9.6 kbps (got %f)", (double)br);
     zassert_equal(msg.ook, 0, "ook should be 0");
     zassert_equal(msg.len, 64, "len should be 64");
     zassert_equal(msg.enc, 2, "enc should be 2");
     zassert_equal(msg.ws, 256, "ws should be 256");
 
     float fd = tinygs_begine_get_fd(&msg);
-    zassert_true(fabsf(fd - 5000.0f) < 0.1f, "fd should be 5000");
+    zassert_true(fabsf(fd - 5.0f) < 0.01f, "fd 5.0 kHz (got %f)", (double)fd);
 }
 
 ZTEST(json_parser, test_begine_fsk_software_crc)

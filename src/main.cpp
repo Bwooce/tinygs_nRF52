@@ -918,10 +918,13 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                             tinygs_radio.ook = msg.ook;
                             tinygs_radio.fsk_len = msg.len;
 
+                            /* Server's "br" and "fd" are already in kbps and
+                             * kHz respectively (ESP32 station hands them to
+                             * RadioLib unscaled). Don't divide. */
                             int16_t rc = radio->beginFSK(
                                 freq + tinygs_radio.freq_offset / 1e6f,
-                                br / 1000.0f,            /* kbps */
-                                fd / 1000.0f,            /* kHz */
+                                br,                      /* kbps */
+                                fd,                      /* kHz */
                                 bw,                      /* kHz */
                                 msg.pwr,
                                 msg.pl,
