@@ -188,6 +188,16 @@ All Phase 1 objectives proven:
     - **modem_conf buffer:** Widened 256 → 512 B and tle buffer 34 → 64 B to match ESP32 and survive future protocol extensions. NVS self-heal drops oversized entries left over from prior builds.
 19. **[TODO] SED mode + power gating:** Requires on-site testing (see Phase 4).
 
+20. **Thread protocol feature audit (2026-04-18):** Investigated what Thread 1.2/1.3 features might improve reliability and power for our use case. Conclusions:
+    - **[DONE] MLR (Multicast Listener Registration)** — `CONFIG_OPENTHREAD_MLR=y`. Without it, iot_log multicast (ff05::e510) reaches us only via the BBR's default-flood policy, which loses coherence when the mesh link weakens. MLR makes the BBR hold an explicit forwarding entry for our device with periodic refresh. Directly addresses the "moved device outside, logs went quiet while MQTT kept working" failure mode.
+    - **Child Supervision** — already compiled in (`OPENTHREAD_CONFIG_CHILD_SUPERVISION_INTERVAL=190 s` default in OpenThread core). No Kconfig knob in this NCS version. Tune the interval via a custom `openthread-core-zephyr-config.h` if we ever need faster parent-loss detection.
+    - **SED (Sleepy End Device) — rejected.** Our architecture keeps MQTT keepalive pinned open with no main-loop sleeps, so switching MTD→SED doesn't change radio duty cycle. Reopen only if Phase 4 introduces MQTT connect/disconnect cycles that let the main loop park.
+    - **CSL (Coordinated Sampled Listening) — tied to SED.** Same verdict: useful only if SED is active.
+    - **Link Metrics — deferred.** Useful only if we have a consumer (e.g. prefer different parent, publish to tinygs). Without a plan, it's instrumentation without action.
+    - **DUA (Domain Unicast Address) — rejected.** DUA gives a stable globally-routable IPv6 but no transport — we'd still need an HTTP server + TLS + cert management to expose anything useful, duplicating tinygs.com's existing per-station dashboard.
+    - **Device web UI (like ESP32's IotWebConf) — rejected.** Estimated cost: +60–80 KB RAM steady-state, +40–50 KB flash, plus self-signed cert UX pain (the MQTT CA bundle in certs.h validates tinygs's *server* cert during client TLS — it can't be reused for server-side TLS; we'd need a per-device cert+key pair). At 165 KB RAM already used of 256 KB this is a large bite for a feature already delivered by tinygs.com.
+    - **Commissioner on device — rejected.** HA's OTBR is already the commissioner; a local one duplicates work without simplifying joining.
+
 ### Phase 4: Power Optimization & Commissioning
 Requires current measurement equipment and on-site testing.
 
