@@ -2374,6 +2374,20 @@ int main(void)
                     if (live_ret && live_ret != -EAGAIN) {
                         LOG_DBG("mqtt_live: %d", live_ret);
                     }
+                    /* Zephyr mqtt_client doesn't auto-disconnect on missed
+                     * PINGRESPs — it just increments unacked_ping forever.
+                     * Force a clean reconnect after 2 missed responses so
+                     * the server drops our stale session rather than
+                     * waiting for the 600 s watchdog (which we saw fire
+                     * 4× overnight from NAT64 idle hangs).
+                     * PubSubClient on ESP32 does this for free. */
+                    if (mqtt_client.unacked_ping >= 2) {
+                        LOG_WRN("MQTT: %d unacked PINGREQs — forcing reconnect",
+                                mqtt_client.unacked_ping);
+                        mqtt_disconnect(&mqtt_client);
+                        app_state = STATE_MQTT_CONNECT;
+                        break;
+                    }
                 }
 
                 /* Check for LoRa packet reception */
