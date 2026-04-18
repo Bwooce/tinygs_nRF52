@@ -61,6 +61,26 @@
  * Override keepalive via CONFIG_MQTT_KEEPALIVE in prj.conf. */
 #define TINYGS_PING_INTERVAL_S  (CONFIG_MQTT_KEEPALIVE - 30)
 
+/* Threshold of unanswered PINGREQs before we give up on the MQTT session
+ * and reconnect. 1 is normal jitter on a slow NAT64/Thread path; 2 means
+ * the other end is almost certainly gone. Zephyr's mqtt_client doesn't
+ * act on client->unacked_ping — we do it ourselves in the poll loop.
+ * PubSubClient on ESP32 uses a similar effective threshold. */
+#define TINYGS_MQTT_UNACKED_PING_MAX  2
+
+/* ArduinoJson JsonDocument guardrails for inbound begine payloads —
+ * real messages are ~300 B, this gives 4× headroom against a malformed
+ * or hostile payload exhausting the default malloc allocator.
+ * NestingLimit caps how deep deserializeJson will recurse (our schema
+ * is flat, 5 is plenty). */
+#define TINYGS_BEGINE_MAX_LEN          2048
+#define TINYGS_JSON_NESTING_LIMIT      5
+
+/* sleep/siesta clamp — we refuse any request longer than this. Matches
+ * common-sense upper bound; the server's own ESP32-path deep sleep
+ * accepts arbitrary seconds. */
+#define TINYGS_SLEEP_MAX_SECONDS       86400  /* 24h */
+
 /*
  * Build a topic string. Caller provides buffer.
  * Returns length written (excluding null terminator).

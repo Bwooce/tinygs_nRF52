@@ -7,6 +7,7 @@
 
 #include <zephyr/ztest.h>
 #include "tinygs_json.h"
+#include "tinygs_protocol.h"   /* TINYGS_SLEEP_MAX_SECONDS */
 #include <zephyr/sys/base64.h>
 #include <string.h>
 #include <stdlib.h>
@@ -1360,7 +1361,9 @@ ZTEST(json_parser, test_parse_sleep_invalid)
 ZTEST(json_parser, test_parse_sleep_clamps_huge)
 {
     const char s[] = "[999999]";
-    zassert_equal(tinygs_parse_sleep(s, strlen(s)), 86400u, "clamp to 86400s");
+    zassert_equal(tinygs_parse_sleep(s, strlen(s)),
+                  (uint32_t)TINYGS_SLEEP_MAX_SECONDS,
+                  "clamp to TINYGS_SLEEP_MAX_SECONDS");
 }
 
 ZTEST_SUITE(json_parser, NULL, NULL, NULL, NULL, NULL);

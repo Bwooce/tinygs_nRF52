@@ -235,6 +235,7 @@ static void led_init(void)
 /* -------------------------------------------------------------------------- */
 
 #include <nrfx_pwm.h>
+#include <nrfx_glue.h>   /* nrfx_isr — required for runtime IRQ binding */
 #include <hal/nrf_gpio.h>
 
 static nrfx_pwm_t pwm_led = NRFX_PWM_INSTANCE(0);
@@ -302,14 +303,24 @@ static void breathing_led_init(void)
         .step_mode    = NRF_PWM_STEP_AUTO,
     };
 
-    /* Hook PWM0 IRQ vector to nrfx dispatcher. Zephyr's nrfx integration
-     * doesn't auto-connect when we use nrfx_pwm directly, so the IRQ fires
-     * into a NULL vector → K_ERR_SPURIOUS_IRQ. IRQ_CONNECT doesn't build in
-     * C++, so register the vector dynamically at runtime. Requires
-     * CONFIG_DYNAMIC_INTERRUPTS=y. */
-    irq_connect_dynamic(PWM0_IRQn, 6,
-                        (void (*)(const void *))nrfx_pwm_0_irq_handler,
-                        NULL, 0);
+    /* Hook PWM0 IRQ vector to the nrfx dispatcher. Zephyr's nrfx
+     * integration doesn't auto-connect when we use nrfx_pwm directly,
+     * so the IRQ fires into a NULL vector → K_ERR_SPURIOUS_IRQ.
+     * IRQ_CONNECT doesn't build in C++, so register dynamically.
+     * Requires CONFIG_DYNAMIC_INTERRUPTS=y.
+     *
+     * Use `nrfx_isr` as the ISR trampoline with the nrfx handler passed
+     * as context — this is Zephyr's canonical pattern (see
+     * ncs/zephyr/modules/hal_nordic/nrfx/nrfx_glue.c). The previous
+     * direct-cast form only worked by accident of ARM calling
+     * convention (unused R0 arg) and would be fragile across nrfx
+     * versions. Priority matches nrfx's own default so the LED IRQ
+     * doesn't preempt higher-priority nrfx peripherals. */
+    irq_connect_dynamic(PWM0_IRQn,
+                        NRFX_PWM_DEFAULT_CONFIG_IRQ_PRIORITY,
+                        nrfx_isr,
+                        (const void *)nrfx_pwm_0_irq_handler,
+                        0);
     irq_enable(PWM0_IRQn);
     if (nrfx_pwm_init(&pwm_led, &config, breath_pwm_handler, NULL) == NRFX_SUCCESS) {
         /* Play a single-step "off" sequence to ensure LED starts dark.
@@ -2381,7 +2392,7 @@ int main(void)
                      * waiting for the 600 s watchdog (which we saw fire
                      * 4× overnight from NAT64 idle hangs).
                      * PubSubClient on ESP32 does this for free. */
-                    if (mqtt_client.unacked_ping >= 2) {
+                    if (mqtt_client.unacked_ping >= TINYGS_MQTT_UNACKED_PING_MAX) {
                         LOG_WRN("MQTT: %d unacked PINGREQs — forcing reconnect",
                                 mqtt_client.unacked_ping);
                         mqtt_disconnect(&mqtt_client);

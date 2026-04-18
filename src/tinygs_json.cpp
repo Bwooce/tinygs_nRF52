@@ -10,6 +10,7 @@
  */
 
 #include "tinygs_json.h"
+#include "tinygs_protocol.h"   /* TINYGS_BEGINE_MAX_LEN, TINYGS_JSON_NESTING_LIMIT, TINYGS_SLEEP_MAX_SECONDS */
 #include <zephyr/data/json.h>
 #include <zephyr/logging/log.h>
 #include <stdlib.h>
@@ -74,11 +75,8 @@ int tinygs_build_adv_prm(char *buf, size_t buflen, const char *adv_prm)
 #include <ArduinoJson.h>
 #include <errno.h>
 
-/* Hard cap on begine payload: real messages are <300 B, give 4x headroom.
- * ArduinoJson's default allocator uses malloc — without this, a malformed
- * or malicious payload could grow the document unboundedly and exhaust the
- * process heap. MQTT RX buffers are already smaller than this in practice. */
-#define TINYGS_BEGINE_MAX_LEN 2048
+/* TINYGS_BEGINE_MAX_LEN and TINYGS_JSON_NESTING_LIMIT are defined in
+ * tinygs_protocol.h alongside the rest of the MQTT tunables. */
 
 int64_t tinygs_parse_begine(char *json, size_t len, struct tinygs_begine_msg *msg)
 {
@@ -90,10 +88,8 @@ int64_t tinygs_parse_begine(char *json, size_t len, struct tinygs_begine_msg *ms
     }
 
     JsonDocument doc;
-    /* NestingLimit caps recursion depth so a pathological nested-array
-     * payload can't blow the stack. 5 is plenty for our flat schema. */
     DeserializationError err = deserializeJson(doc, json, len,
-                                                DeserializationOption::NestingLimit(5));
+        DeserializationOption::NestingLimit(TINYGS_JSON_NESTING_LIMIT));
     if (err) {
         LOG_ERR("begine JSON parse failed: %s", err.c_str());
         return -EINVAL;
@@ -311,8 +307,10 @@ uint32_t tinygs_parse_sleep(const char *json, size_t len)
     if (p >= json + len) return 0;
     char *end = NULL;
     long v = strtol(p, &end, 10);
-    if (end == p || v <= 0) return 0;   /* no number, or non-positive */
-    if (v > 86400) return 86400;        /* clamp to 1 day — sanity */
+    if (end == p || v <= 0) return 0;              /* no number / non-positive */
+    if (v > TINYGS_SLEEP_MAX_SECONDS) {
+        return TINYGS_SLEEP_MAX_SECONDS;            /* sanity clamp */
+    }
     return (uint32_t)v;
 }
 
