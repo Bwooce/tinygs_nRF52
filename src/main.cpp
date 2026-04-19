@@ -480,15 +480,31 @@ static void ot_state_changed_handler(otChangedFlags flags,
                                      void *user_data)
 {
     if (flags & OT_CHANGED_THREAD_ROLE) {
+        static otDeviceRole prev_role = OT_DEVICE_ROLE_DISABLED;
+        static int64_t detached_at_ms = 0;
         otDeviceRole role = otThreadGetDeviceRole(ot_context->instance);
-        LOG_INF("Thread role: %s", ot_role_str(role));
 
-        if (role == OT_DEVICE_ROLE_CHILD || role == OT_DEVICE_ROLE_ROUTER ||
-            role == OT_DEVICE_ROLE_LEADER) {
-            thread_attached = true;
+        bool was_attached = (prev_role == OT_DEVICE_ROLE_CHILD ||
+                             prev_role == OT_DEVICE_ROLE_ROUTER ||
+                             prev_role == OT_DEVICE_ROLE_LEADER);
+        bool now_attached = (role == OT_DEVICE_ROLE_CHILD ||
+                             role == OT_DEVICE_ROLE_ROUTER ||
+                             role == OT_DEVICE_ROLE_LEADER);
+
+        if (!was_attached && now_attached && detached_at_ms != 0) {
+            int32_t detached_s = (int32_t)((k_uptime_get() - detached_at_ms) / 1000);
+            LOG_WRN("Thread re-attached as %s after %ds detached",
+                    ot_role_str(role), detached_s);
+            detached_at_ms = 0;
+        } else if (was_attached && !now_attached) {
+            detached_at_ms = k_uptime_get();
+            LOG_WRN("Thread parent lost (role: %s)", ot_role_str(role));
         } else {
-            thread_attached = false;
+            LOG_INF("Thread role: %s", ot_role_str(role));
         }
+
+        thread_attached = now_attached;
+        prev_role = role;
     }
 }
 
