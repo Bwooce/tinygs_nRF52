@@ -712,6 +712,26 @@ static void init_openthread(void)
     openthread_api_mutex_unlock(ctx);
 }
 
+/* Build a NAT64-synthesised IPv6 peer from the mesh's favored NAT64
+ * prefix (read live from Thread netdata) and a caller-supplied IPv4
+ * literal. Returns true and fills *out on success; false if no NAT64
+ * route is present. Used by both the DNS and SNTP sync paths to avoid
+ * ULA→global egress, which OT BorderRouting ICMP-rejects. */
+static bool nat64_synth(otInstance *instance, const uint8_t ipv4[4],
+                        otIp6Address *out)
+{
+    otNetworkDataIterator it = OT_NETWORK_DATA_ITERATOR_INIT;
+    otExternalRouteConfig route;
+    while (otNetDataGetNextRoute(instance, &it, &route) == OT_ERROR_NONE) {
+        if (route.mNat64 && route.mPrefix.mLength == 96) {
+            *out = route.mPrefix.mPrefix;
+            memcpy(&out->mFields.m8[12], ipv4, 4);
+            return true;
+        }
+    }
+    return false;
+}
+
 /* -------------------------------------------------------------------------- */
 /* DNS Resolution via OpenThread DNS client (NAT64)                            */
 /* -------------------------------------------------------------------------- */
@@ -761,42 +781,17 @@ static int resolve_broker(void)
     k_sem_reset(&dns_sem);
     dns_result = -1;
 
-    /* Iterate the Thread network data's external routes to find the
-     * NAT64 prefix advertised by whichever peer BR is primary translator.
-     * otBorderRoutingGetFavoredNat64Prefix() is BR-only and not linked on
-     * an MTD build, but the prefix IS reachable via netdata which is
-     * fully available on MTDs. We synthesise a DNS server address =
-     * NAT64_prefix + 1.1.1.1 so every DNS query leaves the mesh via
-     * NAT64 and reaches Cloudflare as a normal IPv4 UDP query. Stays
-     * mesh-scoped on our side, no ULA→global egress issue. */
-    otIp6Prefix nat64_prefix;
-    memset(&nat64_prefix, 0, sizeof(nat64_prefix));
-    bool found = false;
-    otNetworkDataIterator it = OT_NETWORK_DATA_ITERATOR_INIT;
-    otExternalRouteConfig route;
+    otDnsQueryConfig config;
+    memset(&config, 0, sizeof(config));
+    static const uint8_t dns_v4[4] = TINYGS_DNS_SERVER_V4;
     openthread_api_mutex_lock(ctx);
-    while (otNetDataGetNextRoute(ctx->instance, &it, &route) == OT_ERROR_NONE) {
-        if (route.mNat64 && route.mPrefix.mLength == 96) {
-            nat64_prefix = route.mPrefix;
-            found = true;
-            break;
-        }
-    }
+    bool found = nat64_synth(ctx->instance, dns_v4, &config.mServerSockAddr.mAddress);
     openthread_api_mutex_unlock(ctx);
     if (!found) {
         LOG_ERR("No /96 NAT64 route in Thread netdata — mesh has no NAT64 translator?");
         return -1;
     }
-
-    otDnsQueryConfig config;
-    memset(&config, 0, sizeof(config));
-    config.mServerSockAddr.mAddress = nat64_prefix.mPrefix;
-    /* Append IPv4 1.1.1.1 into the last 4 bytes (RFC 6052 /96 synthesis) */
-    config.mServerSockAddr.mAddress.mFields.m8[12] = 1;
-    config.mServerSockAddr.mAddress.mFields.m8[13] = 1;
-    config.mServerSockAddr.mAddress.mFields.m8[14] = 1;
-    config.mServerSockAddr.mAddress.mFields.m8[15] = 1;
-    config.mServerSockAddr.mPort    = 53;
+    config.mServerSockAddr.mPort    = TINYGS_DNS_SERVER_PORT;
     config.mResponseTimeout         = 10000;
     config.mMaxTxAttempts           = 3;
     config.mRecursionFlag           = OT_DNS_FLAG_RECURSION_DESIRED;
@@ -1856,12 +1851,26 @@ static void sntp_sync(void)
     struct openthread_context *ot_ctx = openthread_get_default_context();
     if (!ot_ctx) return;
 
+    /* Same reasoning as resolve_broker(): native-IPv6 NTP servers are
+     * global-scope, and BR ULA→global forwarding gets ICMP-rejected
+     * in multi-BR setups. Synthesise the NTP target via the mesh's
+     * NAT64 prefix + IPv4 from TINYGS_SNTP_SERVER_V4. */
     otMessageInfo msgInfo;
     memset(&msgInfo, 0, sizeof(msgInfo));
+    static const uint8_t sntp_v4[4] = TINYGS_SNTP_SERVER_V4;
+    openthread_api_mutex_lock(ot_ctx);
+    bool found = nat64_synth(ot_ctx->instance, sntp_v4, &msgInfo.mPeerAddr);
+    openthread_api_mutex_unlock(ot_ctx);
+    if (!found) {
+        LOG_WRN("SNTP: no NAT64 prefix in netdata, skipping sync");
+        return;
+    }
+    msgInfo.mPeerPort = TINYGS_SNTP_SERVER_PORT;
 
-    /* Google NTP IPv6: 2001:4860:4806:8:: */
-    otIp6AddressFromString(OT_SNTP_DEFAULT_SERVER_IP, &msgInfo.mPeerAddr);
-    msgInfo.mPeerPort = OT_SNTP_DEFAULT_SERVER_PORT;
+    char sntp_str[OT_IP6_ADDRESS_STRING_SIZE];
+    otIp6AddressToString(&msgInfo.mPeerAddr, sntp_str, sizeof(sntp_str));
+    LOG_INF("SNTP: query to NAT64-synthesised [%s]:%u",
+            sntp_str, (unsigned)msgInfo.mPeerPort);
 
     otSntpQuery query;
     query.mMessageInfo = &msgInfo;

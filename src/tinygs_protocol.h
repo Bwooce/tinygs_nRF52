@@ -92,6 +92,24 @@ const char *errno_name(int err);
  * accepts arbitrary seconds. */
 #define TINYGS_SLEEP_MAX_SECONDS       86400  /* 24h */
 
+/* NAT64-synthesis targets for outbound UDP helpers (DNS + SNTP).
+ *
+ * ULA-source → global-IPv6-destination packets get ICMP-rejected by the
+ * OT BorderRouting module in multi-BR networks. So we route everything
+ * through the mesh's NAT64 prefix by synthesising the destination as
+ * <nat64_prefix_96> + <ipv4_32>. The actual NAT64 prefix comes from
+ * Thread netdata at runtime (changes when the BR re-elects primary);
+ * only the IPv4 peer needs to be stable.
+ *
+ * DNS_SERVER_V4 — Cloudflare 1.1.1.1 (IPv4-anycast, low latency, does
+ * not require DNS64 on its side because we query A records explicitly).
+ * SNTP_SERVER_V4 — time.nist.gov 129.6.15.28 (stable public NTP).
+ */
+#define TINYGS_DNS_SERVER_V4       { 1, 1, 1, 1 }
+#define TINYGS_DNS_SERVER_PORT     53
+#define TINYGS_SNTP_SERVER_V4      { 129, 6, 15, 28 }
+#define TINYGS_SNTP_SERVER_PORT    123
+
 /*
  * Build a topic string. Caller provides buffer.
  * Returns length written (excluding null terminator).
