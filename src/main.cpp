@@ -5,6 +5,7 @@
 #include <zephyr/net/socket.h>
 #include <zephyr/net/tls_credentials.h>
 #include <openthread/thread.h>
+#include <openthread/error.h>
 #include <openthread/ip6.h>
 #include <openthread/dataset.h>
 #include <openthread/dataset_ftd.h>
@@ -78,6 +79,52 @@ extern "C" const char *errno_name(int err)
     case 134: return "ENOTSUP";
     case 140: return "ECANCELED";
     default:  return "?";
+    }
+}
+
+/* RadioLib status/error codes (from lib/RadioLib/src/TypeDef.h). Covers
+ * only the codes we realistically see on SX1262 LoRa/FSK begin and RX
+ * paths — adding everything would be ~70 entries and most aren't
+ * reachable on this chip. */
+static const char *radio_err_name(int err)
+{
+    switch (err) {
+    case 0:    return "OK";
+    case -1:   return "UNKNOWN";
+    case -2:   return "CHIP_NOT_FOUND";
+    case -3:   return "MEMORY_ALLOCATION_FAILED";
+    case -4:   return "PACKET_TOO_LONG";
+    case -5:   return "TX_TIMEOUT";
+    case -6:   return "RX_TIMEOUT";
+    case -7:   return "CRC_MISMATCH";
+    case -8:   return "INVALID_BANDWIDTH";
+    case -9:   return "INVALID_SPREADING_FACTOR";
+    case -10:  return "INVALID_CODING_RATE";
+    case -12:  return "INVALID_FREQUENCY";
+    case -13:  return "INVALID_OUTPUT_POWER";
+    case -16:  return "SPI_WRITE_FAILED";
+    case -17:  return "INVALID_CURRENT_LIMIT";
+    case -18:  return "INVALID_PREAMBLE_LENGTH";
+    case -19:  return "INVALID_GAIN";
+    case -20:  return "WRONG_MODEM";
+    case -24:  return "LORA_HEADER_DAMAGED";
+    case -25:  return "UNSUPPORTED";
+    case -28:  return "NULL_POINTER";
+    case -30:  return "PACKET_TOO_SHORT";
+    case -101: return "INVALID_BIT_RATE";
+    case -102: return "INVALID_FREQUENCY_DEVIATION";
+    case -103: return "INVALID_BIT_RATE_BW_RATIO";
+    case -104: return "INVALID_RX_BANDWIDTH";
+    case -105: return "INVALID_SYNC_WORD";
+    case -106: return "INVALID_DATA_SHAPING";
+    case -107: return "INVALID_MODULATION";
+    case -701: return "INVALID_CRC_CONFIGURATION";
+    case -703: return "INVALID_TCXO_VOLTAGE";
+    case -704: return "INVALID_MODULATION_PARAMETERS";
+    case -705: return "SPI_CMD_TIMEOUT";
+    case -706: return "SPI_CMD_INVALID";
+    case -707: return "SPI_CMD_FAILED";
+    default:   return "?";
     }
 }
 
@@ -548,7 +595,8 @@ static void dump_ot_dataset(struct openthread_context *ctx)
     otOperationalDataset dataset;
     otError err = otDatasetGetActive(ctx->instance, &dataset);
     if (err != OT_ERROR_NONE) {
-        LOG_ERR("Failed to get active dataset: %d", (int)err);
+        LOG_ERR("Failed to get active dataset: %d (%s)",
+                (int)err, otThreadErrorToString(err));
         return;
     }
 
@@ -612,7 +660,7 @@ static void joiner_callback(otError error, void *context)
         otIp6SetEnabled(ctx->instance, true);
         otThreadSetEnabled(ctx->instance, true);
     } else {
-        LOG_ERR("Joiner failed: %d", (int)error);
+        LOG_ERR("Joiner failed: %d (%s)", (int)error, otThreadErrorToString(error));
     }
 }
 
@@ -652,7 +700,7 @@ static void init_openthread(void)
                             joiner_callback, NULL);
 
         if (err != OT_ERROR_NONE) {
-            LOG_ERR("otJoinerStart failed: %d", (int)err);
+            LOG_ERR("otJoinerStart failed: %d (%s)", (int)err, otThreadErrorToString(err));
         } else {
             LOG_INF("Joiner started, waiting for commissioner (PSKd: %s)...",
                     CONFIG_OPENTHREAD_JOINER_PSKD);
@@ -673,7 +721,7 @@ static volatile int dns_result = -1;
 static void dns_callback(otError aError, const otDnsAddressResponse *aResponse, void *aContext)
 {
     if (aError != OT_ERROR_NONE) {
-        LOG_ERR("OT DNS callback error: %d", (int)aError);
+        LOG_ERR("OT DNS callback error: %d (%s)", (int)aError, otThreadErrorToString(aError));
         dns_result = -1;
         k_sem_give(&dns_sem);
         return;
@@ -683,7 +731,7 @@ static void dns_callback(otError aError, const otDnsAddressResponse *aResponse, 
     uint32_t ttl;
     otError err = otDnsAddressResponseGetAddress(aResponse, 0, &addr, &ttl);
     if (err != OT_ERROR_NONE) {
-        LOG_ERR("OT DNS no address in response: %d", (int)err);
+        LOG_ERR("OT DNS no address in response: %d (%s)", (int)err, otThreadErrorToString(err));
         dns_result = -1;
         k_sem_give(&dns_sem);
         return;
@@ -754,7 +802,8 @@ static int resolve_broker(void)
     openthread_api_mutex_unlock(ctx);
 
     if (err != OT_ERROR_NONE) {
-        LOG_ERR("otDnsClientResolveAddress failed: %d", (int)err);
+        LOG_ERR("otDnsClientResolveAddress failed: %d (%s)",
+                (int)err, otThreadErrorToString(err));
         return -1;
     }
 
@@ -1022,7 +1071,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                                 msg.pl,
                                 LORA_TCXO_VOLTAGE);
                             if (rc != RADIOLIB_ERR_NONE) {
-                                LOG_ERR("beginFSK failed: %d", rc);
+                                LOG_ERR("beginFSK failed: %d (%s)", rc, radio_err_name(rc));
                             }
 
                             /* Re-register DIO1 interrupt (beginFSK resets it) */
@@ -1209,7 +1258,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                                 LOG_INF("  begin_fsk: %.4fMHz BR%.0f FD%.0f",
                                         (double)freq, (double)vals[1], (double)vals[2]);
                             } else {
-                                LOG_ERR("  begin_fsk failed: %d", rc);
+                                LOG_ERR("  begin_fsk failed: %d (%s)", rc, radio_err_name(rc));
                             }
                         }
                     }
@@ -1771,7 +1820,7 @@ static void sntp_response_handler(void *aContext, uint64_t aTime, otError aResul
         time_synced = true;
         LOG_INF("SNTP: synced, epoch=%llu", (unsigned long long)aTime);
     } else {
-        LOG_WRN("SNTP: failed (%d)", (int)aResult);
+        LOG_WRN("SNTP: failed (%d %s)", (int)aResult, otThreadErrorToString(aResult));
     }
 }
 
@@ -1800,7 +1849,7 @@ static void sntp_sync(void)
     openthread_api_mutex_unlock(ot_ctx);
 
     if (err != OT_ERROR_NONE) {
-        LOG_WRN("SNTP: query failed (%d)", (int)err);
+        LOG_WRN("SNTP: query failed (%d %s)", (int)err, otThreadErrorToString(err));
     }
 }
 
@@ -1920,7 +1969,7 @@ static void init_radio(void)
         LOG_INF("Radio: %s initialized (RadioLib)",
                 DT_NODE_FULL_NAME(DT_NODELABEL(sx1262)));
     } else {
-        LOG_ERR("Radio init failed: %d", state);
+        LOG_ERR("Radio init failed: %d (%s)", state, radio_err_name(state));
         return;
     }
 
@@ -1936,7 +1985,7 @@ static void init_radio(void)
                 (double)tinygs_radio.frequency, tinygs_radio.sf,
                 (double)tinygs_radio.bw);
     } else {
-        LOG_ERR("startReceive failed: %d", state);
+        LOG_ERR("startReceive failed: %d (%s)", state, radio_err_name(state));
     }
 }
 
@@ -2200,7 +2249,7 @@ static bool lora_check_rx(void)
                            err_crc, sizeof(err_crc) - 1, rssi, snr, freq_err, true);
         }
     } else {
-        LOG_ERR("LoRa readData failed: %d", state);
+        LOG_ERR("LoRa readData failed: %d (%s)", state, radio_err_name(state));
     }
 
     /* Restart reception, turn off RX flash */
