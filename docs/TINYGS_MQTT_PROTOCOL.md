@@ -331,14 +331,16 @@ The `begine` (and `batch_conf`) command carries radio configuration. Key fields:
 | fr | int | 0/1/2/3 | FSK framing: 0=raw, 1=AX.25 NRZS, 2=PN9 scrambling, 3=scrambled AX.25 (x17+x12 descrambler then NRZ-S then HDLC unstuffing). |
 | cSw | bool | true | Software-CRC enable. When true, radio HW CRC is disabled and the station validates CRC after decoding. |
 | cB, cI, cP, cF, cRI, cRO | int / bool | 2 / 65535 / 4129 / 0 / true / true | Software CRC params: byte count, init, polynomial, final-XOR, reflect input, reflect output. |
-| **tle** | string | "base64..." | **Binary TLE, 34 bytes, base64-encoded — active Doppler compensation.** |
-| **tlx** | string | "base64..." | **Binary TLE, 34 bytes, base64-encoded — passive (no Doppler).** |
+| **tle** | string | "base64..." | **Binary TLE, 34 bytes, base64-encoded — active Doppler compensation (FSK only).** |
+| **tlx** | string | "base64..." | **Binary TLE, 34 bytes, base64-encoded — position/map display only, no Doppler.** |
 
 **TLE field naming:** The server sends TLE data under two different field names:
-- `"tle"` — active Doppler compensation. The station should decode the TLE and apply real-time Doppler frequency correction.
-- `"tlx"` — passive TLE. The station stores the TLE for position display but does NOT apply Doppler correction.
+- `"tle"` — active Doppler compensation. The station should decode the TLE and apply real-time Doppler frequency correction. **Only sent for FSK satellites** — narrow-band FSK is sensitive to Doppler drift, so the server computes the correction.
+- `"tlx"` — passive TLE. The station stores the TLE for position display but does NOT apply Doppler correction. Sent for LoRa satellites and any FSK satellite the server doesn't need to track. LoRa's chirp-spread modulation tolerates Doppler within the channel bandwidth, so no correction is needed.
 
 Both are base64-encoded 34-byte binary representations of the satellite's two-line element set. The decoded bytes are fed to a Plan13 (P13) satellite propagator.
+
+**Source:** Confirmed by TinyGS maintainer Stefan/OE6ISP in the tinyGS Community Telegram (Technical problems topic, 2026-04-05): *"The doppler is only calculated for the fsk-birds, for lora it is 0 - not necessary to track."* The same discussion notes that `freqOffset` (the station-wide frequency calibration, often `-99.00`) is derived from reference satellites and matters only for FSK reception.
 
 ### 3.6 Critical Radio Configuration from begine
 
@@ -355,7 +357,9 @@ When applying a `begine` config, these settings are REQUIRED for packet receptio
 
 ### 3.7 Doppler Compensation
 
-When a `begine` payload includes a `tlx` field:
+Triggered only when a `begine` payload includes a `"tle"` field (active). A `"tlx"`
+payload stores the TLE for position-map display but does **not** drive Doppler —
+see §3.5 for the FSK-vs-LoRa rule. Steps when `tle` is present:
 1. Decode the 34-byte binary TLE from base64
 2. Sync time via SNTP (Google NTP IPv6: `2001:4860:4806:8::`)
 3. Compute satellite position/velocity using Plan13 propagator every 4 seconds
@@ -441,7 +445,7 @@ the station as offline:
 | mode | string `"LoRa"` | number `1` |
 | board | number `255` | string `"255"` |
 | modem_conf | JSON-escaped string `"{}"` | raw JSON object `{}` |
-| TLE field | `"tlx"` | `"tle"` (wrong field name) |
+| TLE field | `"tle"` (FSK, active Doppler) or `"tlx"` (LoRa/no-track, display only) — accept both | Treating either as an error |
 
 ## 9. Server-Initiated Resets
 
