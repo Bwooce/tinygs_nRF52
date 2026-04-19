@@ -1422,6 +1422,19 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 int frame_num = atoi(cmnd + 6);
                 tinygs_display_set_remote_frame(frame_num,
                                                  (const char *)rx_payload, ret);
+                /* Server pushes frame/0 in two stages for every RX'd packet:
+                 * first with sat="UNKNOWN", status="UNKNOWN" ("got your bytes,
+                 * haven't decoded yet"), then ~10s later sat="<real name>",
+                 * status="CONFIRMED" after decode + cross-reference with other
+                 * stations. If CONFIRMED never arrives the packet wasn't
+                 * decodable. Labeling the stage here makes it easy to spot
+                 * non-confirmed packets in the log. */
+                const char *stage = strstr((char *)rx_payload, "CONFIRMED")
+                                        ? "CONFIRMED"
+                                    : strstr((char *)rx_payload, "UNKNOWN")
+                                        ? "pending(UNKNOWN)"
+                                        : "unlabelled";
+                LOG_INF("  → frame/%d stage=%s", frame_num, stage);
             } else if (strcmp(cmnd, "frame") == 0) {
                 LOG_DBG("  → frame command without number, ignored");
             } else if (strcmp(cmnd, "set_adv_prm") == 0) {
