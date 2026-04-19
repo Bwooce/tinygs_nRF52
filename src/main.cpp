@@ -1794,29 +1794,33 @@ static Module *radio_mod = nullptr;
 /* SNTP Time Sync                                                              */
 /* -------------------------------------------------------------------------- */
 
-static int64_t sntp_epoch_offset = 0; /* seconds: real_epoch = uptime_s + offset */
+/* Offset in microseconds: real_epoch_us = k_uptime_get_us() + sntp_epoch_offset_us.
+ * Storing us (not s) removes the sub-second quantization at sync — matters for
+ * usec_time which feeds the TLE positioner (~7 km/s LEO velocity). Using the
+ * 64-bit k_uptime_get() (not the _32 variant) eliminates the 49.7-day rollover
+ * on uptime_s that previously made epoch jump backwards after ~50 days. */
+static int64_t sntp_epoch_offset_us = 0;
 static bool time_synced = false;
+
+int64_t get_utc_epoch_us(void)
+{
+    if (!time_synced) return 0;
+    return k_uptime_get() * 1000LL + sntp_epoch_offset_us;
+}
 
 int64_t get_utc_epoch(void)
 {
     if (!time_synced) return 0;
-    return (int64_t)(k_uptime_get_32() / 1000) + sntp_epoch_offset;
-}
-
-/* Microseconds since Unix epoch — sub-second precision via k_uptime_get().
- * Server uses this (not unix_GS_time) to position satellite via TLE. */
-int64_t get_utc_epoch_us(void)
-{
-    if (!time_synced) return 0;
-    return k_uptime_get() * 1000LL + sntp_epoch_offset * 1000000LL;
+    return get_utc_epoch_us() / 1000000LL;
 }
 
 /* SNTP callback — called from OpenThread context */
 static void sntp_response_handler(void *aContext, uint64_t aTime, otError aResult)
 {
     if (aResult == OT_ERROR_NONE) {
-        uint32_t uptime_s = k_uptime_get_32() / 1000;
-        sntp_epoch_offset = (int64_t)aTime - (int64_t)uptime_s;
+        int64_t uptime_us = k_uptime_get() * 1000LL;
+        int64_t aTime_us  = (int64_t)aTime * 1000000LL;
+        sntp_epoch_offset_us = aTime_us - uptime_us;
         time_synced = true;
         LOG_INF("SNTP: synced, epoch=%llu", (unsigned long long)aTime);
     } else {
