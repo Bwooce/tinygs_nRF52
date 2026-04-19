@@ -94,13 +94,6 @@
 #define P13_FTX 1
 
 
-static long fnday(int p_iy, int p_im, int p_id);
-static void fndate(int &p_iy, int &p_im, int &p_id, long p_idt);
-static double getdouble(const char *p_ccc, int p_ii0, int p_ii1);
-static long getlong(const char *p_ccc, int p_ii0, int p_ii1);
-static long getuint32_tinygs(const uint8_t *p_ccc, int p_ii0);
-static uint16_t getuint16_tinygs(const uint8_t *p_ccc, int p_ii0);
-static long     getuint24_tinygs(const uint8_t *p_ccc, int p_ii0);
 
 void latlon2xy(int &p_ix, int &l_iy, double p_dlat, double p_dlon, const int p_ciMapMaxX, const int p_ciMapMaxY);
 
