@@ -6,6 +6,7 @@
 #include <zephyr/net/tls_credentials.h>
 #include <openthread/thread.h>
 #include <openthread/error.h>
+#include <openthread/netdata.h>
 #include <openthread/ip6.h>
 #include <openthread/dataset.h>
 #include <openthread/dataset_ftd.h>
@@ -757,48 +758,66 @@ static int resolve_broker(void)
 {
     struct openthread_context *ctx = openthread_get_default_context();
 
-    LOG_INF("Resolving %s via OT DNS...", MQTT_BROKER_HOSTNAME);
-
     k_sem_reset(&dns_sem);
     dns_result = -1;
 
-    /*
-     * Resolve via nat64.net's public DNS64 resolver.
-     * Returns globally-routable AAAA addresses (e.g. 2a00:1098:2c::5:9fc3:4a17).
-     * No local NAT64 translator needed — nat64.net's infrastructure translates.
-     */
+    /* Iterate the Thread network data's external routes to find the
+     * NAT64 prefix advertised by whichever peer BR is primary translator.
+     * otBorderRoutingGetFavoredNat64Prefix() is BR-only and not linked on
+     * an MTD build, but the prefix IS reachable via netdata which is
+     * fully available on MTDs. We synthesise a DNS server address =
+     * NAT64_prefix + 1.1.1.1 so every DNS query leaves the mesh via
+     * NAT64 and reaches Cloudflare as a normal IPv4 UDP query. Stays
+     * mesh-scoped on our side, no ULA→global egress issue. */
+    otIp6Prefix nat64_prefix;
+    memset(&nat64_prefix, 0, sizeof(nat64_prefix));
+    bool found = false;
+    otNetworkDataIterator it = OT_NETWORK_DATA_ITERATOR_INIT;
+    otExternalRouteConfig route;
     openthread_api_mutex_lock(ctx);
+    while (otNetDataGetNextRoute(ctx->instance, &it, &route) == OT_ERROR_NONE) {
+        if (route.mNat64 && route.mPrefix.mLength == 96) {
+            nat64_prefix = route.mPrefix;
+            found = true;
+            break;
+        }
+    }
+    openthread_api_mutex_unlock(ctx);
+    if (!found) {
+        LOG_ERR("No /96 NAT64 route in Thread netdata — mesh has no NAT64 translator?");
+        return -1;
+    }
 
-    /* Configure OT DNS to use nat64.net's DNS64 resolver */
     otDnsQueryConfig config;
     memset(&config, 0, sizeof(config));
-
-    /* nat64.net DNS64: 2a00:1098:2c::1 port 53 */
-    otIp6Address dnsServer;
-    memset(&dnsServer, 0, sizeof(dnsServer));
-    dnsServer.mFields.m16[0] = htons(0x2a00);
-    dnsServer.mFields.m16[1] = htons(0x1098);
-    dnsServer.mFields.m16[2] = htons(0x002c);
-    /* m16[3..6] = 0 */
-    dnsServer.mFields.m16[7] = htons(0x0001);
-
-    config.mServerSockAddr.mAddress = dnsServer;
-    config.mServerSockAddr.mPort = 53;
-    config.mResponseTimeout = 10000; /* 10s — nat64.net is ~250ms away */
-    config.mMaxTxAttempts = 3;
-    config.mRecursionFlag = OT_DNS_FLAG_RECURSION_DESIRED;
-    config.mNat64Mode = OT_DNS_NAT64_ALLOW;
+    config.mServerSockAddr.mAddress = nat64_prefix.mPrefix;
+    /* Append IPv4 1.1.1.1 into the last 4 bytes (RFC 6052 /96 synthesis) */
+    config.mServerSockAddr.mAddress.mFields.m8[12] = 1;
+    config.mServerSockAddr.mAddress.mFields.m8[13] = 1;
+    config.mServerSockAddr.mAddress.mFields.m8[14] = 1;
+    config.mServerSockAddr.mAddress.mFields.m8[15] = 1;
+    config.mServerSockAddr.mPort    = 53;
+    config.mResponseTimeout         = 10000;
+    config.mMaxTxAttempts           = 3;
+    config.mRecursionFlag           = OT_DNS_FLAG_RECURSION_DESIRED;
+    config.mNat64Mode               = OT_DNS_NAT64_ALLOW;
 
     char dns_str[OT_IP6_ADDRESS_STRING_SIZE];
-    otIp6AddressToString(&dnsServer, dns_str, sizeof(dns_str));
-    LOG_INF("Resolving %s via nat64.net DNS64 [%s]:53 ...",
+    otIp6AddressToString(&config.mServerSockAddr.mAddress, dns_str, sizeof(dns_str));
+    LOG_INF("Resolving %s via NAT64-synthesised DNS [%s]:53",
             MQTT_BROKER_HOSTNAME, dns_str);
 
-    /* Query for AAAA — nat64.net DNS64 returns synthesized routable addresses */
-    otError err = otDnsClientResolveAddress(ctx->instance,
-                                            MQTT_BROKER_HOSTNAME,
-                                            dns_callback, NULL,
-                                            &config);
+    /* Query A record (IPv4) explicitly. mqtt.tinygs.com is IPv4-only,
+     * so AAAA queries return NotFound. otDnsClientResolveIp4Address
+     * queries A and — with mNat64Mode=ALLOW and a NAT64 prefix in
+     * netdata — synthesises an AAAA for the caller via OT's built-in
+     * NAT64 translation. We get back a NAT64-prefixed address we can
+     * connect to directly. */
+    openthread_api_mutex_lock(ctx);
+    otError err = otDnsClientResolveIp4Address(ctx->instance,
+                                               MQTT_BROKER_HOSTNAME,
+                                               dns_callback, NULL,
+                                               &config);
     openthread_api_mutex_unlock(ctx);
 
     if (err != OT_ERROR_NONE) {
