@@ -73,8 +73,10 @@ struct tinygs_radio_state tinygs_radio = {
 
 /* Shared buffers for topic and payload construction */
 static char topic_buf[128];
-/* Shared for ping/status/RX (welcome uses its own stack buffer). */
-static char payload_buf[1024];
+/* Shared for ping/status/RX (welcome uses its own stack buffer).
+ * Sized for the RX worst case: 255-byte radio packet → 340-char base64
+ * × 2 (data + data_raw) plus ~450 B JSON overhead ≈ 1.2 KB. */
+static char payload_buf[2048];
 
 int tinygs_build_welcome(char *buf, size_t buflen,
                           const char *mac, int vbat_mv, uint32_t free_mem,
