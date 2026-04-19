@@ -1808,33 +1808,31 @@ static Module *radio_mod = nullptr;
 /* SNTP Time Sync                                                              */
 /* -------------------------------------------------------------------------- */
 
-/* Offset in microseconds: real_epoch_us = k_uptime_get_us() + sntp_epoch_offset_us.
- * Storing us (not s) removes the sub-second quantization at sync — matters for
- * usec_time which feeds the TLE positioner (~7 km/s LEO velocity). Using the
- * 64-bit k_uptime_get() (not the _32 variant) eliminates the 49.7-day rollover
- * on uptime_s that previously made epoch jump backwards after ~50 days. */
-static int64_t sntp_epoch_offset_us = 0;
+/* Offset in milliseconds — same unit as k_uptime_get(), so the common
+ * case is one add. real_epoch_ms = k_uptime_get() + sntp_epoch_offset_ms.
+ * Scale to seconds or microseconds only at the point of use. SNTP's aTime
+ * is whole-second anyway, so storing in ms gives us all the precision we
+ * can claim; storing in µs would just pad zeros on the low end. */
+static int64_t sntp_epoch_offset_ms = 0;
 static bool time_synced = false;
 
 int64_t get_utc_epoch_us(void)
 {
     if (!time_synced) return 0;
-    return k_uptime_get() * 1000LL + sntp_epoch_offset_us;
+    return (k_uptime_get() + sntp_epoch_offset_ms) * 1000LL;
 }
 
 int64_t get_utc_epoch(void)
 {
     if (!time_synced) return 0;
-    return get_utc_epoch_us() / 1000000LL;
+    return (k_uptime_get() + sntp_epoch_offset_ms) / 1000LL;
 }
 
 /* SNTP callback — called from OpenThread context */
 static void sntp_response_handler(void *aContext, uint64_t aTime, otError aResult)
 {
     if (aResult == OT_ERROR_NONE) {
-        int64_t uptime_us = k_uptime_get() * 1000LL;
-        int64_t aTime_us  = (int64_t)aTime * 1000000LL;
-        sntp_epoch_offset_us = aTime_us - uptime_us;
+        sntp_epoch_offset_ms = (int64_t)aTime * 1000LL - k_uptime_get();
         time_synced = true;
         LOG_INF("SNTP: synced, epoch=%llu", (unsigned long long)aTime);
     } else {
