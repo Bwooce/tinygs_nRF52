@@ -798,11 +798,17 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
         watchdog_feed(); /* Any RX proves connection is alive */
         const struct mqtt_publish_param *pub = &evt->param.publish;
         static char rx_topic[128];
-        static uint8_t rx_payload[768];
+        /* Sized to match TINYGS_BEGINE_MAX_LEN — parser's stated ceiling.
+         * Silent truncation here would hand invalid JSON to the parser. */
+        static uint8_t rx_payload[TINYGS_BEGINE_MAX_LEN];
         uint32_t topic_len = MIN(pub->message.topic.topic.size, sizeof(rx_topic) - 1);
         memcpy(rx_topic, pub->message.topic.topic.utf8, topic_len);
         rx_topic[topic_len] = '\0';
 
+        if (pub->message.payload.len >= sizeof(rx_payload)) {
+            LOG_WRN("MQTT RX payload %u exceeds buffer %zu — will truncate",
+                    (unsigned)pub->message.payload.len, sizeof(rx_payload));
+        }
         uint32_t payload_len = MIN(pub->message.payload.len, sizeof(rx_payload) - 1);
         int ret = mqtt_read_publish_payload(client, rx_payload, payload_len);
         if (ret < 0) {
