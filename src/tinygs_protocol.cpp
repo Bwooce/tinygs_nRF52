@@ -73,7 +73,12 @@ struct tinygs_radio_state tinygs_radio = {
 
 /* Shared buffers for topic and payload construction */
 static char topic_buf[128];
-static char payload_buf[512]; /* Shared for ping/status/RX — welcome uses its own stack buffer */
+/* Shared for ping/status/RX — welcome uses its own 1024 stack buffer.
+ * 512 was too tight for RX: ~100-byte LoRa packet → ~140 B base64 × 2
+ * (data + data_raw) + JSON overhead consistently runs ~600 B and tripped
+ * the "RX payload truncated" path. 1024 matches welcome and has plenty
+ * of headroom against current 91 KB free RAM. */
+static char payload_buf[1024];
 
 int tinygs_build_welcome(char *buf, size_t buflen,
                           const char *mac, int vbat_mv, uint32_t free_mem,
