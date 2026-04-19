@@ -1066,13 +1066,19 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     radio->setPacketReceivedAction(lora_rx_callback);
                     radio->startReceive();
 
+                    /* tle_tag: "TLE" = active Doppler (server sent "tle" key),
+                     *          "TLX" = passive map data only (server sent "tlx"),
+                     *          ""    = no orbit data at all. */
+                    const char *tle_tag = tinygs_radio.tle_valid
+                        ? (tinygs_radio.doppler_enabled ? " TLE" : " TLX")
+                        : "";
                     if (strcmp(tinygs_radio.modem_mode, "FSK") == 0) {
                         LOG_INF("  → %s %.4fMHz FSK BR%.0f BW%.1f%s%s",
                                 tinygs_radio.satellite,
                                 (double)tinygs_radio.frequency,
                                 (double)tinygs_radio.bitrate,
                                 (double)tinygs_radio.bw,
-                                tinygs_radio.tle_valid ? " TLE" : "",
+                                tle_tag,
                                 tinygs_radio.filter[0] ? " FLT" : "");
                     } else {
                         LOG_INF("  → %s %.4fMHz SF%d BW%.1f%s%s",
@@ -1080,7 +1086,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                                 (double)tinygs_radio.frequency,
                                 tinygs_radio.sf,
                                 (double)tinygs_radio.bw,
-                                tinygs_radio.tle_valid ? " TLE" : "",
+                                tle_tag,
                                 tinygs_radio.filter[0] ? " FLT" : "");
                     }
                 }
