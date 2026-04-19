@@ -113,19 +113,22 @@ int tinygs_config_init(void)
      * already called it. It initializes the NVS backend on storage_partition. */
     int ret = settings_subsys_init();
     if (ret) {
-        LOG_ERR("settings_subsys_init failed: %d (continuing with defaults)", ret);
+        LOG_ERR("settings_subsys_init failed: %d (%s) — continuing with defaults",
+                ret, errno_name(ret));
         return 0; /* Don't block boot — use compiled defaults */
     }
 
     ret = settings_register(&tgs_handler);
     if (ret && ret != -EEXIST) {
-        LOG_ERR("settings_register failed: %d (continuing with defaults)", ret);
+        LOG_ERR("settings_register failed: %d (%s) — continuing with defaults",
+                ret, errno_name(ret));
         return 0;
     }
 
     ret = settings_load_subtree("tgs");
     if (ret) {
-        LOG_WRN("settings_load_subtree failed: %d (using defaults)", ret);
+        LOG_WRN("settings_load_subtree failed: %d (%s) — using defaults",
+                ret, errno_name(ret));
         return 0;
     }
 
@@ -147,7 +150,7 @@ int tinygs_config_save(const char *key, const void *data, size_t len)
     snprintf(path, sizeof(path), "tgs/%s", key);
     int ret = settings_save_one(path, data, len);
     if (ret) {
-        LOG_ERR("settings_save %s failed: %d", path, ret);
+        LOG_ERR("settings_save %s failed: %d (%s)", path, ret, errno_name(ret));
     }
     return ret;
 }

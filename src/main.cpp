@@ -50,11 +50,11 @@
 
 LOG_MODULE_REGISTER(tinygs_nrf52, LOG_LEVEL_DBG);
 
-/* Translate the common negative errno values we see on socket/MQTT
- * paths. Input is the raw value from Zephyr (usually negative); we
- * return the symbolic name. Values match Zephyr minimal libc errno.h,
- * which differs from POSIX above 100. Falls back to "?" so %s is safe. */
-static const char *errno_name(int err)
+/* Translate common negative errno values to symbolic names. Values
+ * match Zephyr minimal libc errno.h, which differs from POSIX above
+ * 100. Falls back to "?" so %s is safe. Declared extern "C" in
+ * tinygs_protocol.h so other TUs can call it. */
+extern "C" const char *errno_name(int err)
 {
     switch (err < 0 ? -err : err) {
     case 0:   return "OK";
@@ -859,7 +859,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
         uint32_t payload_len = MIN(pub->message.payload.len, sizeof(rx_payload) - 1);
         int ret = mqtt_read_publish_payload(client, rx_payload, payload_len);
         if (ret < 0) {
-            LOG_ERR("MQTT payload read error: %d", ret);
+            LOG_ERR("MQTT payload read error: %d (%s)", ret, errno_name(ret));
             break;
         }
         rx_payload[ret] = '\0';
@@ -1487,7 +1487,7 @@ static int mqtt_tls_connect(void)
             LOG_INF("TLS CA cert registered (sec_tag %d)", MQTT_TLS_SEC_TAG);
             cred_registered = true;
         } else {
-            LOG_ERR("tls_credential_add failed: %d", rc);
+            LOG_ERR("tls_credential_add failed: %d (%s)", rc, errno_name(rc));
         }
     }
 
@@ -1509,7 +1509,8 @@ static int mqtt_tls_connect(void)
 
     int ret = mqtt_connect(&mqtt_client);
     if (ret != 0) {
-        LOG_ERR("mqtt_connect() failed: %d (errno=%d)", ret, errno);
+        LOG_ERR("mqtt_connect() failed: %d (%s, errno=%d/%s)",
+                ret, errno_name(ret), errno, errno_name(errno));
         return ret;
     }
 
@@ -1604,7 +1605,7 @@ static void setup_usb_storage(void)
     }
 
     int res = fs_mount(&mp);
-    LOG_INF("FATFS mount: %d", res);
+    LOG_INF("FATFS mount: %d (%s)", res, res < 0 ? errno_name(res) : "OK");
 
     if (res == 0) {
         /* Write index.html with commissioning info (only if missing) */

@@ -12,6 +12,17 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Symbolic name for Zephyr negative errno values — see main.cpp for table. */
+const char *errno_name(int err);
+
+#ifdef __cplusplus
+}
+#endif
+
 /* Topic templates — %user% and %station% are replaced at runtime */
 #define TINYGS_TOPIC_GLOBAL   "tinygs/global/#"
 #define TINYGS_TOPIC_CMND     "tinygs/%s/%s/cmnd/#"

@@ -201,7 +201,7 @@ int tinygs_subscribe(struct mqtt_client *client,
         LOG_INF("Subscribed: %s", TINYGS_TOPIC_GLOBAL);
         LOG_INF("Subscribed: %s", topic_buf);
     } else {
-        LOG_ERR("Subscribe failed: %d", ret);
+        LOG_ERR("Subscribe failed: %d (%s)", ret, errno_name(ret));
     }
 
     return ret;
