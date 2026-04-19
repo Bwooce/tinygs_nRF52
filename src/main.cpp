@@ -50,6 +50,37 @@
 
 LOG_MODULE_REGISTER(tinygs_nrf52, LOG_LEVEL_DBG);
 
+/* Translate the common negative errno values we see on socket/MQTT
+ * paths. Input is the raw value from Zephyr (usually negative); we
+ * return the symbolic name. Values match Zephyr minimal libc errno.h,
+ * which differs from POSIX above 100. Falls back to "?" so %s is safe. */
+static const char *errno_name(int err)
+{
+    switch (err < 0 ? -err : err) {
+    case 0:   return "OK";
+    case 5:   return "EIO";
+    case 11:  return "EAGAIN";
+    case 12:  return "ENOMEM";
+    case 22:  return "EINVAL";
+    case 61:  return "ENODATA";
+    case 104: return "ECONNRESET";
+    case 105: return "ENOBUFS";
+    case 110: return "ESHUTDOWN";
+    case 111: return "ECONNREFUSED";
+    case 113: return "ECONNABORTED";
+    case 114: return "ENETUNREACH";
+    case 115: return "ENETDOWN";
+    case 116: return "ETIMEDOUT";
+    case 117: return "EHOSTDOWN";
+    case 118: return "EHOSTUNREACH";
+    case 119: return "EINPROGRESS";
+    case 128: return "ENOTCONN";
+    case 134: return "ENOTSUP";
+    case 140: return "ECANCELED";
+    default:  return "?";
+    }
+}
+
 /* Forward declarations for radio RX */
 static void lora_rx_callback(void);
 static volatile bool lora_packet_received = false;
@@ -796,9 +827,9 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
         break;
 
     case MQTT_EVT_DISCONNECT:
-        LOG_WRN("MQTT DISCONNECTED after %us: result=%d",
+        LOG_WRN("MQTT DISCONNECTED after %us: result=%d (%s)",
                 (unsigned)(now - mqtt_connected_uptime_ms) / 1000,
-                evt->result);
+                evt->result, errno_name(evt->result));
         app_state = STATE_ERROR;
         break;
 
@@ -2411,7 +2442,7 @@ int main(void)
                 {
                     int live_ret = mqtt_live(&mqtt_client);
                     if (live_ret && live_ret != -EAGAIN) {
-                        LOG_DBG("mqtt_live: %d", live_ret);
+                        LOG_DBG("mqtt_live: %d (%s)", live_ret, errno_name(live_ret));
                     }
                     /* Zephyr mqtt_client doesn't auto-disconnect on missed
                      * PINGRESPs — it just increments unacked_ping forever.
