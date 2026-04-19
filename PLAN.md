@@ -20,7 +20,7 @@ The goal is to port the TinyGS firmware to the Heltec Mesh Node T114 (nRF52840 +
 Unlike the ESP32 which uses WiFi, this node will act as a true standalone Thread end-device. It will connect to a standard Thread Border Router (e.g., Apple TV, HomePod) and use the Border Router's NAT64 capabilities to open a direct, persistent TLS connection (mbedTLS) to the IPv4 `mqtt.tinygs.com` server.
 
 *   **Tradeoff - RAM vs Simplicity:** This architecture requires no local Home Assistant or third-party bridge for the user to configure. However, running a persistent TLS connection on a 256KB RAM device is exceptionally tight. 
-*   **Tradeoff - Power vs Latency:** Because the TinyGS protocol does not support "next pass" ahead-of-time notification via a side channel, the node cannot completely shut down its radio. It must maintain the TCP connection (Option 1: Persistent Connection) to listen for commands and keep the cloud load balancer happy. We will rely on Thread's native Sleepy End Device (SED) polling mechanics to keep baseline power as low as possible while the TCP socket remains "open".
+*   **Tradeoff - Power vs Latency:** Because the TinyGS protocol does not support "next pass" ahead-of-time notification via a side channel, the node cannot completely shut down its radio. It must maintain the TCP connection (Option 1: Persistent Connection) to listen for commands and keep the cloud load balancer happy. The node therefore stays a full-rx Thread MTD (not SED — see §20 audit); Thread-level power savings are unavailable as long as MQTT keepalive is pinned, so the primary power lever is SX1262 hardware duty-cycle RX rather than the Thread poll period.
 
 ### 3.2 RAM Budget Analysis (256KB Total)
 To fit the full stack (Zephyr + OpenThread + mbedTLS + RadioLib) into 256KB RAM without dropping TLS fragment sizes (which might break compatibility with `mqtt.tinygs.com`), we must meticulously budget memory:
@@ -28,7 +28,7 @@ To fit the full stack (Zephyr + OpenThread + mbedTLS + RadioLib) into 256KB RAM 
 | Component | Estimated RAM | Notes |
 | :--- | :--- | :--- |
 | **Zephyr Kernel & Stacks** | ~25 KB | Requires tuning `CONFIG_MAIN_STACK_SIZE` via Thread Analyzer. |
-| **OpenThread Stack (MTD)** | ~70 KB | Configured strictly as a Minimal Thread Device (SED), no FTD routing. |
+| **OpenThread Stack (MTD)** | ~70 KB | Configured as a full-rx Minimal Thread Device, no FTD routing. SED rejected — see §20. |
 | **mbedTLS Buffers** | ~32 KB | 16KB RX + 16KB TX to support full-size TLS 1.2 fragments without dropping. |
 | **mbedTLS Heap (Handshake)** | ~50 KB | Required for RSA/ECC math during the initial connection phase. |
 | **Network Buffers (net_buf)**| ~15 KB | Tuned to minimum required for MQTT keep-alives and small JSON telemetry. |
@@ -159,9 +159,8 @@ All Phase 1 objectives proven:
 5.  **Power Saving Review:** Before Phase 3 is complete, do a full power audit:
     - Measure current draw in each state (Thread join, MQTT connected idle, LoRa RX, deep sleep)
     - Identify and disable unnecessary peripherals (QSPI, unused GPIOs, USB when not needed)
-    - Profile SED poll period vs. power draw
-    - Target: <1mA average active, <50uA Thread idle, <11uA deep sleep
-    - Implement SED latency toggling (per nrf-thread-switch pattern)
+    - Target: <1mA average. Deep-sleep targets don't apply — MQTT keepalive is pinned (§20).
+    - Primary lever: SX1262 `startReceiveDutyCycle()` hardware RX gating.
 6.  **Firmware Updates:** USB-only via UF2 drag-and-drop. OTA over Thread dropped (see Section 6.3).
 7.  **Commissioning Mode:** Extended wake window (15-30 min) for unprovisioned devices.
 8.  **[DONE] set_name persistence:** Saves to NVS, reboots to reconnect with new station name on all topics.
@@ -186,39 +185,115 @@ All Phase 1 objectives proven:
     - **TCXO define ordering:** `LORA_DTS_NODE` was referenced before its own `#define DT_ALIAS(lora0)` in `tinygs_protocol.h`. The `DT_NODE_HAS_PROP` check evaluated against an unset node and the TCXO macro silently fell to 0.0 V. `init_radio` hardcoded 1.8 so LoRa worked, but the FSK begin path passed the macro and the SX1262 rejected mode changes with -707. Fixed by reordering.
     - **usec_time units:** Was uptime-microseconds; server uses it as Unix-epoch microseconds for TLE position lookup. Wrong value placed our station on the opposite side of Earth ("Record distance: 10 000 km" on the website). Now `get_utc_epoch_us()` returns `k_uptime_get() * 1000 + sntp_offset * 1_000_000`.
     - **modem_conf buffer:** Widened 256 → 512 B and tle buffer 34 → 64 B to match ESP32 and survive future protocol extensions. NVS self-heal drops oversized entries left over from prior builds.
-19. **[TODO] SED mode + power gating:** Requires on-site testing (see Phase 4).
+19. **[TODO] Peripheral power gating + SX1262 duty-cycle RX:** Requires on-site testing (see Phase 4). SED dropped, see §20.
 
 20. **Thread protocol feature audit (2026-04-18):** Investigated what Thread 1.2/1.3 features might improve reliability and power for our use case. Conclusions:
     - **[DONE] MLR (Multicast Listener Registration)** — `CONFIG_OPENTHREAD_MLR=y`. Without it, iot_log multicast (ff05::e510) reaches us only via the BBR's default-flood policy, which loses coherence when the mesh link weakens. MLR makes the BBR hold an explicit forwarding entry for our device with periodic refresh. Directly addresses the "moved device outside, logs went quiet while MQTT kept working" failure mode.
-    - **Child Supervision** — already compiled in (`OPENTHREAD_CONFIG_CHILD_SUPERVISION_INTERVAL=190 s` default in OpenThread core). No Kconfig knob in this NCS version. Tune the interval via a custom `openthread-core-zephyr-config.h` if we ever need faster parent-loss detection.
-    - **SED (Sleepy End Device) — rejected.** Our architecture keeps MQTT keepalive pinned open with no main-loop sleeps, so switching MTD→SED doesn't change radio duty cycle. Reopen only if Phase 4 introduces MQTT connect/disconnect cycles that let the main loop park.
-    - **CSL (Coordinated Sampled Listening) — tied to SED.** Same verdict: useful only if SED is active.
+    - **Child Supervision** — compiled in by default on OpenThread 1.3+ (the `OPENTHREAD_CONFIG_CHILD_SUPERVISION_ENABLE` knob was removed upstream; see `ncs/modules/lib/openthread/src/core/config/openthread-core-config-check.h:648`). Defaults in `child_supervision.h`: **INTERVAL=129 s** (parent→child keepalive cadence), **CHECK_TIMEOUT=190 s** (child re-attaches if silence exceeds this). For an outdoor weak-link ground station these defaults are reasonable — re-attach in ≤3.5 min, ~14 keepalive frames/hr per child. Shorter interval would burn more radio time without a clear benefit since MQTT already has its own 300 s PINGREQ that triggers reconnection higher up the stack. Not tuned.
+    - **SED (Sleepy End Device) — rejected, permanently.** Our architecture pins MQTT keepalive open so the MTD radio has to stay on to receive PINGRESPs and server-initiated commands; SED would just trade 802.15.4 RX for polled 802.15.4 RX with no net saving. Tearing MQTT down to enable SED sleep windows is worse: TLS re-handshake costs ~8 KB transient RAM + several seconds during which a satellite pass could be missed. The real power lever for this product is SX1262 hardware duty-cycle RX (see Phase 4 §2), not the Thread stack.
+    - **CSL (Coordinated Sampled Listening) — rejected, tied to SED.** Same logic.
     - **Link Metrics — deferred.** Useful only if we have a consumer (e.g. prefer different parent, publish to tinygs). Without a plan, it's instrumentation without action.
     - **DUA (Domain Unicast Address) — rejected.** DUA gives a stable globally-routable IPv6 but no transport — we'd still need an HTTP server + TLS + cert management to expose anything useful, duplicating tinygs.com's existing per-station dashboard.
-    - **Device web UI (like ESP32's IotWebConf) — rejected.** Estimated cost: +60–80 KB RAM steady-state, +40–50 KB flash, plus self-signed cert UX pain (the MQTT CA bundle in certs.h validates tinygs's *server* cert during client TLS — it can't be reused for server-side TLS; we'd need a per-device cert+key pair). At 165 KB RAM already used of 256 KB this is a large bite for a feature already delivered by tinygs.com.
+    - **Device web UI (like ESP32's IotWebConf) — accepted, see §21.** Original rejection cited ~60-80 KB RAM cost, which assumed on-device TLS termination. Revisiting with a plain-HTTP-over-Thread-mesh baseline (Thread's network key already encrypts at L2) drops the cost to ~10 KB RAM / 20 KB flash — comfortable against the current 91 KB RAM / 277 KB flash headroom. mTLS remains an optional upgrade.
     - **Commissioner on device — rejected.** HA's OTBR is already the commissioner; a local one duplicates work without simplifying joining.
+    - **TREL (Thread Radio Encapsulation Link) — not applicable.** TREL tunnels Thread over Wi-Fi/Ethernet for multi-radio mesh peers. We're 802.15.4-only and single-radio; no second interface to tunnel over.
+    - **Network Diagnostics (`OT_TMF_NETWORK_DIAGNOSTIC`) — already available.** OT cores include the TMF diagnostic handler on MTDs. We can already be polled by the BR for route/parent/link-quality TLVs without a new Kconfig. If we ever want to *initiate* diagnostics from the device, that's a client-side addition; no consumer today.
+    - **SRP client (service registration) — already enabled** via `CONFIG_OPENTHREAD_SRP_CLIENT=y`. Unused at present (we don't advertise any mDNS/SRP service). Opportunity: publish a `_tinygs._tcp` record so HA can discover the device on the Thread-side address without hardcoding. Deferred until we have an HA integration that consumes it.
+    - **DNS client (`OPENTHREAD_DNS_CLIENT=y`) — already enabled** and used for `mqtt.tinygs.com` resolution via the BR's NAT64 DNS proxy. Working.
+    - **Ping sender (`OPENTHREAD_PING_SENDER`) — intentionally off** (`=n`) to save flash; diagnostic only.
+    - **`ot-cli` over the CDC console — rejected.** Adds ~12 KB flash and a shell thread for a feature we can already exercise via the HA OTBR (`ot-ctl`). Not worth the footprint.
+    - **Native NAT64 (`OPENTHREAD_NAT64_TRANSLATOR`) — rejected.** Only meaningful on a BR; as an MTD we consume NAT64 via the HA BR and just need a valid route (`fd14:db8:3::/96`), which we already have.
+    - **Link Quality Indicator logging — minor win.** `otThreadGetParentInfo()` already surfaces parent RSSI/LQI and we already publish parent RSSI in the MQTT InstRSSI field. Periodic diagnostic log of LQI transitions would help correlate outdoor-link failures; cheap to add but not urgent.
+
+21. **Device Web UI — direct port of the ESP32 IotWebConf + dashboard (design 2026-04-18):**
+
+    **Goal:** reachability from a phone/laptop on the same Thread mesh for live diagnostics and configuration, mirroring what a user gets when they browse to an ESP32 TinyGS station on their home Wi-Fi. Target parity with the ESP32 UI; don't reinvent the UX.
+
+    **Transport baseline (plain HTTP over Thread):** device listens on `[thread-mesh-address]:80`. The Thread network key already encrypts 802.15.4 at L2 inside the home, and the MTD is not reachable from the public internet (NAT64 is outbound-only). HTTP Basic auth for endpoints behind the `admin` user matches what the ESP32 already does. No device-side TLS, no cert management. Users reach the UI from HA-side hosts that have a route into the Thread mesh, or directly from phones joined to the Thread commissioning flow. **Optional upgrade (§21.5):** swap in mTLS with a locally-generated CA if the threat model expands — mbedTLS is already linked and the per-device cost is ~4-8 KB RAM.
+
+    **Scope — what we port (matches ESP32 `ConfigManager.cpp`):**
+
+    | ESP32 endpoint | Purpose | Port decision |
+    |---|---|---|
+    | `GET /` | Root page: dashboard/config/firmware/restart buttons + OTP code | **Port** — drop firmware button (USB-only) |
+    | `GET /logo.png` | TinyGS logo | **Port** — same PNG from `logos.h`, ~2.5 KB |
+    | `GET /config` | Station config form (lat/lon, MQTT, board, TZ, modemStartup, boardTemplate, adv_prm) | **Port** — POST handler writes NVS, triggers reboot on MQTT changes |
+    | `GET /dashboard` | SVG world map + cards (GS/modem/sat/last packet) + web serial console | **Port** — same layout, feed from same `status` struct |
+    | `GET /restart` | Confirm page + reboot | **Port** — `sys_reboot(SYS_REBOOT_COLD)` |
+    | `GET /cs?c1=<cmd>&c2=<counter>` | Console poll + command (`!p` test packet, `!w` weblogin, `!e` reset, `!o` OTP) | **Port** — hook into our existing log ring buffer |
+    | `GET /wm` | Worldmap data (CSV of sat pos + modem + GS status + sat data + last packet) | **Port** — exact same payload shape, fed from `status` |
+    | `GET /firmware` | ArduinoOTA update page | **Drop** — USB UF2 only |
+
+    **Scope — what we drop:**
+    - Wi-Fi AP / captive portal — Thread replaces this; joining is handled at OTBR
+    - Per-device OTP display — MQTT station credentials are provisioned via MQTT over Thread, not via the UI
+    - IotWebConf AP password parameter — use a fixed `admin` Basic-auth credential stored in NVS (editable from the config form)
+    - MDNS/Bonjour advertisement — deferred to the SRP-client opportunity already noted in §20
+
+    **Zephyr implementation:**
+
+    1. **HTTP server:** `CONFIG_HTTP_SERVER=y` (Zephyr's in-tree async HTTP/2-capable server, experimental but functional on NCS v2.x). Falls back to hand-rolled HTTP/1.0 parser on a BSD socket if the in-tree server proves unstable — the whole UI is ~8 endpoints so this is not a blocker.
+    2. **Routing:** register each endpoint with `http_service_register()`; handler signatures take a request + response buffer + status ref. Same handler-per-path shape as `server.on()` on ESP32.
+    3. **Auth:** middleware decorator checks `Authorization: Basic <base64(admin:<pw>)>`. Returns 401 with `WWW-Authenticate` on miss, matching ESP32 behaviour.
+    4. **Template rendering:** port the ESP32's `String s += "..."` builders to a fixed-size `snprintf`-into-response-buffer pattern. No dynamic allocation in the hot path. Static chunks (`IOTWEBCONF_HTML_HEAD`, CSS, scripts) stay as `const char[]` in flash, identical to ESP32's `PROGMEM` content.
+    5. **Static content (logo, CSS, JS):** embed in flash via `include/webui_assets.h` generated from `logos.h` + `html.h`. Reusing FATFS is not attractive — host OS has the drive mounted over USB MSC, so any firmware write risks corruption (§6.2).
+    6. **Config persistence:** posted form values feed into the existing NVS config path (same code that today consumes MQTT `cmnd/setconfig` payloads). `boardTemplate` and `modemStartup` stay as opaque JSON strings; `adv_prm` uses the dict-table editor script already present in ESP32's `ADVANCED_CONFIG_SCRIPT`.
+    7. **Console poll (`/cs`):** share the existing log ring buffer — `log_backend_ringbuf` already captures everything going to CDC ACM. `c1=` commands dispatch through the same command handlers as MQTT `cmnd/cs` (already implemented for `!p`/`!w`/`!e`/`!o`).
+    8. **Worldmap poll (`/wm`):** exact CSV format as ESP32 (the dashboard's JavaScript already parses it). Fields sourced from our `status` struct + P13 propagator output.
+
+    **Budget estimate (measured against current 475 KB flash / 165 KB RAM used):**
+
+    | Component | Flash | RAM | Notes |
+    |---|---|---|---|
+    | `CONFIG_HTTP_SERVER` + socket service | +12-15 KB | +4-6 KB | shared `net_buf` pool, small per-request scratch |
+    | Embedded assets (logo, CSS, JS, HTML chunks) | +8-10 KB | ~0 | `const` in flash, flash-XIP |
+    | Handler code + form parser | +3-5 KB | +1-2 KB | builder strings go on the response stack |
+    | HTTP Basic auth + base64 | +1 KB | +0 KB | libc crypt is not used; base64 is `<mbedtls/base64.h>` already in build |
+    | **Total (HTTP baseline)** | **~25 KB** | **~8 KB** | Leaves ~250 KB flash / ~83 KB RAM free |
+    | Optional: mTLS upgrade | +2-4 KB | +4-8 KB | adds a server-side TLS context, reuses mbedTLS |
+
+    **Reachability:**
+    - From HA box on same LAN: route `fd14:db8:3::/64` (our OMR prefix) via the BR; device reachable on its mesh-local or ULA address
+    - From a phone joined to the Thread mesh (iPhone 15+, Thread-capable Android): direct
+    - From public internet: not reachable — that's a feature, not a bug
+
+    **Out of scope / decided against:**
+    - ArduinoOTA `/firmware` endpoint (USB UF2 only per §6.3)
+    - AP mode / captive portal (Thread replaces Wi-Fi provisioning)
+    - Public-internet exposure (no DynDNS, no port forward, no ACME)
+    - Server-Sent Events / WebSockets for the console (polling already works at 2.3 s cadence on ESP32; no reason to change)
+
+    **Risks:**
+    - **FATFS host-OS corruption (§6.2 applies):** the UI's config POST must write NVS only, never the FATFS partition — same rule we enforce for MQTT `cmnd/setconfig`.
+    - **Thread MTD RX duty while user browses:** opening the dashboard pins the radio at full RX during the session; the periodic `/wm` poll every 5 s keeps us awake. This aligns with our "no SED, MQTT pinned" architecture so it's not an incremental cost.
+    - **Zephyr `http_server` maturity:** the in-tree server is marked experimental. Fallback plan is a ~200-line hand-rolled HTTP/1.0 parser on a listening socket.
+
+    **Build phasing:**
+    1. Static responses + routing skeleton (root, logo, restart). Verifies the HTTP stack on Thread.
+    2. Dashboard HTML + `/wm` poll handler. Confirms the `status` struct feeds real data.
+    3. Console `/cs` long-poll. Proves the log ring buffer plumbing.
+    4. Config form POST handler + NVS writes. Highest-risk step (must not corrupt existing MQTT config path).
+    5. (Optional) mTLS upgrade if threat model changes.
 
 ### Phase 4: Power Optimization & Commissioning
 Requires current measurement equipment and on-site testing.
 
-1.  **Commissioning mode:** Extended wake window (15-30 min) for unprovisioned devices.
-    Device must stay fully awake (no SED) during Thread joining and DTLS commissioning handshake.
-    Once provisioned and connected, transition to power-saving mode.
-2.  **SED (Sleepy End Device) mode:**
-    - Enable CONFIG_OPENTHREAD_MTD_SED + CONFIG_OPENTHREAD_POLL_PERIOD=60000 (60s)
-    - Implement poll period toggling: fast (100-500ms) during MQTT activity, slow (60s) idle
-    - Set otThreadSetChildTimeout to 4x poll period
-    - TCP/TLS survives over SED — packets buffered at parent router
-3.  **SX1262 duty cycle RX:** Use startReceiveDutyCycle() for hardware-managed RX/sleep cycling
-    instead of continuous RX. Saves ~4.1mA (4.6mA → 0.5mA).
-4.  **Peripheral power gating:**
+**SED/CSL explicitly out of scope** — see §20 audit. The MTD stays a full-rx child
+because MQTT keepalive must stay pinned; the Thread radio isn't where the power is.
+
+1.  **Commissioning mode:** Extended wake window (15-30 min) for unprovisioned devices
+    during Thread joining and DTLS commissioning handshake. No post-commissioning
+    MTD→SED transition (see §20).
+2.  **SX1262 duty cycle RX:** Use startReceiveDutyCycle() for hardware-managed RX/sleep cycling
+    instead of continuous RX. Saves ~4.1mA (4.6mA → 0.5mA). This is the primary power lever.
+3.  **Peripheral power gating:**
     - Vext (P0.21) LOW when LEDs/GPS not needed (saves ~3mA)
     - TFT_EN (P0.03) LOW when display blanked (saves ~1.5mA)
     - usb_disable() when no USB cable detected (saves ~1mA)
-5.  **Current measurement:** Baseline each state with a power profiler
+4.  **Current measurement:** Baseline each state with a power profiler
     - Thread joining, MQTT connected idle, LoRa RX, deep sleep
     - Target: <1mA average (estimated achievable based on research)
-6.  **CONFIG_RAM_POWER_DOWN_LIBRARY=y** — power down unused SRAM banks
+5.  **CONFIG_RAM_POWER_DOWN_LIBRARY=y** — power down unused SRAM banks
 
 ### Phase 5: RadioLib ZephyrHal Upstream PR
 The Zephyr HAL is functionally complete and multi-instance safe. To submit as a PR
@@ -251,8 +326,8 @@ example + clean HAL source):
 
 ## 6. Architectural Risks & Constraints
 
-### 6.1 Persistent TLS over Thread SED — MEDIUM RISK (downgraded)
-*   **The Problem:** Maintaining a persistent TCP/TLS connection for MQTT over a Thread Sleepy End Device (SED).
+### 6.1 Persistent TLS keepalive over Thread — MEDIUM RISK (downgraded)
+*   **The Problem:** Maintaining a persistent TCP/TLS connection for MQTT over Thread to a NAT64-translated IPv4 broker.
 *   **Measured Results (2026-04-11):**
     - **300s keepalive: WORKS** — confirmed with 2+ consecutive PINGRESPs via nat64.net NAT64
     - **600s keepalive: WORKS** — confirmed with PINGRESP at 600s connected
@@ -262,9 +337,9 @@ example + clean HAL source):
 *   **Risk downgraded:** The original concern was NAT64 timeouts at 120-300s. Actual measured tolerance is >600s, giving 10x fewer wakeups than the feared 60s minimum.
 *   **Mitigations:**
     1.  ~~**Measure during Phase 1:**~~ **DONE** — 600s confirmed working.
-    2.  **Connect/disconnect pattern:** Still useful for deep sleep. Connect → publish → subscribe → wait for commands → disconnect → deep sleep for N minutes. See `fgervais/project-nrf-thread-switch` for SED latency toggling reference pattern.
-    3.  **TLS session resumption:** Enable `CONFIG_MBEDTLS_SSL_SESSION_TICKETS` to cache session state. Reconnection avoids the expensive full handshake (~50KB heap spike).
-    4.  ~~**Investigate MQTT 5.0 session expiry**~~ — mqtt.tinygs.com uses MQTT 3.1.1 only.
+    2.  **TLS session resumption:** Enable `CONFIG_MBEDTLS_SSL_SESSION_TICKETS` to cache session state. Reconnection avoids the expensive full handshake (~50KB heap spike).
+    3.  ~~**Investigate MQTT 5.0 session expiry**~~ — mqtt.tinygs.com uses MQTT 3.1.1 only.
+    4.  ~~**Connect/disconnect-on-deep-sleep pattern:**~~ Dropped with SED — see §20. MQTT stays pinned.
 
 ### 6.2 USB MSC + FATFS Concurrent Access — MEDIUM RISK
 *   **The Problem:** USB MSC is a block-level protocol. The host OS assumes exclusive control over FAT sectors when mounted. Writing to FATFS from firmware while the host has the drive mounted will corrupt the filesystem.
@@ -275,7 +350,7 @@ example + clean HAL source):
     3.  Never write to FATFS while USB MSC is active.
 
 ### 6.3 OTA Firmware Updates — DROPPED (USB-only)
-*   **Decision:** OTA over Thread is impractical for a solar-powered device. 440KB over 802.15.4 (~10-20 KB/s best case, much worse for SED) requires minutes of continuous radio-on time.
+*   **Decision:** OTA over Thread is impractical for a solar-powered device. 440KB over 802.15.4 (~10-20 KB/s best case) requires minutes of continuous radio-on time even at full-rx.
 *   **Approach:** Firmware updates are USB-only via UF2 drag-and-drop. Users with physical access flash new firmware directly. A small MQTT notification can alert users when updates are available.
 *   **Future option:** If OTA is revisited, use CoAP block transfer (not MQTT) over Thread, or require the user to bring the device within USB range.
 
@@ -310,10 +385,10 @@ example + clean HAL source):
     1.  Strictly limit runtime FATFS writes.
     2.  For incoming MQTT config updates, save them to the **NVS partition** (which does wear-level). Only regenerate the physical `config.json` on the FATFS partition during a system reboot or when the user explicitly triggers USB MSC mode.
 
-### 6.8 Thread Commissioning Timeout vs. Deep Sleep — MEDIUM RISK
+### 6.8 Thread Commissioning Timeout — LOW RISK
 *   **The Problem:** Users must plug into USB, read `index.html` for the QR code, then physically deploy the node before scanning it in Home Assistant.
-*   **The Risk:** If the firmware enters its 11µA deep sleep (SED) mode too quickly, the Thread radio will turn off. By the time the user walks outside to scan the code, the Border Router won't be able to reach the device for the DTLS commissioning handshake.
-*   **Mitigations:** Implement a dedicated **"Commissioning Mode"** state. If the device is unprovisioned, it must remain fully awake (Radio RX on) for a generous window (e.g., 15-30 minutes) after boot before falling back to the aggressive SED sleep cycle.
+*   **Risk downgraded:** The MTD runs full-rx at all times (SED rejected, see §20), so the Thread radio never sleeps — the original concern about the radio shutting off before commissioning is moot.
+*   **Mitigations retained:** The Commissioning Mode state still exists to extend the window before considering a device provisioned, but it no longer gates any sleep transition.
 
 ### 6.9 Stack Overflows — LOW RISK (was HIGH)
 *   **The Problem:** Stack overflows in Zephyr cause silent hard faults.
