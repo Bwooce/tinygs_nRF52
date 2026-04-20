@@ -1946,6 +1946,24 @@ static void sntp_sync(void)
     }
 }
 
+/* Daily drift-correction. nRF52840 RC RTC is ~250 ppm = ~22 s/day, which
+ * would visibly drift a stable connect over a few days. Runs on the system
+ * workq so the 10 s blocking sntp_sync() doesn't stall the MQTT main loop.
+ * Doesn't clear time_synced — old offset stays valid until the callback
+ * atomically replaces it, so a failed periodic resync doesn't break the
+ * station. Reschedules unconditionally: next attempt is always 24 h away. */
+#define SNTP_RESYNC_INTERVAL  K_HOURS(24)
+static void sntp_resync_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(sntp_resync_work, sntp_resync_work_handler);
+
+static void sntp_resync_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    LOG_INF("SNTP: periodic drift-correction resync");
+    sntp_sync();
+    k_work_reschedule(&sntp_resync_work, SNTP_RESYNC_INTERVAL);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Doppler Compensation (P13 satellite propagator)                             */
 /* -------------------------------------------------------------------------- */
@@ -2522,9 +2540,16 @@ int main(void)
             if (resolve_broker() == 0) {
                 /* Sync time before MQTT connect so the welcome payload
                  * carries a valid `time` field. Non-fatal: if SNTP fails
-                 * we connect anyway and welcome just omits the time. */
+                 * we connect anyway and welcome just omits the time.
+                 * Reconnects skip this — they reuse the cached offset so
+                 * MQTT comes back fast. Drift correction is handled
+                 * out-of-band by sntp_resync_work. */
                 if (!time_synced) {
                     sntp_sync();
+                    /* Kick off periodic drift-correction regardless of
+                     * boot-sync success — if boot failed, tomorrow's
+                     * attempt might succeed. */
+                    k_work_reschedule(&sntp_resync_work, SNTP_RESYNC_INTERVAL);
                 }
                 app_state = STATE_MQTT_CONNECT;
             } else {
