@@ -1858,6 +1858,11 @@ static Module *radio_mod = nullptr;
 static int64_t sntp_epoch_offset_ms = 0;
 static bool time_synced = false;
 
+/* Signalled by sntp_response_handler so sntp_sync() can block the state
+ * machine until we have a real epoch (or a hard timeout). Welcome payload
+ * carries the `time` field, so we must sync *before* CONNACK. */
+static K_SEM_DEFINE(sntp_sem, 0, 1);
+
 int64_t get_utc_epoch_us(void)
 {
     if (!time_synced) return 0;
@@ -1880,6 +1885,7 @@ static void sntp_response_handler(void *aContext, uint64_t aTime, otError aResul
     } else {
         LOG_WRN("SNTP: failed (%d %s)", (int)aResult, otThreadErrorToString(aResult));
     }
+    k_sem_give(&sntp_sem);
 }
 
 /**
@@ -1920,6 +1926,8 @@ static void sntp_sync(void)
     otSntpQuery query;
     query.mMessageInfo = &msgInfo;
 
+    k_sem_reset(&sntp_sem);
+
     openthread_api_mutex_lock(ot_ctx);
     otError err = otSntpClientQuery(ot_ctx->instance, &query,
                                      sntp_response_handler, NULL);
@@ -1927,6 +1935,14 @@ static void sntp_sync(void)
 
     if (err != OT_ERROR_NONE) {
         LOG_WRN("SNTP: query failed (%d %s)", (int)err, otThreadErrorToString(err));
+        return;
+    }
+
+    /* Block the state machine until the callback fires or we hit the
+     * timeout. Non-fatal on timeout: welcome still gets sent, just with
+     * time=0. Server tolerates missing/zero time (it's an optional field). */
+    if (k_sem_take(&sntp_sem, K_SECONDS(10)) != 0) {
+        LOG_WRN("SNTP: response timeout, proceeding without synced time");
     }
 }
 
@@ -2504,6 +2520,12 @@ int main(void)
             /* Heap stats now in periodic STATUS log */
             log_ot_diagnostics();
             if (resolve_broker() == 0) {
+                /* Sync time before MQTT connect so the welcome payload
+                 * carries a valid `time` field. Non-fatal: if SNTP fails
+                 * we connect anyway and welcome just omits the time. */
+                if (!time_synced) {
+                    sntp_sync();
+                }
                 app_state = STATE_MQTT_CONNECT;
             } else {
                 retry_count++;
@@ -2550,10 +2572,8 @@ int main(void)
             neopixel_off(); /* NeoPixels off when stable */
             breathing_led_start(); /* Green LED breathes when connected */
 
-            /* Sync time via SNTP — needed for Doppler compensation */
-            if (!time_synced) {
-                sntp_sync();
-            }
+            /* Time sync happens pre-connect so welcome carries a valid
+             * `time` field (see STATE_DNS_RESOLVE). */
 
             /* TinyGS main loop — process MQTT, LoRa RX, and pings */
             uint32_t last_ping_ms = k_uptime_get_32();

@@ -197,9 +197,14 @@ Fields and their exact types as serialized by ESP32 ArduinoJson:
   "sat": "",
   "ip": "0.0.0.0",
   "idfv": "NCS/Zephyr",
+  "time": 1745098562,
   "modem_conf": "{}"
 }
 ```
+
+**Ordering note:** the nRF52 port syncs SNTP *after* broker DNS resolution and
+*before* `mqtt_connect`, so `time` in the welcome is always real (or 0 if
+SNTP failed — non-fatal, we connect anyway).
 
 ### 3.2 Ping (`tele/ping`)
 

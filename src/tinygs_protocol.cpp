@@ -80,7 +80,7 @@ static char payload_buf[2048];
 
 int tinygs_build_welcome(char *buf, size_t buflen,
                           const char *mac, int vbat_mv, uint32_t free_mem,
-                          uint32_t uptime_s)
+                          uint32_t uptime_s, uint32_t utc_epoch_s)
 {
     const char *ip_str = "0.0.0.0";
 
@@ -118,6 +118,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         "\"sat\":\"%s\","
         "\"ip\":\"%s\","
         "\"idfv\":\"NCS/Zephyr\","
+        "\"time\":%u,"
         "\"modem_conf\":\"%s\""
         "}",
         (double)tinygs_station_lat,
@@ -134,6 +135,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         vbat_mv,
         tinygs_radio.satellite,
         ip_str,
+        (unsigned)utc_epoch_s,
         escaped_conf
     );
 }
@@ -221,7 +223,8 @@ int tinygs_send_welcome(struct mqtt_client *client,
     char welcome_buf[1024];
     int len = tinygs_build_welcome(welcome_buf, sizeof(welcome_buf),
                                     mac, read_vbat_mv(), get_free_heap(),
-                                    k_uptime_get_32() / 1000);
+                                    k_uptime_get_32() / 1000,
+                                    (uint32_t)get_utc_epoch());
 
     struct mqtt_publish_param param;
     param.message.topic.qos = MQTT_QOS_0_AT_MOST_ONCE;

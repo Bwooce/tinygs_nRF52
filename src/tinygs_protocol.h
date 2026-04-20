@@ -131,7 +131,7 @@ static inline int tinygs_build_topic(char *buf, size_t buflen,
  */
 int tinygs_build_welcome(char *buf, size_t buflen,
                           const char *mac, int vbat_mv, uint32_t free_mem,
-                          uint32_t uptime_s);
+                          uint32_t uptime_s, uint32_t utc_epoch_s);
 
 /*
  * Build the ping JSON payload.
