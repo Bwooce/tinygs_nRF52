@@ -176,7 +176,7 @@ All radio parameters are fully dynamic, set by the server via begine/batch_conf 
 | Item | Source | Current Location | Notes |
 |------|--------|-----------------|-------|
 | Station name | **[server]** | NVS settings / config.json | Via set_name command; persisted to NVS, reboots to reconnect with new name |
-| MQTT keepalive (s) | **[build]** | prj.conf CONFIG_MQTT_KEEPALIVE=300 | Also sets TinyGS ping interval; 300s reliable, 600s loses PINGRESPs |
+| MQTT keepalive (s) | **[build]** | prj.conf CONFIG_MQTT_KEEPALIVE=90 | Also sets TinyGS ping interval; 90 s for fast half-open detection after Thread flaps. 300 s / 600 s reliable on the wire but detection lag ~9 min at 300 s lost begines during mesh churn. |
 | TX allowed | **[user]** | Hardcoded false | Currently always false |
 | Low power mode | **[user]** | Not implemented | Phase 3 SED sleep config |
 | OT log level | **[build]** | prj.conf OPENTHREAD_LOG_LEVEL_CRIT | CRIT/WARN/NOTE/INFO/DEBG |

@@ -15,7 +15,7 @@
 | Username | Per-station credential from TinyGS dashboard |
 | Password | Per-station credential from TinyGS dashboard |
 | Max packet size | 1000 bytes |
-| Keep-alive | Configurable via CONFIG_MQTT_KEEPALIVE. Tested: 300s and 600s both work over NAT64. 600s is the practical maximum. |
+| Keep-alive | Configurable via CONFIG_MQTT_KEEPALIVE. Currently **90 s** (ping every 60 s). Tested: 300 s and 600 s both work over NAT64. 600 s is the practical maximum before broker/NAT64 conntrack flakiness. 90 s is our operational default for fast detection of Thread-flap-induced half-open sockets (see §"Why 90 s"). |
 | MQTT version | 3.1.1 (NOT 5.0 — server does not support MQTT 5.0) |
 | LWT (Last Will) | Topic: `stat/status`, payload: `"0"`, QoS 1. Published by broker on unexpected disconnect. |
 | Clean Session | true (no persistent session — re-subscribe on every connect) |
@@ -93,7 +93,18 @@ The TinyGS ping interval (`tele/ping`) must NOT equal `CONFIG_MQTT_KEEPALIVE`. W
 
 | Setting | Value | Notes |
 |---------|-------|-------|
-| MQTT keepalive | 300s | Reverted from 600s — PINGRESPs not reliably received over NAT64 |
+| MQTT keepalive | 90 s (was 300 s) | Shortened from 300 s to detect dead sockets after Thread-flap-induced half-open TCP. Power cost negligible — radio is boosted-RX continuous regardless. |
+
+### Why 90 s
+
+Over the 22 h power-run session on 2026-04-19/20 we saw ~10 MQTT EIO disconnects. Most were not caused by NAT64 timeouts (broker confirmed ≥ 600 s idle tolerance) — they were Thread-flap-induced half-open sockets. With `CONFIG_MQTT_KEEPALIVE=300` the detection pipeline was:
+
+- PINGREQ every 270 s (`KEEPALIVE - 30`)
+- Reconnect after 2 unacked PINGRESPs → up to **~9 minutes** before we notice a dead socket
+
+During that half-open window the server is retrying begines into a black hole. Estimated ~1-2 h/day of missed server assignment at the old rate.
+
+At 90 s keepalive the window shrinks to ~2-3 min. Radio is in boosted-RX continuous anyway (~5.9 mA SX1262), so the extra pings add < 0.5 mW average — rounding error against the 13-16 mA system draw.
 | TinyGS ping | 270s | = keepalive - 30s, avoids PINGREQ collision |
 | MQTT PINGREQ | Not sent | TinyGS ping at 270s resets MQTT library's last_activity timer before keepalive threshold |
 
@@ -415,7 +426,7 @@ The modem configuration structure contains:
 
 | Operation | Interval | Notes |
 |-----------|----------|-------|
-| MQTT keepalive | 300s (configurable) | 600s caused watchdog timeout; 300s reliable |
+| MQTT keepalive | 90 s (was 300 s, configurable) | 600s caused watchdog timeout; 300s was reliable on the wire; 90s for fast half-open detection after Thread flaps (see §"Why 90 s") |
 | TinyGS ping | keepalive - 30s | Offset avoids PINGREQ collision |
 | MQTT PINGRESP | Never sent | The TinyGS ping PUBLISH at keepalive-30s resets the MQTT library's `last_activity` timer, so `mqtt_live()` never reaches the keepalive threshold to send PINGREQ. This is correct MQTT behavior — any outbound activity counts as a keepalive. The broker was confirmed to respond to PINGREQ when tested directly. |
 | Satellite reassignment | ~60s | When auto-tune enabled |
