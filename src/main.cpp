@@ -739,8 +739,18 @@ static bool nat64_synth(otInstance *instance, const uint8_t ipv4[4],
 static K_SEM_DEFINE(dns_sem, 0, 1);
 static volatile int dns_result = -1;
 
+/* Shared resolver-callback context: the callback writes the resolved
+ * IPv6 address into *out. Hostname is carried for logging only. Port
+ * stamping is left to the caller since different callers want different
+ * sockaddr / otMessageInfo types. */
+struct dns_ctx {
+    otIp6Address *out;
+    const char  *hostname;
+};
+
 static void dns_callback(otError aError, const otDnsAddressResponse *aResponse, void *aContext)
 {
+    struct dns_ctx *ctx = (struct dns_ctx *)aContext;
     if (aError != OT_ERROR_NONE) {
         LOG_ERR("OT DNS callback error: %d (%s)", (int)aError, otThreadErrorToString(aError));
         dns_result = -1;
@@ -758,23 +768,24 @@ static void dns_callback(otError aError, const otDnsAddressResponse *aResponse, 
         return;
     }
 
-    /* Store resolved address into broker_addr */
-    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&broker_addr;
-    memset(sin6, 0, sizeof(*sin6));
-    sin6->sin6_family = AF_INET6;
-    sin6->sin6_port = htons(MQTT_BROKER_PORT);
-    memcpy(&sin6->sin6_addr, &addr, sizeof(addr));
+    if (ctx && ctx->out) {
+        *ctx->out = addr;
+    }
 
     char addr_str[OT_IP6_ADDRESS_STRING_SIZE];
     otIp6AddressToString(&addr, addr_str, sizeof(addr_str));
-    LOG_INF("Resolved %s -> [%s]:%d (TTL=%u)",
-            MQTT_BROKER_HOSTNAME, addr_str, MQTT_BROKER_PORT, (unsigned)ttl);
+    LOG_INF("Resolved %s -> [%s] (TTL=%u)",
+            ctx && ctx->hostname ? ctx->hostname : "?", addr_str, (unsigned)ttl);
 
     dns_result = 0;
     k_sem_give(&dns_sem);
 }
 
-static int resolve_broker(void)
+/* Generic hostname → NAT64-synthesised IPv6 resolver. Used by the MQTT
+ * broker and SNTP paths — anywhere we need to reach an IPv4-only host
+ * from the Thread mesh. Returns 0 on success and fills *out; -1 on any
+ * failure. Blocks up to 15 s waiting on the DNS callback. */
+static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
 {
     struct openthread_context *ctx = openthread_get_default_context();
 
@@ -800,18 +811,18 @@ static int resolve_broker(void)
     char dns_str[OT_IP6_ADDRESS_STRING_SIZE];
     otIp6AddressToString(&config.mServerSockAddr.mAddress, dns_str, sizeof(dns_str));
     LOG_INF("Resolving %s via NAT64-synthesised DNS [%s]:53",
-            MQTT_BROKER_HOSTNAME, dns_str);
+            hostname, dns_str);
 
-    /* Query A record (IPv4) explicitly. mqtt.tinygs.com is IPv4-only,
-     * so AAAA queries return NotFound. otDnsClientResolveIp4Address
-     * queries A and — with mNat64Mode=ALLOW and a NAT64 prefix in
-     * netdata — synthesises an AAAA for the caller via OT's built-in
-     * NAT64 translation. We get back a NAT64-prefixed address we can
-     * connect to directly. */
+    struct dns_ctx dctx = { .out = out, .hostname = hostname };
+
+    /* Query A record (IPv4) explicitly. IPv4-only hosts return NotFound
+     * for AAAA queries. With mNat64Mode=ALLOW and a NAT64 prefix in
+     * netdata, OT synthesises an AAAA from the A response — we get back
+     * a NAT64-prefixed address directly usable as a peer. */
     openthread_api_mutex_lock(ctx);
     otError err = otDnsClientResolveIp4Address(ctx->instance,
-                                               MQTT_BROKER_HOSTNAME,
-                                               dns_callback, NULL,
+                                               hostname,
+                                               dns_callback, &dctx,
                                                &config);
     openthread_api_mutex_unlock(ctx);
 
@@ -828,6 +839,24 @@ static int resolve_broker(void)
     }
 
     return dns_result;
+}
+
+/* Resolve the MQTT broker hostname and stamp it into broker_addr. Thin
+ * wrapper over resolve_ipv4_hostname() — keeps the state-machine
+ * caller simple. */
+static int resolve_broker(void)
+{
+    otIp6Address addr;
+    int rc = resolve_ipv4_hostname(MQTT_BROKER_HOSTNAME, &addr);
+    if (rc != 0) {
+        return rc;
+    }
+    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&broker_addr;
+    memset(sin6, 0, sizeof(*sin6));
+    sin6->sin6_family = AF_INET6;
+    sin6->sin6_port = htons(MQTT_BROKER_PORT);
+    memcpy(&sin6->sin6_addr, &addr, sizeof(addr));
+    return 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1862,26 +1891,31 @@ static void sntp_sync(void)
     struct openthread_context *ot_ctx = openthread_get_default_context();
     if (!ot_ctx) return;
 
-    /* Same reasoning as resolve_broker(): native-IPv6 NTP servers are
-     * global-scope, and BR ULA→global forwarding gets ICMP-rejected
-     * in multi-BR setups. Synthesise the NTP target via the mesh's
-     * NAT64 prefix + IPv4 from TINYGS_SNTP_SERVER_V4. */
+    /* Resolve TINYGS_SNTP_HOSTNAME through the same DNS path the MQTT
+     * client uses. The resolver returns a NAT64-synthesised AAAA for the
+     * IPv4 NTP server the pool picks today — so no hardcoded IPv4 to go
+     * stale, and no extra failure mode (if DNS is broken, MQTT is broken
+     * too and the station is already down). Cached statically: resolve
+     * on first use, reuse for subsequent re-syncs. */
+    static otIp6Address sntp_peer_addr;
+    static bool sntp_peer_resolved = false;
+    if (!sntp_peer_resolved) {
+        if (resolve_ipv4_hostname(TINYGS_SNTP_HOSTNAME, &sntp_peer_addr) != 0) {
+            LOG_WRN("SNTP: hostname resolution failed, skipping sync");
+            return;
+        }
+        sntp_peer_resolved = true;
+    }
+
     otMessageInfo msgInfo;
     memset(&msgInfo, 0, sizeof(msgInfo));
-    static const uint8_t sntp_v4[4] = TINYGS_SNTP_SERVER_V4;
-    openthread_api_mutex_lock(ot_ctx);
-    bool found = nat64_synth(ot_ctx->instance, sntp_v4, &msgInfo.mPeerAddr);
-    openthread_api_mutex_unlock(ot_ctx);
-    if (!found) {
-        LOG_WRN("SNTP: no NAT64 prefix in netdata, skipping sync");
-        return;
-    }
+    msgInfo.mPeerAddr = sntp_peer_addr;
     msgInfo.mPeerPort = TINYGS_SNTP_SERVER_PORT;
 
     char sntp_str[OT_IP6_ADDRESS_STRING_SIZE];
     otIp6AddressToString(&msgInfo.mPeerAddr, sntp_str, sizeof(sntp_str));
-    LOG_INF("SNTP: query to NAT64-synthesised [%s]:%u",
-            sntp_str, (unsigned)msgInfo.mPeerPort);
+    LOG_INF("SNTP: query to %s [%s]:%u",
+            TINYGS_SNTP_HOSTNAME, sntp_str, (unsigned)msgInfo.mPeerPort);
 
     otSntpQuery query;
     query.mMessageInfo = &msgInfo;

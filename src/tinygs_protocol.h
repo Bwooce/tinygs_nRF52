@@ -92,22 +92,26 @@ const char *errno_name(int err);
  * accepts arbitrary seconds. */
 #define TINYGS_SLEEP_MAX_SECONDS       86400  /* 24h */
 
-/* NAT64-synthesis targets for outbound UDP helpers (DNS + SNTP).
+/* Outbound UDP helper targets (DNS bootstrap + SNTP).
  *
  * ULA-source → global-IPv6-destination packets get ICMP-rejected by the
- * OT BorderRouting module in multi-BR networks. So we route everything
- * through the mesh's NAT64 prefix by synthesising the destination as
- * <nat64_prefix_96> + <ipv4_32>. The actual NAT64 prefix comes from
- * Thread netdata at runtime (changes when the BR re-elects primary);
- * only the IPv4 peer needs to be stable.
+ * OT BorderRouting module in multi-BR networks, so every outbound host
+ * must be reachable via the mesh's NAT64 prefix. Two paths:
  *
- * DNS_SERVER_V4 — Cloudflare 1.1.1.1 (IPv4-anycast, low latency, does
- * not require DNS64 on its side because we query A records explicitly).
- * SNTP_SERVER_V4 — time.nist.gov 129.6.15.28 (stable public NTP).
+ *   DNS: target = <nat64_prefix_96> + DNS_SERVER_V4 synthesised at query
+ *        time. Cloudflare 1.1.1.1 is an IPv4-anycast resolver and needs
+ *        no DNS64 on its side because we query A records explicitly and
+ *        let OT synthesise the response into the NAT64 prefix for us.
+ *
+ *   SNTP: target = DNS-resolved AAAA for SNTP_HOSTNAME. The resolver
+ *        returns a NAT64-synthesised address from whichever IPv4 the NTP
+ *        pool picks today — so no hardcoded IPv4 to go stale. Trade:
+ *        SNTP depends on DNS working (acceptable — MQTT also depends on
+ *        DNS, so if DNS is down the whole station is down anyway).
  */
 #define TINYGS_DNS_SERVER_V4       { 1, 1, 1, 1 }
 #define TINYGS_DNS_SERVER_PORT     53
-#define TINYGS_SNTP_SERVER_V4      { 129, 6, 15, 28 }
+#define TINYGS_SNTP_HOSTNAME       "pool.ntp.org"
 #define TINYGS_SNTP_SERVER_PORT    123
 
 /*
