@@ -331,6 +331,26 @@ because MQTT keepalive must stay pinned; the Thread radio isn't where the power 
     - Target: <1mA average (estimated achievable based on research)
 5.  **CONFIG_RAM_POWER_DOWN_LIBRARY=y** — power down unused SRAM banks
 
+**Interim current estimate — Vbat-drift method (±20–30 %):**
+
+Until an INA219 shunt or Nordic Power Profiler is wired in, average current is
+estimated by running the station on a known-capacity LiPo for 2–4 days and
+dividing the observed Vbat drop by the LiPo plateau slope. Method:
+
+- Capture Vbat mean-of-last-5 STATUS samples at baseline (post-unplug, after a
+  ~20 min settle so charger tail-off doesn't bias things).
+- Run untouched for 2–4 days, mean-of-5 again at the end.
+- `avg_mA ≈ ΔV / slope / run_h`, with slope ≈ 0.15–0.20 mV/mAh in the
+  4.00–3.85 V LiPo plateau. Noise floor per ADC sample is ±80 mV, so mean-5
+  drops σ to ~36 mV — ΔV needs to be well past that to be real signal.
+- **Invalidation conditions:** any USB reconnect (= charging, resets the
+  baseline), reflash, more than a handful of unexpected reboots, or >12 h
+  iot_log silence gap.
+
+Observed on this build over ~60 h in April 2026: ~15 mA steady-state, trending
+up to ~20 mA across the whole run once Thread/MQTT churn reboot storms were
+factored in. Real shunt measurement is item §4 above and will supersede.
+
 ### Phase 5: RadioLib ZephyrHal Upstream PR
 The Zephyr HAL is functionally complete and multi-instance safe. To submit as a PR
 to [jgromes/RadioLib](https://github.com/jgromes/RadioLib), the following packaging

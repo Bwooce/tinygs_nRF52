@@ -16,3 +16,8 @@ build_test/
 
 # MQTT credentials — never commit
 src/mqtt_credentials.h
+
+# Per-run engineering notes (firmware hashes, live Vbat tables, OMR prefixes,
+# unplug timings — session-specific and not user-facing).
+# Power-characterisation methodology lives in PLAN.md Phase 4 instead.
+docs/power_run_*.md
