@@ -110,7 +110,20 @@ Compiled-in fallback defaults live in `src/mqtt_credentials.h` (gitignored):
 
 Runtime `config.json` overrides these on every boot.
 
-### Commissioning the device onto your Thread network
+### Thread Border Router setup
+
+This station needs a BR that runs **DNS64 + NAT64 + `ot-ctl` commissioner**.
+Apple TV / HomePod and Google Nest Thread BRs only forward Matter/HomeKit
+traffic — they don't do NAT64 and can't commission, so they won't work as
+the egress for this station (though they can coexist on the same mesh).
+
+See [docs/HA_OTBR_SETUP.md](docs/HA_OTBR_SETUP.md) for the full guide:
+HA OpenThread Border Router add-on install, `br routeprf high` to beat
+Apple/Google BRs to the HIGH route preference, the `ip6tables` MASQUERADE
+rule required for Thread ULA egress, and the HA automation to make both
+survive a reboot.
+
+Once the BR is set up, commissioning the device itself is two commands:
 
 ```bash
 # On your OpenThread Border Router:
@@ -155,6 +168,7 @@ lib/
   RadioLib/             — LoRa/FSK radio library (submodule)
 docs/
   TINYGS_MQTT_PROTOCOL.md — Reverse-engineered MQTT protocol spec
+  HA_OTBR_SETUP.md        — Home Assistant OpenThread BR setup guide
 tests/
   json_parser/          — Zephyr unit tests for JSON begine parser
 scripts/
