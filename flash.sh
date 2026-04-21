@@ -4,9 +4,11 @@
 # copies UF2, restarts serial logger.
 set -e
 
-UF2_FILE="/home/bruce/dev/tinygs_nRF52/build/zephyr/zephyr.uf2"
-SERIAL_LOG="/home/bruce/dev/tinygs_nRF52/serial_longrun.log"
-SERIAL_SCRIPT="/home/bruce/dev/tinygs_nRF52/scripts/serial_log.py"
+# Script-relative — works no matter where the repo lives.
+REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+UF2_FILE="${REPO_DIR}/build/zephyr/zephyr.uf2"
+SERIAL_LOG="${REPO_DIR}/serial_longrun.log"
+SERIAL_SCRIPT="${REPO_DIR}/scripts/serial_log.py"
 
 if [ ! -f "$UF2_FILE" ]; then
     echo "Error: UF2 firmware not found! Run ./build.sh first."
@@ -45,7 +47,7 @@ fi
 echo "Waiting for UF2 bootloader drive..."
 MOUNT_POINT=""
 for i in $(seq 1 15); do
-    for mp in /media/bruce/HT-n5262 /media/HT-n5262 /media/$USER/HT-n5262; do
+    for mp in /media/$USER/HT-n5262 /media/HT-n5262 /run/media/$USER/HT-n5262; do
         if [ -d "$mp" ]; then
             MOUNT_POINT="$mp"
             break 2

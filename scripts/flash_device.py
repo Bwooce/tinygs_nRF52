@@ -35,16 +35,21 @@ def find_mount_point(label="HT-n5262"):
     except Exception as e:
         print(f"Error finding mount point: {e}")
     
-    # Fallback: check standard linux mount path
-    standard_path = f"/media/bruce/{label}"
-    if os.path.isdir(standard_path):
-        return standard_path
-        
+    # Fallback: check standard linux mount paths (Ubuntu/Debian and Fedora/Arch).
+    user = os.environ.get("USER", "")
+    for candidate in (f"/media/{user}/{label}", f"/run/media/{user}/{label}"):
+        if os.path.isdir(candidate):
+            return candidate
+
     return None
 
 if __name__ == "__main__":
+    # Resolve paths relative to this script so the repo can live anywhere.
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    repo_dir = os.path.dirname(script_dir)
+
     tty_port = "/dev/ttyACM0"
-    uf2_file = "/home/bruce/dev/tinygs_nRF52/build/zephyr/zephyr.uf2"
+    uf2_file = os.path.join(repo_dir, "build", "zephyr", "zephyr.uf2")
     
     if os.path.exists(tty_port):
         trigger_dfu(tty_port)

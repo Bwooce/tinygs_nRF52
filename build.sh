@@ -7,8 +7,9 @@
 
 set -e
 
-WORKSPACE_DIR="/home/bruce/dev/tinygs_nRF52"
-SDK_DIR="/home/bruce/zephyr-sdk-0.16.8"
+# Script-relative so the repo can live anywhere; SDK under $HOME by convention.
+WORKSPACE_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+SDK_DIR="${ZEPHYR_SDK_DIR:-$HOME/zephyr-sdk-0.16.8}"
 NM="${SDK_DIR}/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm"
 ELF="${WORKSPACE_DIR}/build/zephyr/zephyr.elf"
 

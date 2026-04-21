@@ -1,14 +1,17 @@
 #!/bin/bash
 set -e
 
-WORKSPACE_DIR="/home/bruce/dev/tinygs_nRF52/ncs"
+# Script-relative — works no matter where the repo lives.
+REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+WORKSPACE_DIR="${REPO_DIR}/ncs"
+SDK_DIR="${ZEPHYR_SDK_DIR:-$HOME}"
 SDK_VER="0.16.8"
 
 echo "Starting Zephyr/NCS setup in $WORKSPACE_DIR..."
 
 if [ ! -d "$WORKSPACE_DIR" ]; then
     echo "Initializing west workspace..."
-    cd /home/bruce/dev/tinygs_nRF52
+    cd "$REPO_DIR"
     west init -m https://github.com/nrfconnect/sdk-nrf --mr v2.6.0 ncs
 fi
 
@@ -18,7 +21,7 @@ west update
 west zephyr-export
 
 echo "Setting up Python virtual environment..."
-cd /home/bruce/dev/tinygs_nRF52
+cd "$REPO_DIR"
 python3 -m venv .venv
 source .venv/bin/activate
 
@@ -30,9 +33,9 @@ pip install -r nrf/scripts/requirements.txt
 pip install -r bootloader/mcuboot/scripts/requirements.txt
 
 # Install Zephyr SDK if not present
-cd /home/bruce
+cd "$SDK_DIR"
 if [ ! -d "zephyr-sdk-${SDK_VER}" ]; then
-    echo "Downloading Zephyr SDK ${SDK_VER}..."
+    echo "Downloading Zephyr SDK ${SDK_VER} into ${SDK_DIR}..."
     wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v${SDK_VER}/zephyr-sdk-${SDK_VER}_linux-x86_64.tar.xz
     tar xf zephyr-sdk-${SDK_VER}_linux-x86_64.tar.xz
     rm zephyr-sdk-${SDK_VER}_linux-x86_64.tar.xz
