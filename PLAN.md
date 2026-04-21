@@ -108,6 +108,34 @@ RadioLib is natively designed for the Arduino ecosystem. To run it on Zephyr RTO
 *   **SPI & GPIO:** Map RadioLib's pin logic to Zephyr's Devicetree (`gpio_dt_spec`) and `spi_transceive` APIs.
 *   **Interrupts:** Zephyr's `gpio_add_callback` will be used to trigger RadioLib's ISRs for LoRa packet reception via the SX1262 DIO1 pin.
 
+### 3.6 Radio Layering vs. Multi-Chip Support
+Three separate layers — worth keeping distinct because they answer different
+questions and live in different places:
+
+| Layer | What it does | Where it lives | What varies per chip |
+|-------|-------------|----------------|----------------------|
+| Application | begine dispatch, Doppler, post-RX framing, filter, CRC | `src/main.cpp`, `src/tinygs_protocol.*` | calls differ per chip |
+| **Radio abstraction** (missing today) | uniform virtual interface across SX chip families | *would live in* `src/` | normalises per-chip API gaps |
+| RadioLib | per-chip classes (`SX1262`, `SX1276`, `SX1268`, `SX1280`, `LR1121` …) | `lib/RadioLib/` submodule | **every method signature differs slightly** |
+| Platform HAL (`ZephyrHal`) | GPIO / SPI / IRQ / delay for RadioLib | `src/hal/` | board pin map only |
+
+The **ESP32 TinyGS project has this abstraction layer** — see `RadioHal<T>` in
+`tinyGS/src/Radio/RadioHal.hpp`. It's a C++ template that wraps each RadioLib
+chip class into a common virtual interface so the application can call e.g.
+`radioHal->beginFSK(...)` regardless of which chip is fitted. Per-chip quirks
+(`setWhitening` existing on SX1268 but not SX1262, different `beginFSK`
+signatures, `autoLDRO` shape, etc.) live inside the template specialisations.
+
+**We don't have an equivalent** because we only target SX1262 today — a single
+concrete chip doesn't need a virtual base. `main.cpp` calls RadioLib directly.
+The day we add a second chip (likely SX1268 for a Wio-family board, or SX1276
+for a Feather), we should port a minimal `RadioHal<T>`-equivalent into `src/`
+(not into `lib/RadioLib/` — RadioLib's philosophy is to expose each chip's full
+capability, not a lowest-common-denominator wrapper). Adding it would be a
+~200-line refactor; doing it speculatively before a second target exists is
+dead weight. Cross-reference Phase 5 §4 (ZephyrHal multi-chip validation) —
+those two items pair naturally when a second chip enters the picture.
+
 ## 4. Phased Implementation Plan
 
 ### Phase 1: High-Risk Prototyping — COMPLETE
