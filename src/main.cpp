@@ -771,6 +771,12 @@ static bool nat64_synth(otInstance *instance, const uint8_t ipv4[4],
 
 static K_SEM_DEFINE(dns_sem, 0, 1);
 static volatile int dns_result = -1;
+/* Serialises resolve_ipv4_hostname() — main thread (MQTT reconnect) and
+ * system workqueue (daily SNTP resync) can both call it. Without this,
+ * the second caller's k_sem_reset() corrupts the first's wait, and the
+ * dns_callback writes whichever dns_ctx* arrived second into the wrong
+ * caller's *out. Hold time = single DNS round-trip, ≤15 s. */
+static K_MUTEX_DEFINE(dns_mutex);
 
 /* Shared resolver-callback context: the callback writes the resolved
  * IPv6 address into *out. Hostname is carried for logging only. Port
@@ -822,6 +828,10 @@ static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
 {
     struct openthread_context *ctx = openthread_get_default_context();
 
+    /* Lock for the whole resolve so dns_sem / dns_result / dns_callback
+     * can't be co-opted by an overlapping caller. Hold ≤15 s. */
+    k_mutex_lock(&dns_mutex, K_FOREVER);
+
     k_sem_reset(&dns_sem);
     dns_result = -1;
 
@@ -833,6 +843,7 @@ static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
     openthread_api_mutex_unlock(ctx);
     if (!found) {
         LOG_ERR("No /96 NAT64 route in Thread netdata — mesh has no NAT64 translator?");
+        k_mutex_unlock(&dns_mutex);
         return -1;
     }
     config.mServerSockAddr.mPort    = TINYGS_DNS_SERVER_PORT;
@@ -862,16 +873,20 @@ static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
     if (err != OT_ERROR_NONE) {
         LOG_ERR("otDnsClientResolveAddress failed: %d (%s)",
                 (int)err, otThreadErrorToString(err));
+        k_mutex_unlock(&dns_mutex);
         return -1;
     }
 
     /* Wait for callback (up to 15s) */
     if (k_sem_take(&dns_sem, K_SECONDS(15)) != 0) {
         LOG_ERR("DNS resolution timed out");
+        k_mutex_unlock(&dns_mutex);
         return -1;
     }
 
-    return dns_result;
+    int ret = dns_result;
+    k_mutex_unlock(&dns_mutex);
+    return ret;
 }
 
 /* Resolve the MQTT broker hostname and stamp it into broker_addr. Thin
@@ -2025,6 +2040,12 @@ static void setup_usb_storage(void)
                     (double)tinygs_station_lon,
                     (double)tinygs_station_alt,
                     cfg_tx_enable ? "true" : "false");
+                /* snprintf returns the would-have-written length, which
+                 * can exceed the buffer if a future field bloats things.
+                 * Cap to actual buffer fill so fs_write can't read past
+                 * file_buf into adjacent BSS. */
+                if (len < 0) len = 0;
+                if ((size_t)len >= sizeof(file_buf)) len = sizeof(file_buf) - 1;
                 /* fs_write may return short on a full disk; truncate
                  * before write so the file size matches len exactly. */
                 fs_truncate(&cfg, 0);
