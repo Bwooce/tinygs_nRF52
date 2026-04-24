@@ -16,35 +16,79 @@ budgeted as its own project phase rather than merged with feature work.
 
 ## 1. Why upgrade at all
 
-Three real benefits, listed from "actually applies to us today" downward:
+Five groups of real benefits, ordered from "applies to us immediately" downward:
 
-1. **OpenThread DNS-client bugfixes.** Upstream commits `4c45ee8e0` (Sep 2024) and
-   `d163dee2a` (Oct 2024) fix the exact `otDnsClientResolveIp4Address` + NAT64 code path
-   we use for every MQTT reconnect. The first repaired a backwards `QueryType` check
-   in `Client::ReplaceWithIp4Query()` that silently sent wrong follow-up queries; the
-   second added handling for "NOERROR but empty answer" responses that IPv4-only hosts
-   (like `mqtt.tinygs.com`) commonly return. These are not backported to the v2.6 LTS
-   line — v2.6.5's OpenThread is actually *older* (`7761b81d2`, Jan 2024) than ours
-   (`b9dcdbca4`, Feb 2024), so the LTS track can't deliver them.
+### 1.1 OpenThread DNS-client bugfixes (our NAT64 code path)
 
-2. **Zephyr HTTP server maturity.** The in-tree HTTP server we plan to use for the
-   Phase 3 device web UI (PLAN §21) has had substantial work landed between Zephyr
-   v3.5 and v3.7. Concurrency limits, resource cleanup, and WebSocket support all
-   improved. Our fallback plan was a hand-rolled HTTP/1.0 parser if the in-tree one
-   proved unstable; upgrading may remove that fallback from the risk list entirely.
+Upstream commits `4c45ee8e0` (Sep 2024) and `d163dee2a` (Oct 2024) fix the exact
+`otDnsClientResolveIp4Address` + NAT64 code path we use for every MQTT reconnect.
+The first repaired a backwards `QueryType` check in `Client::ReplaceWithIp4Query()`
+that silently sent wrong follow-up queries; the second added handling for
+"NOERROR but empty answer" responses that IPv4-only hosts (like `mqtt.tinygs.com`)
+commonly return. Not backported to the v2.6 LTS line — v2.6.5's OpenThread is
+actually *older* (`7761b81d2`, Jan 2024) than ours (`b9dcdbca4`, Feb 2024), so
+the LTS track can't deliver them.
 
-3. **Security fixes across ~25 months of mbedTLS / network stack / USB stack.**
-   No specific CVE known to affect us, but a deployed device running TLS to a public
-   MQTT broker should not accumulate that much lag indefinitely. This is "hygiene"
-   reason, not "we have a known problem" reason.
+### 1.2 OpenThread MLE maturity (attach / parent-search / re-attach)
 
-Deliberately *not* in the benefits column:
-- nRF54L / nRF54H20 / nRF91 / Matter / audio / BLE updates — none of our hardware.
-- ZMS settings backend — our working set fits NVS just fine; opting into ZMS would
-  be a lateral move with migration risk for no gain.
-- PSA crypto as default — we run with `CONFIG_MBEDTLS_USE_PSA_CRYPTO=n` deliberately
-  because the legacy RSA verify path was what actually handshake-compatible with
-  mqtt.tinygs.com (see the painful Phase 1 investigation).
+Between Feb 2024 and Jun 2025 OT landed ~983 commits. The MLE-specific subset
+that applies to our MTD + HA-SkyConnect-BR topology:
+
+- `bc54d67ed` [mle] clamp child timeout to min/max range
+- `e7f8f7532` [mle] expedite recovery from temporary router link quality mismatch
+- `bf6d74d09` [mle] use `DelayedSender` to delay & aggregate Child Update Requests
+- `3913e0de6` [mle] enhance MTD child IPv6 address registration
+- `a30cbda8a` [mle] include Link Margin TLV in Child Update messages
+- `f91610f3f` [mle] include Supervision TLV only from sleepy child
+
+Plus NCS v2.9.0 added explicit Kconfig options for MLE child update timeout,
+child supervision interval, and supervision check timeout — we've been running
+defaults, these give us knobs for tuning against our BR's behaviour.
+
+Our logs today show ~12 Thread re-attach events per 2000 log lines, all
+recovered cleanly in 3-14 s. The above changes target exactly that path — faster
+recovery and less MQTT-keepalive pressure during link flaps.
+
+### 1.3 Joiner robustness
+
+- `9e7b57d7f` [joiner] keep discovering when UDP port is bad
+- `0884a1be4` [dtls] fix undesired kernel filtering of connected UDP (affected joiner)
+- `d31bcee81` [joiner] support a new EUI-64 at runtime
+
+Current joiner flow is working but fragile in certain BR states. These commits
+address the known edge cases.
+
+### 1.4 Zephyr HTTP server (enables Phase 3 web UI properly)
+
+Our current Zephyr v3.5.99-ncs1 has only a stub `CONFIG_HTTP_SERVER` Kconfig
+with no implementation. The full subsystem (`http_service_register`, HTTP/1.1
++ HTTP/2, WebSocket, static+dynamic resource registration) landed in Zephyr
+v3.7 as a "long-awaited" library, shipped in NCS v3.3.0. Phase 3 §21 in PLAN.md
+currently assumes this exists; on our current toolchain we'd be forced into
+the hand-rolled HTTP/1.0 fallback. This alone justifies upgrading before Phase 3.
+
+### 1.5 Security fixes across ~25 months of mbedTLS / network / USB
+
+No specific CVE known to affect us, but a deployed device running TLS to a
+public MQTT broker should not accumulate that much lag indefinitely. Hygiene
+reason, not a "we have a known problem" reason.
+
+### What we specifically do NOT get (checked — not speculation)
+
+- **MQTT 5.0 client.** Not in Zephyr even as of v3.7. `enum mqtt_version` still
+  has only `MQTT_VERSION_3_1_0` and `MQTT_VERSION_3_1_1`. No session-expiry
+  negotiation, no enhanced keepalive, no properties. Our existing
+  `unacked_ping >= 2 → force reconnect` workaround stays necessary.
+- **NAT64 major rework.** `src/core/net/nat64_translator.cpp` got minor
+  improvements (port translation, expired mapping release) but the core
+  synthesis logic we depend on is unchanged.
+- **CSL / SSED / wake-up frame power features.** These are real upstream
+  additions but our architecture rejected SED/SSED (§20) so they don't apply.
+- **ZMS settings backend** — active choice to stay on NVS, see §3.1.
+- **PSA Crypto as default.** We deliberately `=n` it because `mqtt.tinygs.com`
+  needs the legacy RSA verify path.
+- **nRF54L / nRF54H20 / nRF91 / Matter / audio / BLE / Wi-Fi** — none of our
+  hardware or protocols.
 
 ---
 
@@ -169,6 +213,7 @@ In rough order of hands-on-keyboard effort:
 | OpenThread samples bypass Zephyr networking by default | v3.1 migration guide | Not a migration per se, but confirm `CONFIG_NETWORKING=y` + `CONFIG_NET_L2_OPENTHREAD=y` stay set explicitly; we rely on them for MQTT/zsock. |
 | Partition Manager deprecation | v3.3 migration guide | Confirm our DTS partition definitions still valid; no Partition Manager usage to remove (we already DTS-only). |
 | mbedTLS kconfig drift | v3.0-v3.3 release notes | Full `prj.conf` kconfig audit; add a fresh `menuconfig` pass to resolve any removed/renamed options. Most critical subset: verify `CONFIG_MBEDTLS_USE_PSA_CRYPTO=n` still honoured and the legacy RSA path still buildable. |
+| **ST7789V moved to MIPI DBI API** | Zephyr 3.7 migration guide | Our `app.overlay` declares the ST7789V as a direct SPI child (`sitronix,st7789v-fb`). In Zephyr 3.7 the driver requires a `zephyr,mipi-dbi-spi` wrapper node above it. Concrete rewrite needed — see the [Zephyr 3.7 migration guide](https://docs.zephyrproject.org/latest/releases/migration-guide-3.7.html#display) for the ST7789V pattern. Driver internals unchanged, only the DTS binding. Budget: 1-2 hours plus bench verification that the display still works. |
 
 ### 3.2 Behavioral (will build, might behave differently)
 
