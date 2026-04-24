@@ -2082,9 +2082,13 @@ static void init_radio(void)
     radio = new SX1278(radio_mod);
 #endif
 
-    /* T114 SX1262 uses TCXO on DIO3 at 1.8V — MUST be set or
-     * the frequency reference is dead and all packets fail CRC */
-    int state = radio->begin(TINYGS_DEFAULT_FREQ, 250.0, 10, 5, 0x12, 5, 8, 1.8);
+    /* TCXO voltage is derived from the DTS (`dio3-tcxo-voltage` property on
+     * the SX1262 node). LORA_TCXO_VOLTAGE resolves to 1.8f on the T114 and
+     * to 0.0f on boards without a TCXO — passing 0.0f tells RadioLib there
+     * is no TCXO and skips the startup sequence. Must not hardcode 1.8f
+     * here; doing so would freeze a no-TCXO board during begin(). */
+    int state = radio->begin(TINYGS_DEFAULT_FREQ, 250.0, 10, 5, 0x12, 5, 8,
+                             LORA_TCXO_VOLTAGE);
     if (state == RADIOLIB_ERR_NONE) {
         LOG_INF("Radio: %s initialized (RadioLib)",
                 DT_NODE_FULL_NAME(DT_NODELABEL(sx1262)));
