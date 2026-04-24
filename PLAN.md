@@ -320,8 +320,54 @@ because MQTT keepalive must stay pinned; the Thread radio isn't where the power 
 1.  **Commissioning mode:** Extended wake window (15-30 min) for unprovisioned devices
     during Thread joining and DTLS commissioning handshake. No post-commissioning
     MTD→SED transition (see §20).
-2.  **SX1262 duty cycle RX:** Use startReceiveDutyCycle() for hardware-managed RX/sleep cycling
-    instead of continuous RX. Saves ~4.1mA (4.6mA → 0.5mA). This is the primary power lever.
+2.  **SX1262 duty cycle RX:** Use `startReceiveDutyCycleAuto()` for hardware-managed RX/sleep
+    cycling instead of continuous RX. Saves ~4.1 mA (4.6 mA → 0.5 mA). This is the primary
+    power lever.
+    - **Why a wrapper is needed:** `startReceiveDutyCycle` and `startReceiveDutyCycleAuto`
+      are SX126x-only — declared in `lib/RadioLib/src/modules/SX126x/SX126x.h:326,346`
+      and not virtual on `PhysicalLayer`. An SX1276/SX1278 build would fail to compile
+      if it called them.
+    - **Implementation pattern:** wrap every restart site behind a `start_radio_rx()`
+      helper that branches on the same DTS gate already used to type the `radio` pointer
+      (`main.cpp:911-919`):
+      ```c
+      static void start_radio_rx(void) {
+          if (!radio) return;
+      #if DT_NODE_HAS_COMPAT(DT_ALIAS(lora0), semtech_sx1262) || \
+          DT_NODE_HAS_COMPAT(DT_ALIAS(lora0), semtech_sx1268)
+          uint16_t min_symbols = (strcmp(tinygs_radio.modem_mode, "FSK") == 0) ? 8 : 0;
+          int state = radio->startReceiveDutyCycleAuto(tinygs_radio.pl, min_symbols);
+          if (state != RADIOLIB_ERR_NONE) {
+              LOG_WRN("DC RX failed (%d), falling back to continuous", state);
+              radio->startReceive();
+          }
+      #else
+          /* SX127x: no hardware DC. Continuous RX (CAD-poll variant possible later). */
+          radio->startReceive();
+      #endif
+      }
+      ```
+      Then replace each `radio->startReceive()` call site in `main.cpp` (~12 sites: after
+      packet RX in `lora_check_rx`, after TX, after doppler retune, on begine config
+      change, in the radio re-init recovery path, etc.) with `start_radio_rx()`. This is
+      the same DTS-gate pattern already used for every chip-specific call on `radio`, just
+      hoisted into one helper.
+    - **Min-symbols / preamble caveat (non-obvious):** the second arg controls how long
+      the chip naps between sniffs. Pass `tinygs_radio.pl` (preamble length from the
+      most recent begine) as the sender-preamble argument. TinyGS sats vary widely
+      (LoRa pl=8 typical, FSK can be pl=80 for slow-data sats); using a wrong/stale
+      value silently drops packets because the chip wakes too late to catch the preamble.
+      Make sure the `pl` field in `tinygs_radio` is updated on every begine and that
+      `start_radio_rx()` is called *after* the begine-driven `setPreambleLength()`, not
+      before.
+    - **Implementation easier now?** Yes — three preconditions are already in place:
+      (a) `radio` is already a chip-typed pointer behind a DTS gate, so adding the
+      `#if` is the same pattern as everywhere else; (b) `tinygs_radio.pl` is already
+      tracked per-begine in `tinygs_protocol.cpp`; (c) the doppler-retune mid-packet
+      guard from the recent fault-handler / retune commit is in place, so DC RX won't
+      collide with mid-packet retunes. The work is roughly: write the helper, sed the
+      ~12 call sites, soak-test against an active sat, instrument with a current probe
+      to confirm the ~4 mA saving. ~1 day with hardware.
 3.  **Peripheral power gating:**
     - **Vext (P0.21) LOW when not needed (saves ~3 mA).** Audit:
       Vext is currently held HIGH from `enable_peripherals()` and never
