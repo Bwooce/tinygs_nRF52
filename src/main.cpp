@@ -139,7 +139,14 @@ static volatile uint32_t __noinit crash_reason;
 static volatile uint32_t __noinit crash_pc;
 static volatile uint32_t __noinit crash_lr;
 static volatile uint32_t __noinit crash_icsr;  /* SCB->ICSR — VECTACTIVE identifies the IRQ */
+static volatile uint32_t __noinit crash_thread_ptr; /* raw k_current_get() for post-mortem decode */
 static char __noinit crash_thread[16];
+
+/* nRF52840 SRAM covers 0x20000000 – 0x2003FFFF (256 KB). Any pointer used
+ * in the fault handler is sanity-checked against this range before we
+ * dereference, so a corrupt thread struct or runaway pointer won't double-
+ * fault us inside the handler and prevent __noinit diagnostics from landing. */
+#define IN_SRAM(p) ((uintptr_t)(p) >= 0x20000000u && (uintptr_t)(p) < 0x20040000u)
 
 extern "C" void k_sys_fatal_error_handler(unsigned int reason,
                                            const z_arch_esf_t *esf)
@@ -150,13 +157,39 @@ extern "C" void k_sys_fatal_error_handler(unsigned int reason,
         crash_pc = esf->basic.pc;
         crash_lr = esf->basic.lr;
     }
-    const char *tname = k_thread_name_get(k_current_get());
-    if (tname) {
-        strncpy(crash_thread, tname, sizeof(crash_thread) - 1);
-        crash_thread[sizeof(crash_thread) - 1] = '\0';
-    } else {
-        crash_thread[0] = '\0';
+
+    /* Thread pointer is always safe to record — k_current_get() just reads
+     * a kernel global, no dereference. A raw pointer is human-decodable
+     * against the map file, which is enough to identify the thread even
+     * if the name string can't be captured. */
+    void *tp = k_current_get();
+    crash_thread_ptr = (uint32_t)(uintptr_t)tp;
+
+    /* Name capture is best-effort. If the initial fault was a stack smash
+     * that corrupted the thread struct or kernel globals, dereferencing
+     * through k_thread_name_get() would fault again inside this handler
+     * (the Cortex-M hard-fault-in-handler → lockup path) and the watchdog
+     * would have to recover us without any diagnostic. Range-check the
+     * pointer first and bail out of the strncpy if anything looks off. */
+    crash_thread[0] = '\0';
+    if (IN_SRAM(tp)) {
+        const char *tname = k_thread_name_get((struct k_thread *)tp);
+        if (IN_SRAM(tname)) {
+            /* Inline copy with an explicit per-char SRAM guard on the
+             * source — if the name string itself points into bad memory,
+             * we stop at the first byte we can't safely read rather than
+             * running strncpy all the way. */
+            size_t i;
+            for (i = 0; i < sizeof(crash_thread) - 1; i++) {
+                if (!IN_SRAM(tname + i)) break;
+                char c = tname[i];
+                if (c == '\0') break;
+                crash_thread[i] = c;
+            }
+            crash_thread[i] = '\0';
+        }
     }
+
     sys_reboot(SYS_REBOOT_COLD);
 }
 
@@ -2479,8 +2512,9 @@ int main(void)
         };
         const char *irq_str = (irq_num >= 0 && irq_num < (int)ARRAY_SIZE(irq_names))
                                ? irq_names[irq_num] : "?";
-        LOG_ERR("*** PREVIOUS CRASH: thread='%s' reason=%u(%s) PC=0x%08x LR=0x%08x ICSR=0x%08x IRQ=%d(%s) ***",
+        LOG_ERR("*** PREVIOUS CRASH: thread='%s'(%p) reason=%u(%s) PC=0x%08x LR=0x%08x ICSR=0x%08x IRQ=%d(%s) ***",
                 crash_thread[0] ? crash_thread : "?",
+                (void *)(uintptr_t)crash_thread_ptr,
                 r, reason_str,
                 (unsigned)crash_pc, (unsigned)crash_lr,
                 (unsigned)crash_icsr, irq_num, irq_str);
