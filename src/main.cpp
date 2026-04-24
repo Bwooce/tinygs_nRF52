@@ -1381,18 +1381,39 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     LOG_WRN("  → %s: invalid payload, ignoring", cmnd);
                 } else {
                     LOG_INF("  → %s: %u seconds", cmnd, secs);
-                    /* Put radio in sleep first — dominant current draw */
-                    if (radio) radio->sleep();
-                    /* Disconnect MQTT so the broker drops us cleanly rather
-                     * than holding state through a missed keepalive. */
+
+                    /* Shut down every peripheral that keeps a clock on. The
+                     * previous version left OpenThread rx-on (~5–6 mA), USB
+                     * holding HFCLK up (~1–2 mA) and PWM running — k_sleep()
+                     * on its own does very little for us. Order matters:
+                     * MQTT disconnect first so the broker sees a clean drop,
+                     * radio next since it's the biggest draw, then the rest.
+                     * sys_reboot() on wake means we can be dirty here. */
                     mqtt_disconnect(client);
                     k_msleep(200);
-                    /* Block the main thread — Zephyr's tick idle handler
-                     * lets the CPU enter low-power sleep. OpenThread will
-                     * still service MAC frames on its own thread. */
+
+                    if (radio) radio->sleep();
+
+                    struct openthread_context *ot_ctx =
+                        openthread_get_default_context();
+                    if (ot_ctx) {
+                        openthread_api_mutex_lock(ot_ctx);
+                        otThreadSetEnabled(ot_ctx->instance, false);
+                        otIp6SetEnabled(ot_ctx->instance, false);
+                        openthread_api_mutex_unlock(ot_ctx);
+                    }
+
+                    /* USB holds HFCLK on whenever it's enabled — releasing
+                     * it lets the SoC drop to LFCLK during k_sleep(). */
+                    usb_disable();
+
+                    /* Release the PWM peripheral so it stops requesting
+                     * its clock. Also kills the breathing LED, fine, the
+                     * device is supposed to look off. */
+                    nrfx_pwm_uninit(&pwm_led);
+
                     k_sleep(K_SECONDS(secs));
-                    /* Reboot on wake — cleanest re-init of radio + network
-                     * (matches ESP32 deep-sleep-wake-then-reset behaviour). */
+
                     LOG_INF("  → wake — rebooting");
                     sys_reboot(SYS_REBOOT_COLD);
                 }
