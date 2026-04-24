@@ -90,14 +90,37 @@ int tinygs_build_welcome(char *buf, size_t buflen,
     static char escaped_conf[1024];
     tinygs_json_escape(escaped_conf, sizeof(escaped_conf), tinygs_radio.modem_conf);
 
-    /* Heltec T114 board template (nRF52 port pins: 32*port + pin).
-     * lTCXOV=1.8 signals to the server that we have a TCXO — may be what
-     * it uses to decide tle (active Doppler) vs tlx (passive). */
-    static const char board_template[] =
-        "{\"radio\":6,\"lTCXOV\":1.8,"
-        "\"lNSS\":24,\"lDIO1\":20,\"lBUSSY\":17,\"lRST\":25,"
+    /* boardTemplate JSON for the dashboard. Three sets of values:
+     *   - SX1262 control pins (reset, busy, dio1) — pulled from the DTS
+     *     so a board overlay edit propagates correctly.
+     *   - LED + button — pulled from the DTS led0 / sw0 aliases.
+     *   - lTCXOV — uses LORA_TCXO_VOLTAGE (also DTS-derived).
+     *   - SPI CS / MISO / MOSI / SCK — hardcoded for the T114. These live
+     *     inside cs-gpios phandle-arrays and pinctrl `psels` groups
+     *     respectively, neither of which decompose cleanly with the
+     *     generic DT_GPIO_* macros. If you port to a board with
+     *     different SPI pinning, edit BOTH the spi1_default pinctrl
+     *     block in app.overlay AND the literal numbers below.
+     *
+     * nRF52 absolute pin number = 32 * port + pin (P0.x → 0–31, P1.x → 32–63). */
+    #define ABS_GPIO(node, prop) \
+        (DT_GPIO_PIN(node, prop) + 32 * DT_PROP(DT_GPIO_CTLR(node, prop), port))
+
+    static char board_template[256];
+    snprintf(board_template, sizeof(board_template),
+        "{\"radio\":%d,\"lTCXOV\":%.1f,"
+        "\"lNSS\":24,\"lDIO1\":%d,\"lBUSSY\":%d,\"lRST\":%d,"
         "\"lMISO\":23,\"lMOSI\":22,\"lSCK\":19,"
-        "\"led\":35,\"pBut\":42}";
+        "\"led\":%d,\"pBut\":%d}",
+        TINYGS_RADIO_CHIP,
+        (double)LORA_TCXO_VOLTAGE,
+        ABS_GPIO(LORA_DTS_NODE, dio1_gpios),
+        ABS_GPIO(LORA_DTS_NODE, busy_gpios),
+        ABS_GPIO(LORA_DTS_NODE, reset_gpios),
+        ABS_GPIO(DT_ALIAS(led0), gpios),
+        ABS_GPIO(DT_ALIAS(sw0), gpios));
+    #undef ABS_GPIO
+
     static char escaped_template[256];
     tinygs_json_escape(escaped_template, sizeof(escaped_template), board_template);
 
