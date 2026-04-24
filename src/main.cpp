@@ -1791,8 +1791,8 @@ static void setup_usb_storage(void)
                     int dt = json_extract_int(cfg_buf, "\"display_timeout\":", -1);
                     if (dt >= 0) tinygs_display_set_timeout((uint32_t)dt);
 
-                    int txe = json_extract_int(cfg_buf, "\"tx_enable\":", -1);
-                    if (txe >= 0) cfg_tx_enable = txe ? 1 : 0;
+                    int txe = json_extract_bool(cfg_buf, "\"tx_enable\":", -1);
+                    if (txe >= 0) cfg_tx_enable = (int8_t)txe;
                 }
             }
 
@@ -1809,13 +1809,13 @@ static void setup_usb_storage(void)
                     "  \"lon\": %.4f,\n"
                     "  \"alt\": %.0f,\n"
                     "  \"display_timeout\": 30,\n"
-                    "  \"tx_enable\": %d\n"
+                    "  \"tx_enable\": %s\n"
                     "}\n",
                     cfg_station, cfg_mqtt_user, cfg_mqtt_pass,
                     (double)tinygs_station_lat,
                     (double)tinygs_station_lon,
                     (double)tinygs_station_alt,
-                    (int)cfg_tx_enable);
+                    cfg_tx_enable ? "true" : "false");
                 fs_write(&cfg, cfg_buf, len);
                 fs_sync(&cfg);
                 fs_close(&cfg);

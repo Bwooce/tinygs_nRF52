@@ -272,6 +272,23 @@ int json_extract_int_n(const char *json, const char *key, size_t key_len, int de
     return atoi(p);
 }
 
+/* Accepts JSON-spec `true`/`false` literals and, for user-tolerance, bare
+ * 0/1 integers. Anything else (missing key, typo, whitespace-only) returns
+ * the default — we'd rather keep the prior setting than flip on a malformed
+ * line. */
+int json_extract_bool_n(const char *json, const char *key, size_t key_len, int default_val)
+{
+    const char *p = strstr(json, key);
+    if (!p) return default_val;
+    p += key_len;
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncmp(p, "true",  4) == 0) return 1;
+    if (strncmp(p, "false", 5) == 0) return 0;
+    if (*p == '1') return 1;
+    if (*p == '0') return 0;
+    return default_val;
+}
+
 /* --- filter array parsing: [1, 0, 235] --- */
 
 float tinygs_parse_foff(const char *json, size_t len, float *tol, uint32_t *refresh_ms)

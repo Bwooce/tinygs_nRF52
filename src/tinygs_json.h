@@ -128,10 +128,16 @@ int json_extract_string_n(const char *json, const char *key, size_t key_len, cha
 /* Extract an int value for a given key. Returns default_val if not found. */
 int json_extract_int_n(const char *json, const char *key, size_t key_len, int default_val);
 
+/* Extract a JSON bool for a given key. Accepts `true`/`false` literals, plus
+ * bare 0/1 for tolerance. Returns default_val if the key is missing or the
+ * value is unparseable. */
+int json_extract_bool_n(const char *json, const char *key, size_t key_len, int default_val);
+
 /* Convenience macros — sizeof() on string literals is compile-time */
 #define json_extract_float(json, key, def)      json_extract_float_n(json, key, sizeof(key) - 1, def)
 #define json_extract_string(json, key, buf, sz) json_extract_string_n(json, key, sizeof(key) - 1, buf, sz)
 #define json_extract_int(json, key, def)        json_extract_int_n(json, key, sizeof(key) - 1, def)
+#define json_extract_bool(json, key, def)       json_extract_bool_n(json, key, sizeof(key) - 1, def)
 
 float tinygs_parse_foff(const char *json, size_t len, float *tol, uint32_t *refresh_ms);
 

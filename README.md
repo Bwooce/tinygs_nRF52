@@ -99,7 +99,9 @@ python3 scripts/serial_log.py /dev/ttyACM0 115200 serial.log
 Runtime config lives in `config.json` on the USB MSC drive exposed by the device
 when running the application firmware (VID 2fe3:0001, appears as the
 "TinyGS Configurator" drive). Mount the drive, edit `config.json`, unmount.
-Fields: `mqtt_user`, `station_name`, NVS-persisted modem config echoes, etc.
+
+See [docs/CONFIG.md](docs/CONFIG.md) for the full list of configurable fields,
+types, defaults, and how the file's lifecycle works.
 
 Compiled-in fallback defaults live in `src/mqtt_credentials.h` (gitignored):
 
@@ -169,6 +171,7 @@ lib/
 docs/
   TINYGS_MQTT_PROTOCOL.md — Reverse-engineered MQTT protocol spec
   HA_OTBR_SETUP.md        — Home Assistant OpenThread BR setup guide
+  CONFIG.md               — config.json field reference
 tests/
   json_parser/          — Zephyr unit tests for JSON begine parser
 scripts/
