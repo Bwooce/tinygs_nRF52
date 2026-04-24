@@ -268,24 +268,37 @@ All Phase 1 objectives proven:
 
     **Zephyr implementation:**
 
-    1. **HTTP server:** `CONFIG_HTTP_SERVER=y` (Zephyr's in-tree async HTTP/2-capable server, experimental but functional on NCS v2.x). Falls back to hand-rolled HTTP/1.0 parser on a BSD socket if the in-tree server proves unstable — the whole UI is ~8 endpoints so this is not a blocker.
+    1. **HTTP server:** `CONFIG_HTTP_SERVER=y` (Zephyr's in-tree async HTTP/2-capable server, experimental but functional on NCS v2.x). Set `CONFIG_HTTP_SERVER_MAX_CLIENTS=4` minimum — TLS handshakes, slow phones, and overlapping `/cs`+`/wm` from multiple browser tabs can transiently consume slots even though every handler returns promptly. The +1-2 KB RAM cost is in budget. **Fallback** (which may end up being the *primary* path): a hand-rolled HTTP/1.0 dispatcher using `zsock_poll()` on a single listening socket, in one low-priority thread. The whole UI is ~8 endpoints so it's a ~200-line implementation, and a single-threaded event loop sidesteps the MAX_CLIENTS issue entirely (no fixed worker pool, just FDs in a poll set). Try the in-tree server first to save code, but don't treat the hand-rolled path as merely a safety net.
     2. **Routing:** register each endpoint with `http_service_register()`; handler signatures take a request + response buffer + status ref. Same handler-per-path shape as `server.on()` on ESP32.
     3. **Auth:** middleware decorator checks `Authorization: Basic <base64(admin:<pw>)>`. Returns 401 with `WWW-Authenticate` on miss, matching ESP32 behaviour.
     4. **Template rendering:** port the ESP32's `String s += "..."` builders to a fixed-size `snprintf`-into-response-buffer pattern. No dynamic allocation in the hot path. Static chunks (`IOTWEBCONF_HTML_HEAD`, CSS, scripts) stay as `const char[]` in flash, identical to ESP32's `PROGMEM` content.
     5. **Static content (logo, CSS, JS):** embed in flash via `include/webui_assets.h` generated from `logos.h` + `html.h`. Reusing FATFS is not attractive — host OS has the drive mounted over USB MSC, so any firmware write risks corruption (§6.2).
     6. **Config persistence:** posted form values feed into the existing NVS config path (same code that today consumes MQTT `cmnd/setconfig` payloads). `boardTemplate` and `modemStartup` stay as opaque JSON strings; `adv_prm` uses the dict-table editor script already present in ESP32's `ADVANCED_CONFIG_SCRIPT`.
-    7. **Console poll (`/cs`):** share the existing log ring buffer — `log_backend_ringbuf` already captures everything going to CDC ACM. `c1=` commands dispatch through the same command handlers as MQTT `cmnd/cs` (already implemented for `!p`/`!w`/`!e`/`!o`).
+    7. **Console poll (`/cs`):** **short-poll**, not long-poll. Browser sends `c2=<last-seen-counter>` every ~2.3 s; handler returns immediately with any new log lines emitted since that counter (or empty). Same shape as ESP32's `cmnd/cs`.
+       - **Two log backends, not one shared buffer.** Zephyr's `LOG_MODE_DEFERRED` (default) calls every registered `log_backend` with each message, so we register two: backend A is the existing `log_backend_ringbuf` feeding CDC ACM (unchanged); backend B is a tiny new backend writing into a dedicated 4 KB ring buffer that the HTTP `/cs` handler is the sole consumer of. No multicast logic to write ourselves, no risk of `/cs` consumption draining bytes from the USB serial port, no SPSC-violation in either ring buffer.
+       - `c1=` commands dispatch through the same command handlers as MQTT `cmnd/cs` (already implemented for `!p`/`!w`/`!e`/`!o`).
     8. **Worldmap poll (`/wm`):** exact CSV format as ESP32 (the dashboard's JavaScript already parses it). Fields sourced from our `status` struct + P13 propagator output.
+    9. **Cross-thread access to `tinygs_radio` and `status`.** Today `main()` is the only mutator (MQTT loop, `lora_check_rx`, `doppler_update` all run in sequence in the main loop), so no locking exists. The HTTP server runs on its own thread (or in a single dispatcher thread for the hand-rolled fallback), which introduces a real read/write race: a multi-field update like `{freq=x; sf=y; bw=z}` can be observed mid-flight, and even single-field 32-bit reads of `last_rssi`/`last_snr`/`sat_pos_*` can tear if the compiler splits them. Mitigation: a single `k_mutex radio_mutex`. Mutators in `main()` lock briefly across the *update*; the HTTP handler locks briefly across a *snapshot copy*, then serialises the snapshot without the lock held:
+       ```c
+       k_mutex_lock(&radio_mutex, K_MSEC(50));
+       struct tinygs_radio_t snap = tinygs_radio;   /* memcpy under lock */
+       int8_t rssi = last_rssi; int8_t snr = last_snr;
+       k_mutex_unlock(&radio_mutex);
+       /* serialise 'snap'/rssi/snr to response without the lock */
+       ```
+       Locks held for microseconds; serialiser runs lock-free; hot RX path isn't penalised by response generation latency.
 
     **Budget estimate (measured against current 475 KB flash / 165 KB RAM used):**
 
     | Component | Flash | RAM | Notes |
     |---|---|---|---|
-    | `CONFIG_HTTP_SERVER` + socket service | +12-15 KB | +4-6 KB | shared `net_buf` pool, small per-request scratch |
+    | `CONFIG_HTTP_SERVER` + socket service | +12-15 KB | +4-6 KB | shared `net_buf` pool, small per-request scratch, `MAX_CLIENTS=4` |
+    | Dedicated web-UI log backend + ring buffer | +0.5 KB | +4 KB | second `log_backend`; sole consumer is `/cs` handler |
+    | `radio_mutex` + snapshot copies | +0.2 KB | +0 KB | one `k_mutex`; snapshot lives on response stack |
     | Embedded assets (logo, CSS, JS, HTML chunks) | +8-10 KB | ~0 | `const` in flash, flash-XIP |
     | Handler code + form parser | +3-5 KB | +1-2 KB | builder strings go on the response stack |
     | HTTP Basic auth + base64 | +1 KB | +0 KB | libc crypt is not used; base64 is `<mbedtls/base64.h>` already in build |
-    | **Total (HTTP baseline)** | **~25 KB** | **~8 KB** | Leaves ~250 KB flash / ~83 KB RAM free |
+    | **Total (HTTP baseline)** | **~26 KB** | **~12 KB** | Leaves ~250 KB flash / ~79 KB RAM free |
     | Optional: mTLS upgrade | +2-4 KB | +4-8 KB | adds a server-side TLS context, reuses mbedTLS |
 
     **Reachability:**
@@ -302,12 +315,13 @@ All Phase 1 objectives proven:
     **Risks:**
     - **FATFS host-OS corruption (§6.2 applies):** the UI's config POST must write NVS only, never the FATFS partition — same rule we enforce for MQTT `cmnd/setconfig`.
     - **Thread MTD RX duty while user browses:** opening the dashboard pins the radio at full RX during the session; the periodic `/wm` poll every 5 s keeps us awake. This aligns with our "no SED, MQTT pinned" architecture so it's not an incremental cost.
-    - **Zephyr `http_server` maturity:** the in-tree server is marked experimental. Fallback plan is a ~200-line hand-rolled HTTP/1.0 parser on a listening socket.
+    - **Zephyr `http_server` maturity:** the in-tree server is marked experimental. Fallback plan is a ~200-line hand-rolled HTTP/1.0 parser on a listening socket (see implementation §1).
+    - **Cross-thread torn reads:** introducing the HTTP thread breaks the current "main() is the only mutator" invariant. Without mitigation, the `/wm` poll can observe `tinygs_radio` mid-update and render inconsistent values. Mitigated by `radio_mutex` snapshot pattern (see implementation §9). Audit any new shared state before exposing it via HTTP.
 
     **Build phasing:**
     1. Static responses + routing skeleton (root, logo, restart). Verifies the HTTP stack on Thread.
     2. Dashboard HTML + `/wm` poll handler. Confirms the `status` struct feeds real data.
-    3. Console `/cs` long-poll. Proves the log ring buffer plumbing.
+    3. Console `/cs` short-poll + dedicated log backend. Proves the dual-backend log plumbing (CDC ACM unaffected when web UI is consuming).
     4. Config form POST handler + NVS writes. Highest-risk step (must not corrupt existing MQTT config path).
     5. (Optional) mTLS upgrade if threat model changes.
 
