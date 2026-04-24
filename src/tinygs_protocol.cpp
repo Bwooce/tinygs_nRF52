@@ -114,7 +114,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         "\"Mem\":%u,"
         "\"seconds\":%u,"
         "\"Vbat\":%d,"
-        "\"tx\":false,"
+        "\"tx\":%s,"
         "\"sat\":\"%s\","
         "\"ip\":\"%s\","
         "\"idfv\":\"NCS/Zephyr\","
@@ -133,6 +133,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         (unsigned)free_mem,
         (unsigned)uptime_s,
         vbat_mv,
+        cfg_tx_enable ? "true" : "false",
         tinygs_radio.satellite,
         ip_str,
         (unsigned)utc_epoch_s,
@@ -420,7 +421,7 @@ int tinygs_send_status(struct mqtt_client *client,
             "\"station_location\":[%.4f,%.4f],"
             "\"version\":%u,"
             "\"board\":%d,"
-            "\"tx\":false,"
+            "\"tx\":%s,"
             "\"mode\":\"LoRa\","
             "\"frequency\":%.4f,"
             "\"frequency_offset\":%.1f,"
@@ -440,6 +441,7 @@ int tinygs_send_status(struct mqtt_client *client,
             "}",
             (double)tinygs_station_lat, (double)tinygs_station_lon,
             (unsigned)TINYGS_VERSION, TINYGS_BOARD,
+            cfg_tx_enable ? "true" : "false",
             (double)tinygs_radio.frequency, (double)tinygs_radio.freq_offset,
             tinygs_radio.satellite,
             tinygs_radio.sf, tinygs_radio.cr, (double)tinygs_radio.bw,
@@ -459,7 +461,7 @@ int tinygs_send_status(struct mqtt_client *client,
             "\"station_location\":[%.4f,%.4f],"
             "\"version\":%u,"
             "\"board\":%d,"
-            "\"tx\":false,"
+            "\"tx\":%s,"
             "\"mode\":\"FSK\","
             "\"frequency\":%.4f,"
             "\"frequency_offset\":%.1f,"
@@ -477,6 +479,7 @@ int tinygs_send_status(struct mqtt_client *client,
             "}",
             (double)tinygs_station_lat, (double)tinygs_station_lon,
             (unsigned)TINYGS_VERSION, TINYGS_BOARD,
+            cfg_tx_enable ? "true" : "false",
             (double)tinygs_radio.frequency, (double)tinygs_radio.freq_offset,
             tinygs_radio.satellite,
             (double)tinygs_radio.bitrate, (double)tinygs_radio.freq_dev,

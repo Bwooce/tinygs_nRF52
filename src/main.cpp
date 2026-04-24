@@ -1358,11 +1358,15 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 k_msleep(2000);
                 sys_reboot(SYS_REBOOT_COLD);
             } else if (strcmp(cmnd, "tx") == 0) {
-                /* Payload is the raw bytes to transmit on the current radio
-                 * config. We advertise tx=false in welcome so the server
-                 * normally won't send this, but handle it properly if it
-                 * does arrive. Returning to RX after TX is best-effort. */
-                if (radio && ret > 0) {
+                /* TX is gated on cfg_tx_enable. Default off — we advertise
+                 * tx:false in welcome and the server then never schedules
+                 * this command. Kept only as a hook for operators who set
+                 * tx_enable:1 in config.json and have the antenna/licensing
+                 * to actually transmit. Returning to RX after TX is best-
+                 * effort. */
+                if (!cfg_tx_enable) {
+                    LOG_WRN("  → TX refused (cfg_tx_enable=0, RX-only station)");
+                } else if (radio && ret > 0) {
                     int16_t trc = radio->transmit((const uint8_t *)rx_payload, ret);
                     radio->startReceive();
                     LOG_INF("  → TX %zu bytes, rc=%d", (size_t)ret, trc);
@@ -1786,6 +1790,9 @@ static void setup_usb_storage(void)
 
                     int dt = json_extract_int(cfg_buf, "\"display_timeout\":", -1);
                     if (dt >= 0) tinygs_display_set_timeout((uint32_t)dt);
+
+                    int txe = json_extract_int(cfg_buf, "\"tx_enable\":", -1);
+                    if (txe >= 0) cfg_tx_enable = txe ? 1 : 0;
                 }
             }
 
@@ -1801,12 +1808,14 @@ static void setup_usb_storage(void)
                     "  \"lat\": %.4f,\n"
                     "  \"lon\": %.4f,\n"
                     "  \"alt\": %.0f,\n"
-                    "  \"display_timeout\": 30\n"
+                    "  \"display_timeout\": 30,\n"
+                    "  \"tx_enable\": %d\n"
                     "}\n",
                     cfg_station, cfg_mqtt_user, cfg_mqtt_pass,
                     (double)tinygs_station_lat,
                     (double)tinygs_station_lon,
-                    (double)tinygs_station_alt);
+                    (double)tinygs_station_alt,
+                    (int)cfg_tx_enable);
                 fs_write(&cfg, cfg_buf, len);
                 fs_sync(&cfg);
                 fs_close(&cfg);

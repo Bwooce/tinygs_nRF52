@@ -14,6 +14,7 @@ char cfg_station[32] = "tinygs_nrf52_poc";
 char cfg_mqtt_user[64] = MQTT_USERNAME;
 char cfg_mqtt_pass[64] = MQTT_PASSWORD;
 char cfg_adv_prm[256] = "";  /* set_adv_prm stores last server-pushed JSON here */
+int8_t cfg_tx_enable = 0;    /* Default: RX-only. See tinygs_config.h for semantics. */
 /* tinygs_station_lat/lon/alt and tinygs_radio are in tinygs_protocol.cpp */
 
 /*
@@ -94,6 +95,11 @@ static int tgs_settings_set(const char *name, size_t len,
         uint32_t val;
         if (len == sizeof(val) && read_cb(cb_arg, &val, sizeof(val)) == sizeof(val)) {
             tinygs_radio.norad = val;
+        }
+    } else if (!strcmp(name, "tx")) {
+        int8_t val;
+        if (len == sizeof(val) && read_cb(cb_arg, &val, sizeof(val)) == sizeof(val)) {
+            cfg_tx_enable = val ? 1 : 0;
         }
     }
 

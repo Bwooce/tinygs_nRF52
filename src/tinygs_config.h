@@ -39,6 +39,13 @@ extern char cfg_mqtt_user[64];
 extern char cfg_mqtt_pass[64];
 extern char cfg_adv_prm[256];  /* Opaque advanced-params blob from set_adv_prm */
 
+/* TX enable. Default 0 (RX-only). When 0, the station advertises tx:false in
+ * welcome + RX payloads (server then never schedules tx commands) and the
+ * device-side tx command handler short-circuits. Set via config.json
+ * "tx_enable": 1. Operator is responsible for antenna, licensing, and
+ * regulatory compliance before enabling. */
+extern int8_t cfg_tx_enable;
+
 int tinygs_config_init(void);
 
 /**
