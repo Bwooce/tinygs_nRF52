@@ -1690,6 +1690,10 @@ static struct fs_mount_t mp = {
     .type = FS_FATFS,
     .mnt_point = "/NAND:",
     .fs_data = &fat_fs,
+    /* flags = 0 (no FS_MOUNT_FLAG_NO_FORMAT). With Zephyr's default
+     * CONFIG_FS_FATFS_MOUNT_MKFS=y, fs_mount() will auto-format the
+     * partition if it can't find a valid FAT boot sector — opt-out, not
+     * opt-in. Don't change unless you mean to disable auto-format. */
 };
 
 static const char *html_content =
