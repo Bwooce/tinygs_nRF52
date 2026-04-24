@@ -2659,8 +2659,10 @@ int main(void)
     setup_usb_storage();
 
     /* Enable USB composite (CDC ACM console + MSC drive) only if a cable
-     * is plugged in. usb_vbus_poll() in the main loop handles hot-plug
-     * later. Skipping usb_enable() on battery saves ~1 mA. */
+     * is plugged in. The usb_vbus_work delayable on the system workqueue
+     * (scheduled below) handles hot-plug later, regardless of which
+     * connection state the main loop is parked in. Skipping usb_enable()
+     * on battery saves ~1 mA. */
     last_vbus_state = usb_vbus_present();
     vbus_change_ms = k_uptime_get_32();
     if (last_vbus_state) {
