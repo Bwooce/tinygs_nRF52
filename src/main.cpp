@@ -2378,9 +2378,18 @@ static bool lora_check_rx(void)
             }
             crc &= (tinygs_radio.sw_crc_bytes == 1) ? 0xFF : 0xFFFF;
 
-            /* Extract CRC from packet tail */
+            /* Extract CRC from packet tail. For 1-byte CRC the value is in
+             * data[len - 1] only; reading data[len - 2] would pull in the
+             * last payload byte and guarantee a mismatch against the
+             * 8-bit calculated crc above. */
             uint16_t pkt_crc;
-            if (tinygs_radio.sw_crc_refin) {
+            if (tinygs_radio.sw_crc_bytes == 1) {
+                uint8_t b = data[len - 1];
+                if (tinygs_radio.sw_crc_refin) {
+                    b = __RBIT((uint32_t)b) >> 24;
+                }
+                pkt_crc = b;
+            } else if (tinygs_radio.sw_crc_refin) {
                 uint8_t b0 = __RBIT((uint32_t)data[len - 2]) >> 24;
                 uint8_t b1 = __RBIT((uint32_t)data[len - 1]) >> 24;
                 pkt_crc = (uint16_t)b0 << 8 | b1;
