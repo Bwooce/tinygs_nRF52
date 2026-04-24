@@ -464,13 +464,20 @@ Observed on this build over ~60 h in April 2026: ~15 mA steady-state, trending
 up to ~20 mA across the whole run once Thread/MQTT churn reboot storms were
 factored in. Real shunt measurement is item §4 above and will supersede.
 
-### Phase 4.5: NCS Upgrade v2.6.0 → v3.3.0
-Deferred until after Phase 3 (Device Web UI) lands and a `v0.2` tag is validated on hardware.
-Full breakdown — why, what changes, sequencing, rollback plan, gating conditions — lives in
-**[docs/NCS_UPGRADE_PLAN.md](docs/NCS_UPGRADE_PLAN.md)**. Summary: two OT DNS-client
-bugfixes that directly touch our NAT64 code path aren't in any v2.6 LTS backport, so the
-upgrade is the only way to get them. Budget 7–10 days focused work. Don't conflate with
-feature work.
+### Phase 2.5: NCS Upgrade v2.6.0 → v3.3.0 (prerequisite for Phase 3)
+Must run **before** Phase 3 web UI, not after. Full breakdown in
+**[docs/NCS_UPGRADE_PLAN.md](docs/NCS_UPGRADE_PLAN.md)**. Three drivers:
+- Our current Zephyr has only a stub `CONFIG_HTTP_SERVER` — the real subsystem
+  Phase 3 needs landed in Zephyr v3.7 (shipped in NCS v3.3.0).
+- Two OpenThread DNS-client bugfixes directly touch our NAT64 code path and
+  aren't backported to the v2.6 LTS line.
+- 25 months of security fixes in mbedTLS / network stack / USB.
+
+Desk-research pass resolved the four "scary" open questions (TLS ciphersuite
+still works, OT MTD timers unchanged, FATFS auto-format unchanged, http_server
+is the real gain). The migration is mostly a toolchain/kconfig exercise, not an
+API rewrite. Budget 7–10 days focused work. Gate on: `v0.2` tag validated on
+hardware + a clean power-run baseline + a 2-week window.
 
 ### Phase 5: RadioLib ZephyrHal Upstream PR
 The Zephyr HAL is functionally complete and multi-instance safe. To submit as a PR

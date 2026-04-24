@@ -1,6 +1,9 @@
 # NCS v2.6.0 → v3.3.0 Upgrade Plan (Path B)
 
-**Status:** planning / scheduled for after Phase 3 (Device Web UI) lands and validates.
+**Status:** planning / scheduled **before** Phase 3 (Device Web UI), not after.
+See §7 Q4 for the finding that drove the re-ordering: our current Zephyr has no
+usable http_server subsystem (only a stub Kconfig); the full one landed in Zephyr
+v3.7 which is shipped in NCS v3.3.0.
 **Last updated:** 2026-04-24
 
 This document is the delta analysis and migration plan for moving from our pinned
@@ -263,12 +266,15 @@ alongside feature work.
 Don't start the upgrade until all are true:
 
 - Current pre-flash stack (`5896f74` + `527e64d`) flashed and validated on hardware.
-- Phase 3 device web UI shipped (or explicitly deprioritised).
 - Power run #3 has established a clean baseline on the post-hardening build, so
   regressions are measurable.
 - A 2-week window with no other in-flight feature work.
 
-Until all four are true: stay on v2.6.0.
+(Phase 3 web UI is NO LONGER a gate — §7 Q4 showed the upgrade lights up the
+real HTTP server subsystem that Phase 3 needs, so the upgrade becomes a
+prerequisite for Phase 3, not a successor to it.)
+
+Until all three are true: stay on v2.6.0.
 
 ---
 
@@ -285,15 +291,102 @@ Explicitly out of scope for this upgrade:
 
 ---
 
-## 7. Open questions for the day-of-upgrade
+## 7. Resolved pre-upgrade questions
 
-- Does `mqtt.tinygs.com`'s ciphersuite preference still line up with what v3.3's
-  mbedTLS enables by default? If not, which kconfig pin makes it work?
-- Does v3.3's OpenThread have any new defaults for MTD child timeout or poll
-  period that would affect our MQTT keepalive pinning strategy?
-- Is there a Zephyr-side USB MSC change that affects auto-format behaviour on
-  first-boot FATFS?
-- Does the Zephyr v3.7 HTTP server change our Phase 3 budget estimate
-  (PLAN §21 currently assumes v3.5 costs)?
+Answered via desk research on 2026-04-24 rather than deferred to Phase 0 — the
+answers change the sequencing recommendation.
 
-These get answered when we do the work; don't speculate before Phase 0.
+### Q1: Will `mqtt.tinygs.com`'s TLS handshake still work on v3.3?
+
+**Yes, with the same explicit kconfig pins we use today.**
+
+Live probe of the broker (via `openssl s_client`) confirms it currently supports
+`ECDHE-RSA-CHACHA20-POLY1305`, `ECDHE-RSA-AES256-GCM-SHA384`, and
+`ECDHE-RSA-AES128-GCM-SHA256`, and defaults to `AES256-GCM-SHA384` when offered
+the full set — matching the ciphersuite our `prj.conf` comment documents.
+
+In NCS v3.3.0's `subsys/nrf_security/Kconfig.tls`:
+- `MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED` still exists with the exact same name
+  and `default y if !OPENTHREAD` rule — our explicit `=y` keeps working.
+- `MBEDTLS_USE_PSA_CRYPTO` defaults to `y if !MBEDTLS_LEGACY_CRYPTO_C`, but our
+  explicit `=n` override is honoured.
+- User config file hook (`CONFIG_MBEDTLS_USER_CONFIG_FILE="mbedtls-user-config.h"`)
+  still supported.
+
+Action: carry existing TLS kconfig pins verbatim into v3.3. Budget for Phase 4
+TLS re-tune drops from "1 day" to "a few hours" — re-probe the handshake, done.
+
+### Q2: Does v3.3's OpenThread change MTD timer defaults?
+
+**No.** Direct diff of `src/core/config/mle.h` between our `b9dcdbca4` (Feb 2024)
+and upstream `thread-reference-20250612`:
+- `OPENTHREAD_CONFIG_MLE_CHILD_TIMEOUT_DEFAULT`: 240 s (unchanged)
+- `OPENTHREAD_CONFIG_MLE_ATTACH_BACKOFF_MINIMUM_INTERVAL`: 251 ms (unchanged)
+- `OPENTHREAD_CONFIG_MLE_ATTACH_BACKOFF_ENABLE`: 1 (unchanged)
+
+Our MQTT 90 s keepalive + Thread 240 s child timeout relationship holds exactly.
+No action.
+
+### Q3: Does Zephyr 3.7 change FATFS auto-format behaviour?
+
+**Minor, not blocking.** From Zephyr v3.7 release notes:
+
+> FAT FS: It is now possible to expose file system formatting functionality for
+> FAT without also enabling automatic formatting on mount failure by setting the
+> `CONFIG_FS_FATFS_MKFS` Kconfig option. This option is enabled by default if
+> `CONFIG_FILE_SYSTEM_MKFS` is set.
+
+Net effect for us: auto-format on mount-failure still works as before (it was a
+side-effect of formatting being compiled in; in v3.7 it's optionally separable).
+`FS_MOUNT_FLAG_NO_FORMAT` opt-out semantics unchanged. Plus a bonus: `fs_open`
+now accepts `FS_O_TRUNC`, which could simplify our "truncate then write" pattern
+in `setup_usb_storage()`.
+
+Action: no migration required; optional cleanup (replace `fs_truncate(&cfg, 0)
++ fs_write` with `fs_open(..., FS_O_CREATE | FS_O_WRITE | FS_O_TRUNC)`) is a
+one-line refactor we can do post-upgrade.
+
+### Q4: Does Zephyr v3.7 HTTP server change Phase 3 web UI costs?
+
+**Yes — substantially. This changes the upgrade-vs-Phase-3 ordering.**
+
+Critical finding: **our current Zephyr v3.5.99-ncs1 has only a stub
+`CONFIG_HTTP_SERVER` Kconfig with no implementation behind it**. Grep confirmed:
+the Kconfig entry exists marked "HTTP Server [EXPERIMENTAL]... Note: this is a
+work-in-progress", but there are zero `http_server*` source files in our
+workspace. The full subsystem — `http_service_register()`, resource registration,
+HTTP/1.1 + HTTP/2 + WebSocket — was introduced upstream in **Zephyr v3.7** as a
+"long-awaited" feature replacing civetweb.
+
+NCS v3.3.0 ships Zephyr `v3.7.99-ncs1`, so it has the full http_server.
+
+Implication for PLAN.md §21 budget (currently ~26 KB flash, ~12 KB RAM assuming
+`CONFIG_HTTP_SERVER=y`):
+- On our current toolchain, §21's primary path is unavailable. The hand-rolled
+  HTTP/1.0 fallback would be the only option. Not a blocker — we already
+  identified it as a viable primary in the §21 review. But it costs us WebSocket
+  support, HTTP/2, and the /cs+/wm concurrency handling the in-tree server
+  provides.
+- On v3.3.0, §21's primary path lights up. The review's dual-log-backend +
+  radio_mutex + short-poll design all fit naturally.
+
+### Revised sequencing recommendation
+
+The Q4 finding inverts one piece of Path B: **upgrade the toolchain BEFORE
+starting Phase 3 web UI**, not after. Rationale:
+
+1. Web UI is built on a substantially better HTTP server post-upgrade.
+2. Pre-upgrade, we'd either (a) implement hand-rolled HTTP/1.0 and then throw
+   most of it away post-upgrade, or (b) wait. (b) is cheaper.
+3. Phase 3 soak-testing doubles as upgrade soak-testing — one validation cycle,
+   not two.
+
+The gating conditions in §5 update accordingly:
+
+- ~~Phase 3 device web UI shipped~~ → Phase 3 deferred *until after* upgrade.
+- Current pre-flash stack validated on hardware (unchanged).
+- Clean power-run baseline on hardened build (unchanged).
+- 2-week focused window for the upgrade (unchanged).
+
+The remaining three questions all came back "no concern" — the upgrade is mostly
+a toolchain/kconfig exercise, not an API rewrite.
