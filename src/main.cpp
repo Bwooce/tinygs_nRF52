@@ -1756,38 +1756,42 @@ static inline bool usb_vbus_present(void)
     return (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
 }
 
-/* Toggle USB stack to match VBUS, after VBUS has been stable for the
- * debounce window. Safe to call as often as you like; cheap when nothing
- * needs to change. */
-static void usb_vbus_poll(void)
+/* VBUS poll runs on the system workqueue so hot-plug detection works
+ * regardless of where the connection state machine is parked. The
+ * MQTT-loop variant only fired in STATE_MQTT_CONNECTED — meaning a
+ * device stuck in STATE_WAIT_THREAD or STATE_ERROR after a BR outage
+ * would never see the user plug in to debug. */
+#define USB_VBUS_POLL_MS  250  /* 4 Hz — debounce window holds 8 samples */
+static void usb_vbus_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(usb_vbus_work, usb_vbus_work_handler);
+
+static void usb_vbus_work_handler(struct k_work *work)
 {
+    ARG_UNUSED(work);
+
     bool now_present = usb_vbus_present();
     uint32_t now_ms = k_uptime_get_32();
 
     if (now_present != last_vbus_state) {
         last_vbus_state = now_present;
         vbus_change_ms = now_ms;
-        return;
-    }
-    if (now_present == usb_is_enabled) {
-        return;
-    }
-    if ((now_ms - vbus_change_ms) < USB_VBUS_DEBOUNCE_MS) {
-        return;
+    } else if (now_present != usb_is_enabled &&
+               (now_ms - vbus_change_ms) >= USB_VBUS_DEBOUNCE_MS) {
+        if (now_present) {
+            if (usb_enable(NULL) == 0) {
+                usb_is_enabled = true;
+                LOG_INF("USB cable detected — stack enabled (MSC + CDC ACM)");
+            } else {
+                LOG_WRN("USB cable detected but usb_enable() failed");
+            }
+        } else {
+            usb_disable();
+            usb_is_enabled = false;
+            LOG_INF("USB cable removed — stack disabled (~1 mA saved)");
+        }
     }
 
-    if (now_present) {
-        if (usb_enable(NULL) == 0) {
-            usb_is_enabled = true;
-            LOG_INF("USB cable detected — stack enabled (MSC + CDC ACM)");
-        } else {
-            LOG_WRN("USB cable detected but usb_enable() failed");
-        }
-    } else {
-        usb_disable();
-        usb_is_enabled = false;
-        LOG_INF("USB cable removed — stack disabled (~1 mA saved)");
-    }
+    k_work_reschedule(&usb_vbus_work, K_MSEC(USB_VBUS_POLL_MS));
 }
 
 static void setup_usb_storage(void)
@@ -2677,6 +2681,11 @@ int main(void)
         }
     }
 
+    /* Start the VBUS poll on the system workqueue. Runs every 250 ms
+     * regardless of state-machine position so hot-plug works even when
+     * the device is stuck in STATE_WAIT_THREAD or STATE_ERROR. */
+    k_work_schedule(&usb_vbus_work, K_MSEC(USB_VBUS_POLL_MS));
+
     LOG_INF("=== TinyGS nRF52 v%u — Thread/MQTT-TLS ===", (unsigned)TINYGS_VERSION);
 
     /* Log boot/reset reason — read raw nRF RESETREAS for full picture.
@@ -2909,11 +2918,6 @@ int main(void)
 
                 /* Check for LoRa packet reception */
                 lora_check_rx();
-
-                /* Track USB cable presence so the stack can drop when
-                 * running on battery. Cheap; the debounce inside the
-                 * helper means we only act on stable state. */
-                usb_vbus_poll();
 
                 /* Update display (~every 100ms from poll timeout) */
                 tinygs_display_update();
