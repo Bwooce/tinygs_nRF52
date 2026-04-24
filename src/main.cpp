@@ -2092,6 +2092,22 @@ static void doppler_update(void)
 
     /* Hysteresis — only retune if change exceeds tolerance */
     if (fabsf(new_doppler - tinygs_radio.freq_doppler) > tinygs_radio.doppler_tol) {
+        /* Don't retune mid-packet. setFrequency() puts the SX1262 through
+         * standby, which aborts any in-progress reception — and slow
+         * configs (SF11/12 LoRa, low-bitrate FSK) take longer than the
+         * 4 s doppler interval to receive a single packet. If the radio
+         * has detected a preamble, sync word, or LoRa header, skip this
+         * tick and try again in 4 s. The deferred shift is well under
+         * the 1200 Hz hysteresis (typical accumulation is ~50–100 Hz/4 s
+         * at LEO Doppler rates), so we're not losing meaningful tracking
+         * accuracy by waiting one cycle. */
+        uint32_t irq = radio->getIrqFlags();
+        if (irq & (RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED |
+                   RADIOLIB_SX126X_IRQ_SYNC_WORD_VALID |
+                   RADIOLIB_SX126X_IRQ_HEADER_VALID)) {
+            return;
+        }
+
         tinygs_radio.freq_doppler = new_doppler;
         float effective_freq = tinygs_radio.frequency +
                               (tinygs_radio.freq_offset + tinygs_radio.freq_doppler) / 1e6f;
