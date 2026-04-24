@@ -15,6 +15,7 @@ char cfg_mqtt_user[64] = MQTT_USERNAME;
 char cfg_mqtt_pass[64] = MQTT_PASSWORD;
 char cfg_adv_prm[256] = "";  /* set_adv_prm stores last server-pushed JSON here */
 int8_t cfg_tx_enable = 0;    /* Default: RX-only. See tinygs_config.h for semantics. */
+char cfg_last_snapshot[TINYGS_CONFIG_SNAPSHOT_MAX] = "";  /* last config.json we wrote */
 /* tinygs_station_lat/lon/alt and tinygs_radio are in tinygs_protocol.cpp */
 
 /*
@@ -101,6 +102,15 @@ static int tgs_settings_set(const char *name, size_t len,
         if (len == sizeof(val) && read_cb(cb_arg, &val, sizeof(val)) == sizeof(val)) {
             cfg_tx_enable = val ? 1 : 0;
         }
+    } else if (!strcmp(name, "snap")) {
+        if (len < sizeof(cfg_last_snapshot)) {
+            read_cb(cb_arg, cfg_last_snapshot, len);
+            cfg_last_snapshot[len] = '\0';
+        } else {
+            LOG_WRN("snap entry too large (%zu >= %zu), deleting",
+                    len, sizeof(cfg_last_snapshot));
+            settings_delete("tgs/snap");
+        }
     }
 
     return 0;
@@ -182,6 +192,18 @@ int tinygs_config_save_station(const char *name)
 int tinygs_config_save_modem_conf(const char *conf)
 {
     return tinygs_config_save("modem", conf, strlen(conf));
+}
+
+int tinygs_config_save_snapshot(const char *content)
+{
+    size_t n = strlen(content);
+    if (n >= sizeof(cfg_last_snapshot)) {
+        LOG_WRN("snapshot too large (%zu >= %zu), not persisted",
+                n, sizeof(cfg_last_snapshot));
+        return -ENOSPC;
+    }
+    memcpy(cfg_last_snapshot, content, n + 1);
+    return tinygs_config_save("snap", content, n);
 }
 
 int tinygs_config_save_radio(void)

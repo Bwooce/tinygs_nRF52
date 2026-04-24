@@ -73,6 +73,19 @@ int tinygs_config_save_station(const char *name);
  */
 int tinygs_config_save_modem_conf(const char *conf);
 
+/* Snapshot of the last config.json content we wrote to FATFS. Used by the
+ * boot-time sync logic to distinguish "user edited the file" (file ≠
+ * snapshot) from "NVS got updated at runtime" (file = snapshot, NVS ≠
+ * memory). Sized to fit our current ~200 byte config.json with headroom. */
+#define TINYGS_CONFIG_SNAPSHOT_MAX 384
+extern char cfg_last_snapshot[TINYGS_CONFIG_SNAPSHOT_MAX];
+
+/**
+ * @brief Save the current config.json snapshot to NVS. Call after each
+ * fresh write of config.json to FATFS.
+ */
+int tinygs_config_save_snapshot(const char *content);
+
 /**
  * @brief Save radio state (freq, sf, bw, cr, satellite, norad) to NVS.
  */

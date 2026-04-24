@@ -1810,55 +1810,154 @@ static void setup_usb_storage(void)
             }
         }
 
-        /* Config.json: bidirectional sync with NVS.
+        /* Config.json sync — NVS-authoritative, with user-edit detection
+         * via snapshot diff:
          *
-         * NVS is authoritative (loaded later by tinygs_config_init).
-         * config.json on the USB drive is a VIEW of the config:
-         * - Read config.json → import values that differ from compiled defaults
-         *   (this seeds NVS on first boot or when user edits the file)
-         * - Write config.json from current runtime values so the drive
-         *   always shows the current state for user inspection/editing
+         *   NVS is the source of truth. cfg_last_snapshot (also in NVS)
+         *   holds an exact copy of the last config.json the device wrote.
+         *   On boot we compare the file content against the snapshot:
+         *     - Match → no user edit since last write → ignore file,
+         *       regenerate it from current memory (which is NVS-loaded).
+         *     - Differ on a particular field → user edited that field
+         *       since last boot → push new value to memory + NVS.
          *
-         * Flow: read → parse → overwrite with current values → unmount
+         *   This is the only way to distinguish a user edit from a
+         *   stale-file-vs-server-updated-NVS state, because both
+         *   produce file ≠ memory.
+         *
+         *   Then we always rewrite config.json from current memory and
+         *   save the new snapshot, so the next boot has a fresh
+         *   reference for diffing.
          */
         {
-            static char cfg_buf[256]; /* config.json is ~200 bytes */
+            static char file_buf[TINYGS_CONFIG_SNAPSHOT_MAX];
             struct fs_file_t cfg;
+            ssize_t file_n = -1;
 
-            /* Read existing config.json if present */
+            /* Read current config.json into file_buf (may not exist on
+             * a freshly-formatted partition — that's fine, we'll just
+             * skip the diff and write defaults). */
             fs_file_t_init(&cfg);
             if (fs_open(&cfg, "/NAND:/config.json", FS_O_READ) == 0) {
-                ssize_t n = fs_read(&cfg, cfg_buf, sizeof(cfg_buf) - 1);
+                file_n = fs_read(&cfg, file_buf, sizeof(file_buf) - 1);
                 fs_close(&cfg);
-                if (n > 0) {
-                    cfg_buf[n] = '\0';
-                    LOG_INF("Read config.json (%d bytes)", (int)n);
-
-                    float lat = json_extract_float(cfg_buf, "\"lat\":", -999.0f);
-                    if (lat >= -90.0f && lat <= 90.0f) tinygs_station_lat = lat;
-
-                    float lon = json_extract_float(cfg_buf, "\"lon\":", -999.0f);
-                    if (lon >= -180.0f && lon <= 180.0f) tinygs_station_lon = lon;
-
-                    tinygs_station_alt = json_extract_float(cfg_buf, "\"alt\":", tinygs_station_alt);
-
-                    json_extract_string(cfg_buf, "\"station\":\"", cfg_station, sizeof(cfg_station));
-                    json_extract_string(cfg_buf, "\"mqtt_user\":\"", cfg_mqtt_user, sizeof(cfg_mqtt_user));
-                    json_extract_string(cfg_buf, "\"mqtt_pass\":\"", cfg_mqtt_pass, sizeof(cfg_mqtt_pass));
-
-                    int dt = json_extract_int(cfg_buf, "\"display_timeout\":", -1);
-                    if (dt >= 0) tinygs_display_set_timeout((uint32_t)dt);
-
-                    int txe = json_extract_bool(cfg_buf, "\"tx_enable\":", -1);
-                    if (txe >= 0) cfg_tx_enable = (int8_t)txe;
+                if (file_n > 0) {
+                    file_buf[file_n] = '\0';
+                    LOG_INF("Config: read config.json (%d bytes)", (int)file_n);
+                } else {
+                    file_n = -1;
                 }
             }
 
-            /* Write config.json from current values — always, so the drive
-             * reflects the current state for user inspection/editing */
+            /* For each field: parse the value from BOTH file and snapshot.
+             * If they differ → user edit on that field → apply to memory
+             * and persist to NVS. snapshot empty (first boot or after
+             * NVS wipe) means we can't tell user edits from defaults; in
+             * that case treat file values as authoritative for first-time
+             * setup, but only when they look reasonable. */
+            bool have_snapshot = (cfg_last_snapshot[0] != '\0');
+            bool have_file = (file_n > 0);
+            int edits = 0;
+
+            #define DIFF_AND_APPLY_FLOAT(key, mem_var, range_lo, range_hi, save_call) do { \
+                if (have_file) {                                                            \
+                    float fv = json_extract_float(file_buf, key, -9999.0f);                \
+                    float sv = have_snapshot ?                                              \
+                        json_extract_float(cfg_last_snapshot, key, -9999.0f) :             \
+                        -9999.0f;                                                           \
+                    float dv = fv - sv;                                                    \
+                    if (dv < 0) dv = -dv;                                                   \
+                    bool edited = have_snapshot ? (dv > 0.0001f)                            \
+                                                 : (fv != -9999.0f);                       \
+                    if (edited && fv >= (range_lo) && fv <= (range_hi)) {                  \
+                        LOG_INF("Config: user edit '%s' %.4f -> %.4f, persisting",         \
+                                key, (double)(mem_var), (double)fv);                       \
+                        (mem_var) = fv;                                                    \
+                        save_call;                                                          \
+                        edits++;                                                            \
+                    }                                                                       \
+                }                                                                           \
+            } while (0)
+
+            #define DIFF_AND_APPLY_STR(key, mem_var, save_call) do {                       \
+                if (have_file) {                                                            \
+                    char fv[sizeof(mem_var)] = "";                                          \
+                    char sv[sizeof(mem_var)] = "";                                          \
+                    int fv_found = json_extract_string(file_buf, key, fv, sizeof(fv));     \
+                    if (have_snapshot) {                                                    \
+                        json_extract_string(cfg_last_snapshot, key, sv, sizeof(sv));       \
+                    }                                                                       \
+                    /* Treat key-missing-from-file as "user did not touch this field"      \
+                     * — never wipe a stored value because the file got truncated or       \
+                     * the user removed the line. fv_found < 0 means strstr missed. */    \
+                    bool edited = (fv_found >= 0) &&                                        \
+                                  (have_snapshot ? (strcmp(fv, sv) != 0)                   \
+                                                 : (fv[0] != '\0'));                        \
+                    if (edited) {                                                           \
+                        LOG_INF("Config: user edit '%s' '%s' -> '%s', persisting",         \
+                                key, (mem_var), fv);                                       \
+                        strncpy((mem_var), fv, sizeof(mem_var) - 1);                       \
+                        (mem_var)[sizeof(mem_var) - 1] = '\0';                             \
+                        save_call;                                                          \
+                        edits++;                                                            \
+                    }                                                                       \
+                }                                                                           \
+            } while (0)
+
+            DIFF_AND_APPLY_FLOAT("\"lat\":", tinygs_station_lat, -90.0f, 90.0f,
+                tinygs_config_save_location(tinygs_station_lat,
+                                            tinygs_station_lon,
+                                            tinygs_station_alt));
+            DIFF_AND_APPLY_FLOAT("\"lon\":", tinygs_station_lon, -180.0f, 180.0f,
+                tinygs_config_save_location(tinygs_station_lat,
+                                            tinygs_station_lon,
+                                            tinygs_station_alt));
+            DIFF_AND_APPLY_FLOAT("\"alt\":", tinygs_station_alt, -500.0f, 9000.0f,
+                tinygs_config_save_location(tinygs_station_lat,
+                                            tinygs_station_lon,
+                                            tinygs_station_alt));
+
+            DIFF_AND_APPLY_STR("\"station\":\"", cfg_station,
+                tinygs_config_save_station(cfg_station));
+            DIFF_AND_APPLY_STR("\"mqtt_user\":\"", cfg_mqtt_user,
+                tinygs_config_save("user", cfg_mqtt_user, strlen(cfg_mqtt_user)));
+            DIFF_AND_APPLY_STR("\"mqtt_pass\":\"", cfg_mqtt_pass,
+                tinygs_config_save("pass", cfg_mqtt_pass, strlen(cfg_mqtt_pass)));
+
+            /* tx_enable — JSON bool. Match against snapshot the same way. */
+            if (have_file) {
+                int fv = json_extract_bool(file_buf, "\"tx_enable\":", -1);
+                int sv = have_snapshot ?
+                    json_extract_bool(cfg_last_snapshot, "\"tx_enable\":", -1) :
+                    -1;
+                bool edited = have_snapshot ? (fv != sv) : (fv != -1);
+                if (edited && fv != -1) {
+                    LOG_INF("Config: user edit 'tx_enable' %d -> %d, persisting",
+                            (int)cfg_tx_enable, fv);
+                    cfg_tx_enable = (int8_t)fv;
+                    int8_t v = cfg_tx_enable;
+                    tinygs_config_save("tx", &v, sizeof(v));
+                    edits++;
+                }
+            }
+
+            #undef DIFF_AND_APPLY_FLOAT
+            #undef DIFF_AND_APPLY_STR
+
+            if (edits > 0) {
+                LOG_INF("Config: applied %d user edit(s) from config.json", edits);
+            } else if (have_file) {
+                LOG_INF("Config: no user edits since last write");
+            } else {
+                LOG_INF("Config: no config.json on drive — will create from current state");
+            }
+
+            /* Always rewrite config.json from current memory (which now
+             * reflects NVS state plus any user edits we just absorbed)
+             * and snapshot it, so next boot's diff has a fresh baseline. */
             fs_file_t_init(&cfg);
             if (fs_open(&cfg, "/NAND:/config.json", FS_O_CREATE | FS_O_WRITE) == 0) {
-                int len = snprintf(cfg_buf, sizeof(cfg_buf),
+                int len = snprintf(file_buf, sizeof(file_buf),
                     "{\n"
                     "  \"station\": \"%s\",\n"
                     "  \"mqtt_user\": \"%s\",\n"
@@ -1874,10 +1973,23 @@ static void setup_usb_storage(void)
                     (double)tinygs_station_lon,
                     (double)tinygs_station_alt,
                     cfg_tx_enable ? "true" : "false");
-                fs_write(&cfg, cfg_buf, len);
+                /* fs_write may return short on a full disk; truncate
+                 * before write so the file size matches len exactly. */
+                fs_truncate(&cfg, 0);
+                fs_write(&cfg, file_buf, len);
                 fs_sync(&cfg);
                 fs_close(&cfg);
-                LOG_INF("Wrote config.json (%d bytes)", len);
+                /* Only re-save the snapshot if the rendered file content
+                 * actually changed. Without this guard we'd add one NVS
+                 * write per boot; with it, we only write on real state
+                 * change (user edit, server-driven NVS update that flowed
+                 * through to a rendered field, or first boot). */
+                if (strcmp(file_buf, cfg_last_snapshot) != 0) {
+                    tinygs_config_save_snapshot(file_buf);
+                    LOG_INF("Config: wrote config.json (%d bytes), snapshot updated", len);
+                } else {
+                    LOG_INF("Config: wrote config.json (%d bytes), snapshot unchanged", len);
+                }
             }
         }
 
@@ -2480,6 +2592,16 @@ int main(void)
 
     enable_peripherals();
 
+    /* NVS (settings) BEFORE FATFS so the runtime variables hold the
+     * authoritative server-side state when setup_usb_storage() reads
+     * config.json. settings_subsys_init() is idempotent and only needs
+     * the flash driver, which Zephyr SYS_INITs before main() runs.
+     * Without this ordering: USB writes config.json from compiled
+     * defaults (NVS not yet loaded), then NVS load overwrites memory
+     * — config.json on the drive ends up stuck at defaults forever
+     * even after server-driven NVS updates. */
+    tinygs_config_init();
+
     /* FATFS operations BEFORE USB enable — mount, write, read, unmount.
      * Must complete before USB MSC goes live to avoid concurrent access. */
     setup_usb_storage();
@@ -2590,12 +2712,8 @@ int main(void)
         }
     }
 
-    /* Load persistent config from NVS. Must be AFTER init_openthread()
-     * because OpenThread initializes the settings/NVS subsystem.
-     * No extra CONFIG_SETTINGS needed in prj.conf — OpenThread provides it.
-     * config.json values are loaded first (in setup_usb_storage), then
-     * NVS overrides with any previously saved values. */
-    tinygs_config_init();
+    /* tinygs_config_init() was called earlier (before setup_usb_storage)
+     * so config.json sync uses authoritative NVS state. Don't double-init. */
     tinygs_display_init();
     watchdog_init();
     led_init();
