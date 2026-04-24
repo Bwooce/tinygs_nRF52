@@ -2290,11 +2290,27 @@ static void doppler_update(void)
     double elevation = 0.0, azimuth = 0.0;
     sat.elaz(obs, elevation, azimuth);
 
-    /* Update satellite position for world map display (128x64 ESP32 coords) */
+    /* Update satellite position for world map display (128x64 ESP32 coords).
+     * Guard against malformed orbital elements (rare, e.g. server sends a
+     * tlx with mean motion = 0 → propagator chain produces NaN). NaN would
+     * propagate into sat_pos_{x,y}, then `(int)(NaN * ...)` is implementation-
+     * defined and the worldmap red dot silently fails to draw. Skip the
+     * update on bad math so the last good position stays on screen. */
     double sat_lat = 0, sat_lon = 0;
     sat.latlon(sat_lat, sat_lon);
-    tinygs_radio.sat_pos_x = (float)((180.0 + sat_lon) / 360.0 * 128.0);
-    tinygs_radio.sat_pos_y = (float)((90.0 - sat_lat) / 180.0 * 64.0);
+    /* Range check doubles as a NaN/Inf guard — both compare false to any
+     * bounded value, so the bad-lat/lon branch catches them. */
+    if (sat_lat >= -90.0 && sat_lat <= 90.0 &&
+        sat_lon >= -180.0 && sat_lon <= 180.0) {
+        tinygs_radio.sat_pos_x = (float)((180.0 + sat_lon) / 360.0 * 128.0);
+        tinygs_radio.sat_pos_y = (float)((90.0 - sat_lat) / 180.0 * 64.0);
+        LOG_INF("Sat %s @ lat=%.2f lon=%.2f el=%.1f° → grid (%.1f,%.1f)",
+                tinygs_radio.satellite, sat_lat, sat_lon, elevation,
+                (double)tinygs_radio.sat_pos_x, (double)tinygs_radio.sat_pos_y);
+    } else {
+        LOG_WRN("Sat %s: propagator returned bad lat/lon (%.2f, %.2f) — keeping last",
+                tinygs_radio.satellite, sat_lat, sat_lon);
+    }
 
     if (elevation <= 0.0 || !tinygs_radio.doppler_enabled) {
         return; /* Below horizon or Doppler disabled (tlx) — position updated, no freq correction */

@@ -26,51 +26,51 @@
 
 #include "AioP13.h"
 
-/* A representative 34-byte tlx payload. The byte values are constructed to
- * satisfy the parser's uint24/uint32-at-offset reads with values producing a
- * physically plausible LEO orbit (inclination ~98°, eccentricity ~0, mean
- * motion ~15 rev/day → ~500 km altitude, sun-synchronous).
+/* A representative 34-byte tlx payload. All multibyte fields are BIG-ENDIAN
+ * (per getuint{16,24,32}_tinygs in AioP13.cpp:163-183 — byte[0] is MSB).
  *
- * Field layout (per AioP13.cpp:362-387):
+ * Constructed for a physically plausible LEO orbit (inclination ~98°,
+ * eccentricity ~0, mean motion ~15 rev/day → ~500 km altitude, sun-sync).
+ *
+ * Field layout (per AioP13.cpp:362-387, all big-endian):
  *   [0]      epoch year offset from 1900 or 2000 (uint8)
- *   [0..2]   uint24: cp_lN (catalog number-ish)
+ *   [0..2]   uint24: cp_lN (catalog number-ish, byte[0] doubles as year)
  *   [1..2]   uint16: epoch day-of-year (integer)
  *   [3..6]   uint32: epoch fractional day (×1e8)
- *   [7..10]  uint32: 2π × first time-derivative of mean motion (×1e8)
+ *   [7..10]  uint32: first time-derivative of mean motion (×1e8)
  *   [11..13] uint24: inclination degrees (×1e4)
  *   [14..16] uint24: RAAN degrees (×1e4)
  *   [17..20] uint32: eccentricity (×1e7)
  *   [21..23] uint24: argument of perigee degrees (×1e4)
  *   [24..26] uint24: mean anomaly degrees (×1e4)
- *   [27..30] uint32: 2π × mean motion rad/sec (×1e8)
+ *   [27..30] uint32: mean motion rev/day (×1e8)
  *   [31..33] uint24: revolution number at epoch
  */
 static const uint8_t sample_tlx[34] = {
-    /* epoch year = 25 (= 2025) */
+    /* [0]    epoch year = 25 → 2025 */
     25,
-    /* uint16 day-of-year (LE) at offset 1 = 100 */
-    0x64, 0x00,
-    /* uint32 fractional day (×1e8) at offset 3 = 50000000 (= 0.5 day) */
-    0x80, 0xF0, 0xFA, 0x02,
-    /* uint32 dM2 (×1e8) at offset 7 = 0 (no first-derivative correction) */
+    /* [1..2] uint16 BE day-of-year = 100 = 0x0064 */
+    0x00, 0x64,
+    /* [3..6] uint32 BE frac day ×1e8 = 50000000 = 0x02FAF080 (0.5 day) */
+    0x02, 0xFA, 0xF0, 0x80,
+    /* [7..10] uint32 BE mean-motion derivative ×1e8 = 0 */
     0x00, 0x00, 0x00, 0x00,
-    /* uint24 inclination (×1e4) at offset 11 = 980000 (= 98°) */
-    0xE0, 0xED, 0x0E,
-    /* uint24 RAAN (×1e4) at offset 14 = 1800000 (= 180°) */
-    0x80, 0x70, 0x1B,
-    /* uint32 eccentricity (×1e7) at offset 17 = 100 (= 0.00001) */
-    0x64, 0x00, 0x00, 0x00,
-    /* uint24 arg perigee (×1e4) at offset 21 = 0 */
+    /* [11..13] uint24 BE inclination ×1e4 = 980000 = 0x0EF370 (98°) */
+    0x0E, 0xF3, 0x70,
+    /* [14..16] uint24 BE RAAN ×1e4 = 1800000 = 0x1B7740 (180°) */
+    0x1B, 0x77, 0x40,
+    /* [17..20] uint32 BE eccentricity ×1e7 = 100 = 0x00000064 (1e-5) */
+    0x00, 0x00, 0x00, 0x64,
+    /* [21..23] uint24 BE arg perigee ×1e4 = 0 */
     0x00, 0x00, 0x00,
-    /* uint24 mean anomaly (×1e4) at offset 24 = 0 */
+    /* [24..26] uint24 BE mean anomaly ×1e4 = 0 */
     0x00, 0x00, 0x00,
-    /* uint32 mean motion (rev/day ×1e8) at offset 27, LE
-     * 15 rev/day × 1e8 = 1500000000 = 0x59682F00
-     * Parser scales: cp_dMM = 2π × val/1e8 = 2π×15 = 94.25 (rad/day),
+    /* [27..30] uint32 BE mean motion ×1e8 = 1500000000 = 0x59682F00 (15/day)
+     * Parser: cp_dMM = 2π × val/1e8 = 2π×15 = 94.25,
      * then cp_dN0 = cp_dMM/86400 → 1.09e-3 rad/s. Realistic LEO. */
-    0x00, 0x2F, 0x68, 0x59,
-    /* uint24 rev number at offset 31 */
-    0x01, 0x00, 0x00,
+    0x59, 0x68, 0x2F, 0x00,
+    /* [31..33] uint24 BE rev number = 1 */
+    0x00, 0x00, 0x01,
 };
 
 ZTEST_SUITE(p13_propagator, NULL, NULL, NULL, NULL, NULL);
