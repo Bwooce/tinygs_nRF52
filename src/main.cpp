@@ -778,18 +778,26 @@ static volatile int dns_result = -1;
  * caller's *out. Hold time = single DNS round-trip, ≤15 s. */
 static K_MUTEX_DEFINE(dns_mutex);
 
-/* Shared resolver-callback context: the callback writes the resolved
- * IPv6 address into *out. Hostname is carried for logging only. Port
- * stamping is left to the caller since different callers want different
- * sockaddr / otMessageInfo types. */
+/* Shared resolver-callback context. Stack allocation is unsafe because
+ * the query can timeout in k_sem_take, leaving the OT stack with a pointer
+ * to a destroyed stack frame. Using a static struct protected by dns_mutex,
+ * plus a query generation ID, prevents use-after-free and cross-talk
+ * (a late callback from a timed-out query unblocking a new query). */
 struct dns_ctx {
     otIp6Address *out;
     const char  *hostname;
 };
+static struct dns_ctx current_dctx;
+static uint32_t current_dns_id = 0;
 
 static void dns_callback(otError aError, const otDnsAddressResponse *aResponse, void *aContext)
 {
-    struct dns_ctx *ctx = (struct dns_ctx *)aContext;
+    uint32_t id = (uint32_t)(uintptr_t)aContext;
+    if (id != current_dns_id) {
+        LOG_WRN("Ignoring late DNS callback for ID %u (current %u)", id, current_dns_id);
+        return;
+    }
+
     if (aError != OT_ERROR_NONE) {
         LOG_ERR("OT DNS callback error: %d (%s)", (int)aError, otThreadErrorToString(aError));
         dns_result = -1;
@@ -807,14 +815,14 @@ static void dns_callback(otError aError, const otDnsAddressResponse *aResponse, 
         return;
     }
 
-    if (ctx && ctx->out) {
-        *ctx->out = addr;
+    if (current_dctx.out) {
+        *current_dctx.out = addr;
     }
 
     char addr_str[OT_IP6_ADDRESS_STRING_SIZE];
     otIp6AddressToString(&addr, addr_str, sizeof(addr_str));
     LOG_INF("Resolved %s -> [%s] (TTL=%u)",
-            ctx && ctx->hostname ? ctx->hostname : "?", addr_str, (unsigned)ttl);
+            current_dctx.hostname ? current_dctx.hostname : "?", addr_str, (unsigned)ttl);
 
     dns_result = 0;
     k_sem_give(&dns_sem);
@@ -834,6 +842,9 @@ static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
 
     k_sem_reset(&dns_sem);
     dns_result = -1;
+    current_dns_id++;
+    current_dctx.out = out;
+    current_dctx.hostname = hostname;
 
     otDnsQueryConfig config;
     memset(&config, 0, sizeof(config));
@@ -857,8 +868,6 @@ static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
     LOG_INF("Resolving %s via NAT64-synthesised DNS [%s]:53",
             hostname, dns_str);
 
-    struct dns_ctx dctx = { .out = out, .hostname = hostname };
-
     /* Query A record (IPv4) explicitly. IPv4-only hosts return NotFound
      * for AAAA queries. With mNat64Mode=ALLOW and a NAT64 prefix in
      * netdata, OT synthesises an AAAA from the A response — we get back
@@ -866,27 +875,44 @@ static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
     openthread_api_mutex_lock(ctx);
     otError err = otDnsClientResolveIp4Address(ctx->instance,
                                                hostname,
-                                               dns_callback, &dctx,
+                                               dns_callback, (void *)(uintptr_t)current_dns_id,
                                                &config);
     openthread_api_mutex_unlock(ctx);
 
     if (err != OT_ERROR_NONE) {
         LOG_ERR("otDnsClientResolveAddress failed: %d (%s)",
                 (int)err, otThreadErrorToString(err));
-        k_mutex_unlock(&dns_mutex);
-        return -1;
+        goto out_invalidate;
     }
 
     /* Wait for callback (up to 15s) */
     if (k_sem_take(&dns_sem, K_SECONDS(15)) != 0) {
         LOG_ERR("DNS resolution timed out");
-        k_mutex_unlock(&dns_mutex);
-        return -1;
+        goto out_invalidate;
     }
 
-    int ret = dns_result;
+    {
+        int ret = dns_result;
+        /* Invalidate the context on success too — covers the rare case
+         * where OT fires a duplicate callback after the first one we
+         * accepted (we'd already have the answer; second one would write
+         * to the same out pointer harmlessly, but we're being strict). */
+        current_dns_id++;
+        current_dctx.out = NULL;
+        k_mutex_unlock(&dns_mutex);
+        return ret;
+    }
+
+out_invalidate:
+    /* Bump generation + clear out pointer so any straggling OT callback
+     * (OT can keep retrying for ~30 s after our 15 s wait) drops itself
+     * via the ID mismatch in dns_callback, AND can't dereference a stale
+     * caller-side `out` pointer even if it slips past the ID check
+     * window. Belt-and-braces. */
+    current_dns_id++;
+    current_dctx.out = NULL;
     k_mutex_unlock(&dns_mutex);
-    return ret;
+    return -1;
 }
 
 /* Resolve the MQTT broker hostname and stamp it into broker_addr. Thin
