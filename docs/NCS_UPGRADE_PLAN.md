@@ -308,18 +308,28 @@ alongside feature work.
 
 ## 5. Gating conditions (when to start)
 
-Don't start the upgrade until all are true:
+Don't start the upgrade until both are true:
 
-- Current pre-flash stack (`5896f74` + `527e64d`) flashed and validated on hardware.
-- Power run #3 has established a clean baseline on the post-hardening build, so
-  regressions are measurable.
+- Current pre-flash stack flashed and validated on hardware (DONE 2026-04-25 —
+  snapshot-diff config sync round-trip verified, NVS persistence working,
+  MQTT-TLS clean, Thread join from saved credentials).
 - A 2-week window with no other in-flight feature work.
 
-(Phase 3 web UI is NO LONGER a gate — §7 Q4 showed the upgrade lights up the
-real HTTP server subsystem that Phase 3 needs, so the upgrade becomes a
-prerequisite for Phase 3, not a successor to it.)
+**Power run #3 is now scheduled to follow the upgrade, not precede it.**
+Rationale: running #3 on the current toolchain only produces a number we'd
+have to invalidate the moment we start touching mbedTLS/network/USB
+configurations during the upgrade. Better to flash v3.3.0 + soak it, then
+run #3 on the upgraded build — that gives us a clean comparison against
+run #2 (deployed v0.1) and isolates the "upgrade impact" from the hardening
+impact in one cycle. The minor power gains we'd see from USB-VBUS-gating +
+RAM_POWER_DOWN won't get measured separately, but they're predicted-small
+(~1.3 mA) and easy to attribute via PLAN.md.
 
-Until all three are true: stay on v2.6.0.
+(Phase 3 web UI is NO LONGER a gate — §7 Q4 showed the upgrade lights up
+the real HTTP server subsystem that Phase 3 needs, so the upgrade becomes
+a prerequisite for Phase 3, not a successor to it.)
+
+Until both are true: stay on v2.6.0.
 
 ---
 
