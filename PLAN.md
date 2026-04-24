@@ -340,8 +340,19 @@ because MQTT keepalive must stay pinned; the Thread radio isn't where the power 
     - TFT_EN (P0.03) LOW when display blanked (saves ~1.5mA)
     - usb_disable() when no USB cable detected (saves ~1mA)
 4.  **Current measurement:** Baseline each state with a power profiler
-    - Thread joining, MQTT connected idle, LoRa RX, deep sleep
-    - Target: <1mA average (estimated achievable based on research)
+    (PPK2 or INA219 rig — see methodology block below).
+    - Thread joining, MQTT connected idle, LoRa RX, individual peripherals
+    - **Realistic floor target: ~7 mA average.** Vbat-drift method on the
+      April 2026 run measured ~17–18 mA average. Items §2 and §3
+      collectively address ~10 mA: SX1262 DC RX (~4), Vext gating
+      (~3), TFT_EN (~1.5), USB disable (~1), CONFIG_RAM_POWER_DOWN
+      (~0.3), PWM uninit when idle (~0.3). The remaining ~7 mA is
+      Thread MTD radio rx-on-when-idle (~5–6 mA, pinned by MQTT
+      keepalive — can't drop without going SED, which is rejected per
+      §20) plus nRF52840 active-core overhead (~1 mA). Sub-1 mA is
+      not reachable on this architecture; it would require SED + MQTT
+      teardown between passes, both of which trade the wrong things
+      for our use case.
 5.  **CONFIG_RAM_POWER_DOWN_LIBRARY=y** — power down unused SRAM banks
 
 **Interim current estimate — Vbat-drift method (±20–30 %):**
