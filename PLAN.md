@@ -64,7 +64,8 @@ The 0x0-0x26000 region is the MBR + SoftDevice. See AGENTS.md Section 7 for full
 | :--- | :--- | :--- | :--- | :--- |
 | MBR + SoftDevice | 0x00000 | 0x26000 | 152KB | read-only |
 | Application | 0x26000 | 0xE2000 | 752KB | code_partition |
-| FATFS Storage | 0xE2000 | 0xF2000 | 64KB | tinygs_storage |
+| FATFS Storage | 0xE2000 | 0xF2000 | 64KB | tinygs_storage (config.json) |
+| NVS Settings | 0xF2000 | 0xF4000 | 8KB | storage_partition (OpenThread + tgs/*) |
 | Bootloader code | 0xF4000 | 0xFDC00 | 38KB | **read-only — DO NOT TOUCH** |
 | Bootloader config | 0xFDC00 | 0xFE000 | 2KB | **read-only** |
 | MBR params page | 0xFE000 | 0xFF000 | 4KB | **read-only** |
@@ -92,7 +93,7 @@ When field OTA updates are required, the bootloader must be transitioned to MCUb
     *   Slot 0: 0x0C000 (~440KB)
     *   Slot 1: 0x7C000 (~440KB)
     *   FATFS: 0xE2000 (64KB)
-    *   Settings: 0xF4000 (8KB)
+    *   Settings: 0xF2000 (8KB)
     *   (Exact sizes TBD based on firmware size at that point)
 6.  Flash signed application image via `west flash` or `mcumgr` over USB serial.
 

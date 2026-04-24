@@ -150,9 +150,9 @@
  * 0x00000  +-------------------------------+
  *          | MBR + SoftDevice S140 (152KB) |  read-only
  * 0x26000  +-------------------------------+
- *          | Application (792KB)           |  code_partition
- * 0xEC000  +-------------------------------+
- *          | FATFS Storage (24KB)          |  tinygs_storage (config.json)
+ *          | Application (752KB)           |  code_partition
+ * 0xE2000  +-------------------------------+
+ *          | FATFS Storage (64KB)          |  tinygs_storage (config.json)
  * 0xF2000  +-------------------------------+
  *          | NVS Settings (8KB)            |  storage_partition (OpenThread)
  * 0xF4000  +-------------------------------+
