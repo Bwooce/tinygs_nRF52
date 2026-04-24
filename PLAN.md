@@ -461,9 +461,15 @@ dividing the observed Vbat drop by the LiPo plateau slope. Method:
   baseline), reflash, more than a handful of unexpected reboots, or >12 h
   iot_log silence gap.
 
-Observed on this build over ~60 h in April 2026: ~15 mA steady-state, trending
-up to ~20 mA across the whole run once Thread/MQTT churn reboot storms were
-factored in. Real shunt measurement is item §4 above and will supersede.
+**Run #2 result (full discharge, 2026-04-19 → 2026-04-25, 131 h):** 17–18 mA
+average ±10%, on the deployed firmware (commit `af424e7`). Practical brownout
+at 2.37 V LiPo terminal — well below datasheet VBAT, the DCDC bypass kept
+the SoC running until the cell could no longer supply. 27 sessions over the
+run (26 mid-run reboots) — those were almost certainly software faults; the
+deployed firmware lacks the fault-handler instrumentation that would have
+captured cause, so we don't know which ones. Numbers carry ±10% spread because
+the cell isn't impedance-characterised. Real shunt measurement is item §4
+above and will supersede.
 
 ### Phase 2.5: NCS Upgrade v2.6.0 → v3.3.0 (prerequisite for Phase 3)
 Must run **before** Phase 3 web UI, not after. Full breakdown in
