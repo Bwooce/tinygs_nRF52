@@ -323,7 +323,20 @@ because MQTT keepalive must stay pinned; the Thread radio isn't where the power 
 2.  **SX1262 duty cycle RX:** Use startReceiveDutyCycle() for hardware-managed RX/sleep cycling
     instead of continuous RX. Saves ~4.1mA (4.6mA → 0.5mA). This is the primary power lever.
 3.  **Peripheral power gating:**
-    - Vext (P0.21) LOW when LEDs/GPS not needed (saves ~3mA)
+    - **Vext (P0.21) LOW when not needed (saves ~3 mA).** Audit:
+      Vext is currently held HIGH from `enable_peripherals()` and never
+      released. The only consumer on the T114 is the on-board NeoPixel
+      strip (SK6812 × 2, fed by SPI2 P0.14, supply line gated by
+      Vext per app.overlay line 38). Everything else has its own
+      enable: green LED is direct PWM0 (independent rail), TFT
+      logic+backlight are on TFT_EN/backlight, ADC bias has its own
+      ADC_CTRL pin (P0.06), no GPS module is fitted. Safe to default
+      Vext OFF at boot, raise only during commissioning (visual
+      feedback during Thread join / DTLS) and on packet RX flashes,
+      lower again when idle. Single owner is enough — no refcount
+      needed yet. Soak-test items: confirm SK6812 accepts new SPI
+      frames after a Vext-off→Vext-on cycle, and that the Adafruit
+      bootloader doesn't assume Vext=HIGH for its DFU LED indication.
     - TFT_EN (P0.03) LOW when display blanked (saves ~1.5mA)
     - usb_disable() when no USB cable detected (saves ~1mA)
 4.  **Current measurement:** Baseline each state with a power profiler
