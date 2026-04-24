@@ -397,7 +397,26 @@ because MQTT keepalive must stay pinned; the Thread radio isn't where the power 
       needed yet. Soak-test items: confirm SK6812 accepts new SPI
       frames after a Vext-off→Vext-on cycle, and that the Adafruit
       bootloader doesn't assume Vext=HIGH for its DFU LED indication.
-    - TFT_EN (P0.03) LOW when display blanked (saves ~1.5mA)
+    - **[BLOCKED on bench measurement] TFT_EN (P0.03) LOW when display
+      blanked.** Originally estimated ~1.5 mA. Reality is more nuanced:
+      `display_blanking_on()` already issues SLPIN to the ST7789V,
+      which per datasheet drops the panel to ~150 µA. The PLAN's
+      1.5 mA assumed the panel module's DC-DC / driver IC has tail
+      current beyond SLPIN that disappears when the rail is cut. We
+      don't actually know without a current probe.
+      Implementation cost is non-trivial: cycling TFT_EN power resets
+      the ST7789V controller registers (COLMOD, MADCTL, gamma, sleep
+      state). The Zephyr driver's PM `RESUME` action only sends SLPOUT,
+      assuming the rail stayed up. The full re-init lives in
+      `st7789v_init()` which is `static` and only called once via
+      `DEVICE_DT_INST_DEFINE`. Three options if we proceed:
+      (a) patch the upstream driver to expose runtime re-init (best
+      long-term but a PR cycle); (b) replicate ~100 lines of init
+      sequence in app code (fragile); (c) accept losing the saving.
+      **Decision: skip until we measure.** On the next bench session
+      with a current probe, take SLPIN-only and SLPIN+rail-off readings
+      back-to-back. If the delta is >0.5 mA, do option (a). Below that,
+      not worth the patch.
     - **[DONE] USB stack gated by VBUS detect** — `usb_vbus_poll()` in main loop
       polls `NRF_POWER->USBREGSTATUS` every 100 ms with a 2 s debounce.
       Boot-time `usb_enable()` is skipped if no cable; hot-plug/unplug
@@ -406,17 +425,18 @@ because MQTT keepalive must stay pinned; the Thread radio isn't where the power 
 4.  **Current measurement:** Baseline each state with a power profiler
     (PPK2 or INA219 rig — see methodology block below).
     - Thread joining, MQTT connected idle, LoRa RX, individual peripherals
-    - **Realistic floor target: ~7 mA average.** Vbat-drift method on the
-      April 2026 run measured ~17–18 mA average. Items §2 and §3
-      collectively address ~10 mA: SX1262 DC RX (~4), Vext gating
-      (~3), TFT_EN (~1.5), USB disable (~1), CONFIG_RAM_POWER_DOWN
-      (~0.3), PWM uninit when idle (~0.3). The remaining ~7 mA is
-      Thread MTD radio rx-on-when-idle (~5–6 mA, pinned by MQTT
-      keepalive — can't drop without going SED, which is rejected per
-      §20) plus nRF52840 active-core overhead (~1 mA). Sub-1 mA is
-      not reachable on this architecture; it would require SED + MQTT
-      teardown between passes, both of which trade the wrong things
-      for our use case.
+    - **Realistic floor target: ~8–9 mA average.** Vbat-drift method on the
+      April 2026 run measured ~17–18 mA average. Confirmed-doable items
+      address ~8.6 mA: SX1262 DC RX (~4), Vext gating (~3), USB disable
+      (~1, [DONE]), CONFIG_RAM_POWER_DOWN (~0.3), PWM uninit when idle
+      (~0.3). TFT_EN (~1.5 estimated) is parked pending a measurement —
+      see §3 above; if the bench shows >0.5 mA delta it goes back into
+      the budget and floor drops to ~7 mA. Remaining ~7 mA is Thread MTD
+      radio rx-on-when-idle (~5–6 mA, pinned by MQTT keepalive — can't
+      drop without going SED, which is rejected per §20) plus nRF52840
+      active-core overhead (~1 mA). Sub-1 mA is not reachable on this
+      architecture; it would require SED + MQTT teardown between passes,
+      both of which trade the wrong things for our use case.
 5.  **CONFIG_RAM_POWER_DOWN_LIBRARY=y** — power down unused SRAM banks
 
 **Interim current estimate — Vbat-drift method (±20–30 %):**
