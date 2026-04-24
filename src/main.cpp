@@ -1742,6 +1742,54 @@ static const char *html_content =
     "</script>";
 /* Closing tags added after commissioning info block */
 
+/* USB VBUS state tracking — only enable USB stack when a cable is present.
+ * Saves ~1 mA on battery by letting HFXO release when USBD is disabled.
+ * Polled from the main loop with a debounce so a flaky cable doesn't
+ * thrash the stack. */
+static bool usb_is_enabled = false;
+static bool last_vbus_state = false;
+static uint32_t vbus_change_ms = 0;
+#define USB_VBUS_DEBOUNCE_MS 2000
+
+static inline bool usb_vbus_present(void)
+{
+    return (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
+}
+
+/* Toggle USB stack to match VBUS, after VBUS has been stable for the
+ * debounce window. Safe to call as often as you like; cheap when nothing
+ * needs to change. */
+static void usb_vbus_poll(void)
+{
+    bool now_present = usb_vbus_present();
+    uint32_t now_ms = k_uptime_get_32();
+
+    if (now_present != last_vbus_state) {
+        last_vbus_state = now_present;
+        vbus_change_ms = now_ms;
+        return;
+    }
+    if (now_present == usb_is_enabled) {
+        return;
+    }
+    if ((now_ms - vbus_change_ms) < USB_VBUS_DEBOUNCE_MS) {
+        return;
+    }
+
+    if (now_present) {
+        if (usb_enable(NULL) == 0) {
+            usb_is_enabled = true;
+            LOG_INF("USB cable detected — stack enabled (MSC + CDC ACM)");
+        } else {
+            LOG_WRN("USB cable detected but usb_enable() failed");
+        }
+    } else {
+        usb_disable();
+        usb_is_enabled = false;
+        LOG_INF("USB cable removed — stack disabled (~1 mA saved)");
+    }
+}
+
 static void setup_usb_storage(void)
 {
     struct fs_file_t file;
@@ -2606,15 +2654,27 @@ int main(void)
      * Must complete before USB MSC goes live to avoid concurrent access. */
     setup_usb_storage();
 
-    /* Enable USB composite (CDC ACM console + MSC drive) */
-    if (usb_enable(NULL) == 0) {
-        LOG_INF("USB active (MSC + CDC ACM)");
+    /* Enable USB composite (CDC ACM console + MSC drive) only if a cable
+     * is plugged in. usb_vbus_poll() in the main loop handles hot-plug
+     * later. Skipping usb_enable() on battery saves ~1 mA. */
+    last_vbus_state = usb_vbus_present();
+    vbus_change_ms = k_uptime_get_32();
+    if (last_vbus_state) {
+        if (usb_enable(NULL) == 0) {
+            usb_is_enabled = true;
+            LOG_INF("USB active (MSC + CDC ACM)");
+        }
+    } else {
+        LOG_INF("USB cable absent at boot — stack stays disabled");
     }
 
-    /* Wait briefly for serial monitor to connect */
-    for (int i = 0; i < 30 && !dtr; i++) {
-        uart_line_ctrl_get(console_dev, UART_LINE_CTRL_DTR, &dtr);
-        k_msleep(100);
+    /* Wait briefly for serial monitor to connect — only if USB is up.
+     * Without this guard the DTR poll wastes 3 s on battery boots. */
+    if (usb_is_enabled) {
+        for (int i = 0; i < 30 && !dtr; i++) {
+            uart_line_ctrl_get(console_dev, UART_LINE_CTRL_DTR, &dtr);
+            k_msleep(100);
+        }
     }
 
     LOG_INF("=== TinyGS nRF52 v%u — Thread/MQTT-TLS ===", (unsigned)TINYGS_VERSION);
@@ -2849,6 +2909,11 @@ int main(void)
 
                 /* Check for LoRa packet reception */
                 lora_check_rx();
+
+                /* Track USB cable presence so the stack can drop when
+                 * running on battery. Cheap; the debounce inside the
+                 * helper means we only act on stable state. */
+                usb_vbus_poll();
 
                 /* Update display (~every 100ms from poll timeout) */
                 tinygs_display_update();

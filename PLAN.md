@@ -398,7 +398,11 @@ because MQTT keepalive must stay pinned; the Thread radio isn't where the power 
       frames after a Vext-off→Vext-on cycle, and that the Adafruit
       bootloader doesn't assume Vext=HIGH for its DFU LED indication.
     - TFT_EN (P0.03) LOW when display blanked (saves ~1.5mA)
-    - usb_disable() when no USB cable detected (saves ~1mA)
+    - **[DONE] USB stack gated by VBUS detect** — `usb_vbus_poll()` in main loop
+      polls `NRF_POWER->USBREGSTATUS` every 100 ms with a 2 s debounce.
+      Boot-time `usb_enable()` is skipped if no cable; hot-plug/unplug
+      toggles the stack at runtime so HFXO can release on battery.
+      Expected ~1 mA saving; awaits hardware measurement to confirm.
 4.  **Current measurement:** Baseline each state with a power profiler
     (PPK2 or INA219 rig — see methodology block below).
     - Thread joining, MQTT connected idle, LoRa RX, individual peripherals
