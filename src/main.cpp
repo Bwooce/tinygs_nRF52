@@ -1,7 +1,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/logging/log_ctrl.h>      /* log_backend_get_by_name */
+#include <zephyr/logging/log_backend.h>   /* struct log_backend */
 #include <malloc.h>  /* picolibc mallinfo() for STATUS log pmem tracking */
-#include <stdarg.h>  /* va_list for early_log_appendf */
 #include <zephyr/net/openthread.h>
 #include <zephyr/net/mqtt.h>
 #include <zephyr/net/socket.h>
@@ -1824,72 +1825,33 @@ static const char *html_content =
     "</script>";
 /* Closing tags added after commissioning info block */
 
-/* Early-boot log capture.
+/* Boot-time UART log backend enable.
  *
- * LOG_INF lines that fire BEFORE the USB CDC ACM host opens /dev/ttyACM0
- * (i.e. before DTR-assert) are silently dropped at the UART backend layer:
- * the driver returns an error when it has no host listener, and
- * log_backend_uart discards. Bumping CONFIG_LOG_BUFFER_SIZE doesn't help —
- * it's not a buffer-overflow problem.
+ * With CONFIG_LOG_BACKEND_UART_AUTOSTART=n in prj.conf, the UART backend
+ * stays inactive until we call this. While inactive, log lines accumulate
+ * in the deferred buffer (CONFIG_LOG_BUFFER_SIZE=16384 — way more than
+ * boot needs). Once enabled, the log_processing_thread drains the queued
+ * lines to the now-listening host.
  *
- * Workaround: setup_usb_storage and the boot-time usb_enable() use
- * EARLY_LOG instead of LOG_INF. EARLY_LOG appends to a static buffer.
- * After main() finishes the DTR-wait loop, early_log_dump() iterates the
- * buffer and re-emits each line via LOG_INF — by which time the host has
- * the port open, so the lines actually reach the console. Costs ~1 KB
- * static BSS for buffered lines; well inside our RAM headroom.
+ * Critical: pass backend->cb->ctx (not NULL) — log_backend_enable replaces
+ * cb->ctx with the value passed, and log_backend_uart_init() then derefs
+ * it. Passing NULL nukes the static-init context and the backend's init()
+ * NULL-derefs, hanging boot before networking comes up.
  */
-#define EARLY_LOG_BUF_SIZE 1024
-static char early_log_buf[EARLY_LOG_BUF_SIZE];
-static size_t early_log_pos = 0;
-static bool   early_log_active = true;
-
-static void early_log_appendf(const char *fmt, ...)
+static void boot_enable_uart_log_backend(void)
 {
-    if (!early_log_active) return;
-    /* Reserve room for at least one line (~96 B) including newline. */
-    if (early_log_pos + 96 >= EARLY_LOG_BUF_SIZE) return;
-
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(early_log_buf + early_log_pos,
-                      EARLY_LOG_BUF_SIZE - early_log_pos - 1,
-                      fmt, ap);
-    va_end(ap);
-    if (n <= 0) return;
-
-    early_log_pos += (size_t)n;
-    if (early_log_pos < EARLY_LOG_BUF_SIZE - 1) {
-        early_log_buf[early_log_pos++] = '\n';
-    }
-    early_log_buf[early_log_pos] = '\0';
-}
-
-#define EARLY_LOG(fmt, ...) early_log_appendf(fmt, ##__VA_ARGS__)
-
-/* Replay buffered early-boot lines via LOG_INF after DTR-assert.
- * Call exactly once after the DTR-wait loop in main(). */
-static void early_log_dump(void)
-{
-    if (!early_log_active) return;
-    early_log_active = false;
-    if (early_log_pos == 0) return;
-
-    LOG_INF("--- early-boot log (buffered before USB host opened the port) ---");
-    char *p = early_log_buf;
-    char *end = early_log_buf + early_log_pos;
-    while (p < end) {
-        char *nl = (char *)memchr(p, '\n', end - p);
-        if (!nl) {
-            LOG_INF("%s", p);
-            break;
+    /* Iterate ALL registered backends and enable any that aren't already
+     * active. Avoids name-lookup ambiguity (LBU_DEFINE uses
+     * `log_backend_uart##__VA_ARGS__` token-pasting, name varies across
+     * Zephyr versions). iot_log's backend autostart=true so it's already
+     * active — this loop only catches the inactive UART one. */
+    int n = log_backend_count_get();
+    for (int i = 0; i < n; i++) {
+        const struct log_backend *b = log_backend_get(i);
+        if (!log_backend_is_active(b)) {
+            log_backend_enable(b, b->cb->ctx, CONFIG_LOG_DEFAULT_LEVEL);
         }
-        *nl = '\0';
-        LOG_INF("%s", p);
-        p = nl + 1;
     }
-    LOG_INF("--- end early-boot log ---");
-    early_log_pos = 0;
 }
 
 /* USB VBUS state tracking — only enable USB stack when a cable is present.
@@ -1966,7 +1928,7 @@ static void setup_usb_storage(void)
     struct fs_file_t file;
     struct fs_dirent entry;
 
-    EARLY_LOG("Mounting FATFS...");
+    LOG_INF("Mounting FATFS...");
 
     /* Check FAT boot sector signature BEFORE mounting. FatFs will crash
      * (HardFault) on corrupted FAT data because it follows garbage pointers.
@@ -1981,7 +1943,7 @@ static void setup_usb_storage(void)
             LOG_INF("FATFS: partition erased, will auto-format on mount");
         } else if (sig[0] != 0x55 || sig[1] != 0xAA) {
             /* Corrupted data — erase partition and reboot to avoid FatFs crash */
-            EARLY_LOG("WRN FATFS: corrupt boot sector (0x%02X 0x%02X), erasing",
+            LOG_WRN("FATFS: corrupt boot sector (0x%02X 0x%02X), erasing",
                     sig[0], sig[1]);
             flash_erase(flash_dev, 0xE2000, 0x6000);
             LOG_INF("Partition erased, rebooting...");
@@ -1991,7 +1953,7 @@ static void setup_usb_storage(void)
     }
 
     int res = fs_mount(&mp);
-    EARLY_LOG("FATFS mount: %d (%s)", res, res < 0 ? errno_name(res) : "OK");
+    LOG_INF("FATFS mount: %d (%s)", res, res < 0 ? errno_name(res) : "OK");
 
     if (res == 0) {
         /* Write index.html with commissioning info (only if missing) */
@@ -2062,7 +2024,7 @@ static void setup_usb_storage(void)
                 fs_close(&cfg);
                 if (file_n > 0) {
                     file_buf[file_n] = '\0';
-                    EARLY_LOG("Config: read config.json (%d bytes)", (int)file_n);
+                    LOG_INF("Config: read config.json (%d bytes)", (int)file_n);
                 } else {
                     file_n = -1;
                 }
@@ -2089,7 +2051,7 @@ static void setup_usb_storage(void)
                     bool edited = have_snapshot ? (dv > 0.0001f)                            \
                                                  : (fv != -9999.0f);                       \
                     if (edited && fv >= (range_lo) && fv <= (range_hi)) {                  \
-                        EARLY_LOG("Config: user edit '%s' %.4f -> %.4f, persisting",       \
+                        LOG_INF("Config: user edit '%s' %.4f -> %.4f, persisting",       \
                                 key, (double)(mem_var), (double)fv);                       \
                         (mem_var) = fv;                                                    \
                         save_call;                                                          \
@@ -2113,7 +2075,7 @@ static void setup_usb_storage(void)
                                   (have_snapshot ? (strcmp(fv, sv) != 0)                   \
                                                  : (fv[0] != '\0'));                        \
                     if (edited) {                                                           \
-                        EARLY_LOG("Config: user edit '%s' '%s' -> '%s', persisting",       \
+                        LOG_INF("Config: user edit '%s' '%s' -> '%s', persisting",       \
                                 key, (mem_var), fv);                                       \
                         strncpy((mem_var), fv, sizeof(mem_var) - 1);                       \
                         (mem_var)[sizeof(mem_var) - 1] = '\0';                             \
@@ -2151,7 +2113,7 @@ static void setup_usb_storage(void)
                     -1;
                 bool edited = have_snapshot ? (fv != sv) : (fv != -1);
                 if (edited && fv != -1) {
-                    EARLY_LOG("Config: user edit 'tx_enable' %d -> %d, persisting",
+                    LOG_INF("Config: user edit 'tx_enable' %d -> %d, persisting",
                             (int)cfg_tx_enable, fv);
                     cfg_tx_enable = (int8_t)fv;
                     int8_t v = cfg_tx_enable;
@@ -2164,11 +2126,11 @@ static void setup_usb_storage(void)
             #undef DIFF_AND_APPLY_STR
 
             if (edits > 0) {
-                EARLY_LOG("Config: applied %d user edit(s) from config.json", edits);
+                LOG_INF("Config: applied %d user edit(s) from config.json", edits);
             } else if (have_file) {
-                EARLY_LOG("Config: no user edits since last write");
+                LOG_INF("Config: no user edits since last write");
             } else {
-                EARLY_LOG("Config: no config.json on drive — will create from current state");
+                LOG_INF("Config: no config.json on drive — will create from current state");
             }
 
             /* Always rewrite config.json from current memory (which now
@@ -2207,7 +2169,7 @@ static void setup_usb_storage(void)
                  * on a stable device. */
                 if (strcmp(file_buf, cfg_last_snapshot) == 0) {
                     fs_close(&cfg);
-                    EARLY_LOG("Config: file matches snapshot (%d bytes), no rewrite needed", len);
+                    LOG_INF("Config: file matches snapshot (%d bytes), no rewrite needed", len);
                 } else {
                     /* fs_write may return short on a full disk; truncate
                      * before write so the file size matches len exactly. */
@@ -2216,7 +2178,7 @@ static void setup_usb_storage(void)
                     fs_sync(&cfg);
                     fs_close(&cfg);
                     tinygs_config_save_snapshot(file_buf);
-                    EARLY_LOG("Config: wrote config.json (%d bytes), snapshot updated", len);
+                    LOG_INF("Config: wrote config.json (%d bytes), snapshot updated", len);
                 }
             }
         }
@@ -2871,10 +2833,10 @@ int main(void)
     if (last_vbus_state) {
         if (usb_enable(NULL) == 0) {
             usb_is_enabled = true;
-            EARLY_LOG("USB active (MSC + CDC ACM)");
+            LOG_INF("USB active (MSC + CDC ACM)");
         }
     } else {
-        EARLY_LOG("USB cable absent at boot — stack stays disabled");
+        LOG_INF("USB cable absent at boot — stack stays disabled");
     }
 
     /* Wait briefly for serial monitor to connect — only if USB is up.
@@ -2891,9 +2853,11 @@ int main(void)
      * the device is stuck in STATE_WAIT_THREAD or STATE_ERROR. */
     k_work_schedule(&usb_vbus_work, K_MSEC(USB_VBUS_POLL_MS));
 
-    /* Replay buffered early-boot logs now that the host has the port open
-     * (or boot timed out). See early_log_appendf() for why this exists. */
-    early_log_dump();
+    /* Activate the UART log backend now that the host has had time to
+     * open the CDC ACM port (or DTR-wait timed out). The deferred buffer
+     * drains all the queued boot lines (kernel init, FATFS, Config:,
+     * USB stack-up) in order. See boot_enable_uart_log_backend() above. */
+    boot_enable_uart_log_backend();
 
     LOG_INF("=== TinyGS nRF52 v%u — Thread/MQTT-TLS ===", (unsigned)TINYGS_VERSION);
 
