@@ -688,6 +688,10 @@ static void dump_ot_state(struct openthread_context *ctx)
 static void log_ot_diagnostics(void)
 {
     struct openthread_context *ctx = openthread_get_default_context();
+    if (!ctx) {
+        LOG_WRN("OT diagnostics: NULL context, skipping");
+        return;
+    }
     openthread_api_mutex_lock(ctx);
     dump_ot_state(ctx);
     openthread_api_mutex_unlock(ctx);
@@ -698,6 +702,10 @@ static void joiner_callback(otError error, void *context)
     if (error == OT_ERROR_NONE) {
         LOG_INF("=== Joiner succeeded! Starting Thread... ===");
         struct openthread_context *ctx = openthread_get_default_context();
+        if (!ctx || !ctx->instance) {
+            LOG_ERR("Joiner callback: NULL OT context/instance — cannot start Thread.");
+            return;
+        }
         otIp6SetEnabled(ctx->instance, true);
         otThreadSetEnabled(ctx->instance, true);
     } else {
@@ -708,6 +716,10 @@ static void joiner_callback(otError error, void *context)
 static void init_openthread(void)
 {
     struct openthread_context *ctx = openthread_get_default_context();
+    if (!ctx) {
+        LOG_ERR("OpenThread context is NULL — net stack not initialised? Aborting OT init.");
+        return;
+    }
 
     LOG_INF("Starting OpenThread (Joiner mode)...");
     openthread_state_changed_cb_register(ctx, &ot_state_cb);
@@ -717,6 +729,11 @@ static void init_openthread(void)
 
     openthread_api_mutex_lock(ctx);
     otInstance *inst = ctx->instance;
+    if (!inst) {
+        LOG_ERR("OpenThread instance is NULL after openthread_start — bailing.");
+        openthread_api_mutex_unlock(ctx);
+        return;
+    }
 
     /* Check if we already have a valid dataset (from a previous successful join) */
     otOperationalDataset dataset;
