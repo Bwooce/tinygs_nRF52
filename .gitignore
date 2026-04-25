@@ -21,3 +21,5 @@ src/mqtt_credentials.h
 # unplug timings — session-specific and not user-facing).
 # Power-characterisation methodology lives in PLAN.md Phase 4 instead.
 docs/power_run_*.md
+ncs_new/
+build_v33/
