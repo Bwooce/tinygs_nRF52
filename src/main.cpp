@@ -2265,6 +2265,57 @@ static Module *radio_mod = nullptr;
 static int64_t sntp_epoch_offset_ms = 0;
 static bool time_synced = false;
 
+/* Cross-reboot continuity. __noinit RAM survives SREQ/DOG resets but not
+ * POR/Pin/BOR. We periodically save the current epoch_ms so a warm reboot
+ * can restore "good enough" time before SNTP completes — useful for log
+ * timestamps and welcome-payload `time` field on quick reconnects. The
+ * worst-case drift is the save interval plus boot overhead (~60–70 s). */
+#define EPOCH_PERSIST_MAGIC  0x54494D58u  /* "TIMX" */
+#define EPOCH_PERSIST_INTERVAL K_SECONDS(60)
+/* Use the same pattern as crash_pc/crash_lr above: separate volatile scalars
+ * with __noinit. C++ + LTO drops the section attribute when applied to an
+ * aggregate, leaving the variable in BSS where it gets zeroed every boot.
+ * Volatile scalars matching the working crash-diagnostic pattern survive. */
+static volatile uint32_t __noinit epoch_persist_magic;
+static volatile uint32_t __noinit epoch_persist_unix_ms_lo;
+static volatile uint32_t __noinit epoch_persist_unix_ms_hi;
+
+static void epoch_persist_save(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(epoch_persist_work, epoch_persist_save);
+
+static void epoch_persist_save(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    if (time_synced) {
+        int64_t now_ms = k_uptime_get() + sntp_epoch_offset_ms;
+        epoch_persist_unix_ms_lo = (uint32_t)(now_ms & 0xFFFFFFFFu);
+        epoch_persist_unix_ms_hi = (uint32_t)((uint64_t)now_ms >> 32);
+        epoch_persist_magic      = EPOCH_PERSIST_MAGIC;
+    }
+    k_work_reschedule(&epoch_persist_work, EPOCH_PERSIST_INTERVAL);
+}
+
+/* Called from main() right after boot diagnostics, before networking.
+ * If __noinit retains a valid epoch from a recent session, restore it so
+ * get_utc_epoch_*() returns a sensible value before SNTP succeeds. */
+static void epoch_persist_restore(void)
+{
+    if (epoch_persist_magic == EPOCH_PERSIST_MAGIC) {
+        int64_t saved = (int64_t)(((uint64_t)epoch_persist_unix_ms_hi << 32) |
+                                   (uint64_t)epoch_persist_unix_ms_lo);
+        if (saved > 0) {
+            sntp_epoch_offset_ms = saved - k_uptime_get();
+            time_synced = true;
+            LOG_INF("Time: restored from __noinit, epoch_ms=%lld", (long long)saved);
+        } else {
+            LOG_INF("Time: stored epoch invalid (saved=%lld)", (long long)saved);
+        }
+    } else {
+        LOG_INF("Time: no stored epoch (magic=0x%08x)", (unsigned)epoch_persist_magic);
+    }
+    k_work_schedule(&epoch_persist_work, EPOCH_PERSIST_INTERVAL);
+}
+
 /* Signalled by sntp_response_handler so sntp_sync() can block the state
  * machine until we have a real epoch (or a hard timeout). Welcome payload
  * carries the `time` field, so we must sync *before* CONNACK. */
@@ -2953,6 +3004,7 @@ int main(void)
     }
 
     log_heap_usage("boot");
+    epoch_persist_restore();
     init_openthread();
 
 #if defined(CONFIG_IOT_LOG)
