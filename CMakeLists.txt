@@ -48,6 +48,13 @@ target_include_directories(app PRIVATE src/hal lib/RadioLib/src lib/ArduinoJson/
 # v3.3's PSA crypto is reportedly fixed; if mqtt.tinygs.com TLS handshake
 # fails on hardware, restore the RSA_FIX_SRCS block from git history.
 
+# Toolchain-provided picolibc ships both nano-malloc.c and the regular
+# malloc.c in libc.a, both defining malloc/free. Combined with Zephyr's
+# COMMON_LIBC_MALLOC the linker sees duplicates. --allow-multiple-definition
+# tells ld to use the first definition seen (COMMON_LIBC_MALLOC, listed
+# before libc.a) and silently drop the picolibc nano-malloc duplicate.
+zephyr_link_libraries(-Wl,--allow-multiple-definition)
+
 # Generate UF2 for Adafruit/Heltec bootloaders
 set_target_properties(app PROPERTIES BUILD_OUTPUT_UF2 TRUE)
 

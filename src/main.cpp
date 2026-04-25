@@ -29,6 +29,7 @@
 #include <zephyr/drivers/flash.h>
 #include <zephyr/drivers/adc.h>
 #include <zephyr/dt-bindings/adc/nrf-adc.h>
+#include <hal/nrf_saadc.h>  /* NRF_SAADC_INPUT_AIN2 — v3.3 no longer pulled in via adc.h */
 #include <zephyr/sys/base64.h>
 #include <zephyr/drivers/watchdog.h>
 #if defined(CONFIG_LED_STRIP)
@@ -351,7 +352,7 @@ static void led_init(void)
 
 #include <nrfx_pwm.h>
 #include <nrfx_glue.h>   /* nrfx_isr — required for runtime IRQ binding */
-#include <nrfx_errors.h> /* NRFX_SUCCESS — no longer pulled in transitively in v3.3 */
+#include <drivers/nrfx_errors.h> /* NRFX_SUCCESS — no longer pulled in transitively in v3.3 */
 #include <hal/nrf_gpio.h>
 
 static nrfx_pwm_t pwm_led = NRFX_PWM_INSTANCE(0);
