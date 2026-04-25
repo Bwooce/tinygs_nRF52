@@ -2263,7 +2263,12 @@ static Module *radio_mod = nullptr;
  * is whole-second anyway, so storing in ms gives us all the precision we
  * can claim; storing in µs would just pad zeros on the low end. */
 static int64_t sntp_epoch_offset_ms = 0;
-static bool time_synced = false;
+static bool time_synced = false;        /* Have a usable epoch (SNTP or __noinit restore). */
+static bool sntp_done_this_boot = false; /* Have run SNTP at least once since boot.
+                                            Restored-from-__noinit time counts as time_synced
+                                            so callers can use it, but we still want a fresh
+                                            SNTP per boot for accuracy and to schedule the
+                                            periodic resync. */
 
 /* Cross-reboot continuity. __noinit RAM survives SREQ/DOG resets but not
  * POR/Pin/BOR. We periodically save the current epoch_ms so a warm reboot
@@ -2339,6 +2344,7 @@ static void sntp_response_handler(void *aContext, uint64_t aTime, otError aResul
     if (aResult == OT_ERROR_NONE) {
         sntp_epoch_offset_ms = (int64_t)aTime * 1000LL - k_uptime_get();
         time_synced = true;
+        sntp_done_this_boot = true;
         LOG_INF("SNTP: synced, epoch=%llu", (unsigned long long)aTime);
     } else {
         LOG_WRN("SNTP: failed (%d %s)", (int)aResult, otThreadErrorToString(aResult));
@@ -3084,11 +3090,11 @@ int main(void)
             if (resolve_broker() == 0) {
                 /* Sync time before MQTT connect so the welcome payload
                  * carries a valid `time` field. Non-fatal: if SNTP fails
-                 * we connect anyway and welcome just omits the time.
-                 * Reconnects skip this — they reuse the cached offset so
-                 * MQTT comes back fast. Drift correction is handled
-                 * out-of-band by sntp_resync_work. */
-                if (!time_synced) {
+                 * we connect anyway and welcome uses whatever time we
+                 * have (possibly the __noinit-restored stale value).
+                 * MQTT reconnects within the same boot reuse the cached
+                 * offset (sntp_done_this_boot=true). */
+                if (!sntp_done_this_boot) {
                     sntp_sync();
                     /* Kick off periodic drift-correction regardless of
                      * boot-sync success — if boot failed, tomorrow's
