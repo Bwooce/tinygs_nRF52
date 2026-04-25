@@ -494,6 +494,21 @@ is the real gain). The migration is mostly a toolchain/kconfig exercise, not an
 API rewrite. Budget 7–10 days focused work. Gate on: `v0.2` tag validated on
 hardware + a clean power-run baseline + a 2-week window.
 
+**Post-upgrade follow-up — config-edit reboot trigger via SCSI eject**
+- **Today:** USB-detach reboot path (in `usb_vbus_work_handler`) is VBUS-edge
+  driven. Eject from the host (Finder/Explorer/`eject`) sends SCSI
+  START_STOP_UNIT (0x1B); Zephyr v2.6's `subsys/usb/device/class/msc.c:674`
+  has no handler — drops to `default → fail()` and logs
+  `usb_msc: >> default CB[0] 1b`. So eject-to-apply only works if the user
+  physically unplugs the cable.
+- **After upgrade:** Switch to USB-next stack (`CONFIG_USB_DEVICE_STACK_NEXT`,
+  available from Zephyr v3.x). Its MSC class exposes class-event callbacks
+  including SCSI events. Hook `START_STOP_UNIT` → invoke the same
+  `usb_detach_config_changed()` path we already have, then accept the eject
+  with `CSW_PASSED`.
+- **Avoid:** patching the legacy msc.c locally — small change but forks Zephyr
+  and disappears on `west update`. Wait for the upgrade.
+
 ### Phase 5: RadioLib ZephyrHal Upstream PR
 The Zephyr HAL is functionally complete and multi-instance safe. To submit as a PR
 to [jgromes/RadioLib](https://github.com/jgromes/RadioLib), the following packaging
