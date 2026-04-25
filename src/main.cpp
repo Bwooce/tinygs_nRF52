@@ -2198,22 +2198,25 @@ static void setup_usb_storage(void)
                  * file_buf into adjacent BSS. */
                 if (len < 0) len = 0;
                 if ((size_t)len >= sizeof(file_buf)) len = sizeof(file_buf) - 1;
-                /* fs_write may return short on a full disk; truncate
-                 * before write so the file size matches len exactly. */
-                fs_truncate(&cfg, 0);
-                fs_write(&cfg, file_buf, len);
-                fs_sync(&cfg);
-                fs_close(&cfg);
-                /* Only re-save the snapshot if the rendered file content
-                 * actually changed. Without this guard we'd add one NVS
-                 * write per boot; with it, we only write on real state
-                 * change (user edit, server-driven NVS update that flowed
-                 * through to a rendered field, or first boot). */
-                if (strcmp(file_buf, cfg_last_snapshot) != 0) {
+
+                /* Skip the FATFS rewrite AND NVS snapshot save when the
+                 * rendered content matches the previous snapshot — it
+                 * means the file we just read already reflected our
+                 * current state, so neither needs touching. Saves one
+                 * FATFS-partition flash erase + one NVS write per boot
+                 * on a stable device. */
+                if (strcmp(file_buf, cfg_last_snapshot) == 0) {
+                    fs_close(&cfg);
+                    EARLY_LOG("Config: file matches snapshot (%d bytes), no rewrite needed", len);
+                } else {
+                    /* fs_write may return short on a full disk; truncate
+                     * before write so the file size matches len exactly. */
+                    fs_truncate(&cfg, 0);
+                    fs_write(&cfg, file_buf, len);
+                    fs_sync(&cfg);
+                    fs_close(&cfg);
                     tinygs_config_save_snapshot(file_buf);
                     EARLY_LOG("Config: wrote config.json (%d bytes), snapshot updated", len);
-                } else {
-                    EARLY_LOG("Config: wrote config.json (%d bytes), snapshot unchanged", len);
                 }
             }
         }
@@ -2430,9 +2433,20 @@ static void doppler_update(void)
         sat_lon >= -180.0 && sat_lon <= 180.0) {
         tinygs_radio.sat_pos_x = (float)((180.0 + sat_lon) / 360.0 * 128.0);
         tinygs_radio.sat_pos_y = (float)((90.0 - sat_lat) / 180.0 * 64.0);
-        LOG_INF("Sat %s @ lat=%.2f lon=%.2f el=%.1f° → grid (%.1f,%.1f)",
-                tinygs_radio.satellite, sat_lat, sat_lon, elevation,
-                (double)tinygs_radio.sat_pos_x, (double)tinygs_radio.sat_pos_y);
+        /* Suppress sub-pixel updates — the display only redraws on
+         * integer-pixel transitions, so anything finer is log noise.
+         * 240×135 display, 128×64 grid → ~1.875 px-per-grid-x,
+         * ~2.1 px-per-grid-y. Compare integer-display-pixel coords. */
+        static int last_disp_x = -1, last_disp_y = -1;
+        int disp_x = (int)(tinygs_radio.sat_pos_x * 240 / 128);
+        int disp_y = (int)(tinygs_radio.sat_pos_y * 135 / 64);
+        if (disp_x != last_disp_x || disp_y != last_disp_y) {
+            LOG_INF("Sat %s @ lat=%.2f lon=%.2f el=%.1f° → pixel (%d,%d)",
+                    tinygs_radio.satellite, sat_lat, sat_lon, elevation,
+                    disp_x, disp_y);
+            last_disp_x = disp_x;
+            last_disp_y = disp_y;
+        }
     } else {
         LOG_WRN("Sat %s: propagator returned bad lat/lon (%.2f, %.2f) — keeping last",
                 tinygs_radio.satellite, sat_lat, sat_lon);

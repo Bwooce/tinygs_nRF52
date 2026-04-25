@@ -218,7 +218,15 @@ All Phase 1 objectives proven:
     - **[DONE] USB stack gated by VBUS detect** (commit `a058cca`, refactored to system workqueue in `393266f`). `usb_vbus_work` runs every 250 ms with 2 s debounce, toggling `usb_enable`/`usb_disable` so HFXO releases on battery. ~1 mA expected; awaits power-probe confirmation.
     - **[TODO] SX1262 startReceiveDutyCycleAuto** — design + helper pattern in §4.2 above. ~1 day with hardware once a probe is wired up. Biggest single power lever (~4 mA).
     - **[TODO] Vext gating** — audit in §4.3 above. ~3 mA. Soak-test items: NeoPixel re-init after Vext cycle, bootloader DFU LED behaviour.
-    - **[TODO] CONFIG_RAM_POWER_DOWN_LIBRARY=y** — Kconfig flip, no code. ~0.3 mA, ~1 KB flash. Safe (statically-sized RAM). Could land any time without bench equipment.
+    - **[DONE] CONFIG_RAM_POWER_DOWN_LIBRARY=y** + capped picolibc malloc
+      arena to 4 KB so it can't grow into the powered-down section.
+      Bonus finding from STATUS log instrumentation (`pmem` field):
+      picolibc malloc is *literally unused* — `pmem=0(peak=0/4096)` on
+      a healthy device. C++ `new` resolves to k_malloc/sys_heap, not
+      picolibc malloc, so RadioLib allocations don't touch the arena.
+      The 4 KB cap is therefore wildly over-provisioned — could be
+      shrunk to 1 KB or even 0 to recover RAM (trivial but not worth
+      the touch right now). Filed as a future micro-optimisation.
     - **[BLOCKED on measurement] TFT_EN gating** — see §4.3 above; SLPIN already drops the panel ~150 µA; whether cutting the rail saves an additional ~1.3 mA or just ~150 µA is unknown without a current probe. Driver-side re-init complexity isn't worth committing to before the measurement.
 
 20. **Thread protocol feature audit (2026-04-18):** Investigated what Thread 1.2/1.3 features might improve reliability and power for our use case. Conclusions:
