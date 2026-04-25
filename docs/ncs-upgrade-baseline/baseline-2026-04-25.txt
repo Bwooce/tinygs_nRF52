@@ -1,0 +1,77 @@
+=== git tag/commit ===
+c8488fdedaf6b60a444fd1c2a3d4845be91391de
+5df5c3d78cc9b430b09900313a7eab62a7ba7e31
+v0.1
+v0.2
+=== build sizes (v0.2) ===
+-rwxrwxr-x 1 bruce bruce 25693920 Apr 25 21:46 build/zephyr/zephyr.elf
+-rw-rw-r-- 1 bruce bruce   995840 Apr 25 21:46 build/zephyr/zephyr.uf2
+=== memory regions ===
+                0x0000000000002424       0x1e /home/bruce/zephyr-sdk-0.16.8/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v7e-m/nofp/libgcc.a(_arm_truncdfsf2.o)
+ .ARM.attributes
+                0x0000000000002442       0x1e /home/bruce/zephyr-sdk-0.16.8/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v7e-m/nofp/libgcc.a(_aeabi_ldivmod.o)
+ .ARM.attributes
+                0x0000000000002460       0x1e /home/bruce/zephyr-sdk-0.16.8/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v7e-m/nofp/libgcc.a(_aeabi_uldivmod.o)
+ .ARM.attributes
+                0x000000000000247e       0x2e /home/bruce/zephyr-sdk-0.16.8/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v7e-m/nofp/libgcc.a(_udivmoddi4.o)
+ .ARM.attributes
+                0x00000000000024ac       0x1e /home/bruce/zephyr-sdk-0.16.8/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v7e-m/nofp/libgcc.a(_dvmd_tls.o)
+ .ARM.attributes
+                0x00000000000024ca       0x1e /home/bruce/zephyr-sdk-0.16.8/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v7e-m/nofp/libgcc.a(_arm_mulsf3.o)
+ .ARM.attributes
+                0x00000000000024e8       0x1e /home/bruce/zephyr-sdk-0.16.8/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v7e-m/nofp/libgcc.a(_arm_fixunsdfsi.o)
+ .ARM.attributes
+                0x0000000000002506       0x1e /home/bruce/zephyr-sdk-0.16.8/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v7e-m/nofp/libgcc.a(_arm_addsubsf3.o)
+ .ARM.attributes
+                0x0000000000002524       0x1e /home/bruce/zephyr-sdk-0.16.8/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v7e-m/nofp/libgcc.a(_arm_muldivsf3.o)
+ .ARM.attributes
+                0x0000000000002542       0x1e /home/bruce/zephyr-sdk-0.16.8/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v7e-m/nofp/libgcc.a(_arm_cmpsf2.o)
+ .ARM.attributes
+=== west list ===
+FATAL ERROR: no west workspace found from "/home/bruce/dev/tinygs_nRF52"; "west list" requires one.
+Things to try:
+  - Change directory to somewhere inside a west workspace and retry.
+  - Set ZEPHYR_BASE to a zephyr repository path in a west workspace.
+  - Run "west init" to set up a workspace here.
+  - Run "west init -h" for additional information.
+
+=== west list (current v2.6.0 workspace) ===
+manifest     nrf                          HEAD                                     N/A
+zephyr       zephyr                       v3.5.99-ncs1                             https://github.com/nrfconnect/sdk-zephyr
+hostap       modules/lib/hostap           dda5457ad2cfce99e333980c7764c8d480ae4010 https://github.com/nrfconnect/sdk-hostap
+wfa-qt-control-app modules/lib/wfa-qt-control-app d649bd1342215e089d4211757186705cda179013 https://github.com/nrfconnect/sdk-wi-fiquicktrack-controlappc
+mcuboot      bootloader/mcuboot           v2.0.99-ncs1                             https://github.com/nrfconnect/sdk-mcuboot
+qcbor        modules/tee/tf-m/qcbor       751d36583a9ce1a640900c57e13c9b6b8f3a2ba2 https://github.com/laurencelundblade/QCBOR
+mbedtls      modules/crypto/mbedtls       v3.5.2-ncs1                              https://github.com/nrfconnect/sdk-mbedtls
+nrfxlib      nrfxlib                      v2.6.0                                   https://github.com/nrfconnect/sdk-nrfxlib
+trusted-firmware-m modules/tee/tf-m/trusted-firmware-m v2.0.0-ncs1                              https://github.com/nrfconnect/sdk-trusted-firmware-m
+psa-arch-tests modules/tee/tf-m/psa-arch-tests 94a349db22cd0e44136c281724ffc71b6e7391c3 https://github.com/nrfconnect/sdk-psa-arch-tests
+matter       modules/lib/matter           v2.6.0                                   https://github.com/nrfconnect/sdk-connectedhomeip
+cjson        modules/lib/cjson            c6af068b7f05207b28d68880740e4b9ec1e4b50a https://github.com/nrfconnect/sdk-cjson
+azure-sdk-for-c modules/lib/azure-sdk-for-c  308c171cb4b5eed266649012a68406487ec81fb2 https://github.com/nrfconnect/azure-sdk-for-c
+cirrus       modules/hal/cirrus-logic     3873a08377d93a479105a75ac390d3bbcd31d690 https://github.com/nrfconnect/sdk-mcu-drivers
+openthread   modules/lib/openthread       b9dcdbca4edd348e924d7579a2bada48bf085645 https://github.com/nrfconnect/sdk-openthread
+cmock        test/cmock                   f65066f15d8248e6dcb778efb8739904a4512087 https://github.com/ThrowTheSwitch/cmock
+memfault-firmware-sdk modules/lib/memfault-firmware-sdk 1.6.0                                    https://github.com/memfault/memfault-firmware-sdk
+bsim         tools/bsim                   384a091445c57b44ac8cbd18ebd245b47c71db94 https://github.com/BabbleSim/bsim_west
+canopennode  modules/lib/canopennode      dec12fa3f0d790cafa8414a4c2930ea71ab72ffd https://github.com/zephyrproject-rtos/canopennode
+chre         modules/lib/chre             3b32c76efee705af146124fb4190f71be5a4e36e https://github.com/zephyrproject-rtos/chre
+lz4          modules/lib/lz4              8e303c264fc21c2116dc612658003a22e933124d https://github.com/zephyrproject-rtos/lz4
+nanopb       modules/lib/nanopb           42fa8b211e946b90b9d968523fce7b1cfe27617e https://github.com/zephyrproject-rtos/nanopb
+tf-m-tests   modules/tee/tf-m/tf-m-tests  08a3158f0623a4205608a52d880b17ae394e31d2 https://github.com/zephyrproject-rtos/tf-m-tests
+zscilib      modules/lib/zscilib          34a94b0995683822fa3626dcd5d838301c94c350 https://github.com/zephyrproject-rtos/zscilib
+cmsis        modules/hal/cmsis            4b96cbb174678dcd3ca86e11e1f24bc5f8726da0 https://github.com/zephyrproject-rtos/cmsis
+cmsis-dsp    modules/lib/cmsis-dsp        ff7b5fd1ea5f094665c090c343ec44e74dc0b193 https://github.com/zephyrproject-rtos/cmsis-dsp
+cmsis-nn     modules/lib/cmsis-nn         0c8669d81381ccf3b1a01d699f3b68b50134a99f https://github.com/zephyrproject-rtos/cmsis-nn
+edtt         tools/edtt                   64e5105ad82390164fb73fc654be3f73a608209a https://github.com/zephyrproject-rtos/edtt
+fatfs        modules/fs/fatfs             427159bf95ea49b7680facffaa29ad506b42709b https://github.com/zephyrproject-rtos/fatfs
+hal_nordic   modules/hal/nordic           5470822384781624efb2fda28cbc6a895a227677 https://github.com/zephyrproject-rtos/hal_nordic
+
+=== nrf revision ===
+3190fa573ff67bfb745028f203e9d0ea4144a1ce
+v2.6.0
+=== zephyr revision ===
+d96769facecaba386b642d2c76c92c7694c81da0
+v3.5.99-ncs1
+
+=== build memory summary (from build log) ===
