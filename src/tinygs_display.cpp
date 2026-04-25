@@ -63,11 +63,35 @@ static const uint8_t logo_bits[] = {
 
 static const struct device *disp_dev = NULL;
 static bool display_active = false;
-static int current_page = 0;
+/* Page IDs */
+#define PAGE_WORLDMAP   0
+#define PAGE_STATION    1
+#define PAGE_STATUS     2
+#define PAGE_SATELLITE  3
+#define PAGE_LASTPKT    4
+#define PAGE_INFO       5
+#define PAGE_REMOTE0    6
+#define PAGE_REMOTE1    7
+
+/* Rotation favours the map: it appears between every other page, so the user
+ * always returns to the worldmap within ~5s. Other screens are still reachable
+ * but only "occasionally interesting" per the UX call. */
+static const uint8_t page_rotation[] = {
+    PAGE_WORLDMAP, PAGE_STATION,
+    PAGE_WORLDMAP, PAGE_STATUS,
+    PAGE_WORLDMAP, PAGE_SATELLITE,
+    PAGE_WORLDMAP, PAGE_LASTPKT,
+    PAGE_WORLDMAP, PAGE_INFO,
+    PAGE_WORLDMAP, PAGE_REMOTE0,
+    PAGE_WORLDMAP, PAGE_REMOTE1,
+};
+#define ROTATION_LEN (sizeof(page_rotation) / sizeof(page_rotation[0]))
+
+static int rotation_idx = 0;
+static int current_page = PAGE_WORLDMAP;
 static uint32_t last_page_switch_ms = 0;
 static uint32_t last_activity_ms = 0;
 
-#define PAGE_COUNT       8  /* Match ESP32 TinyGS 8-frame display */
 #define PAGE_INTERVAL_MS 5000
 #define DISP_W           240
 #define DISP_H           135
@@ -133,11 +157,13 @@ static void button_pressed(const struct device *dev, struct gpio_callback *cb, u
     uint32_t now = k_uptime_get_32();
 
     if (!display_active && disp_dev) {
-        /* First press wakes the display */
+        /* First press wakes the display — start on the map (the screen the
+         * user actually wants to see). */
         display_blanking_off(disp_dev);
         if (device_is_ready(backlight.port)) gpio_pin_set_dt(&backlight, 1);
         display_active = true;
-        current_page = 0;
+        rotation_idx = 0;
+        current_page = page_rotation[0];
     } else {
         /* Display already active (or no display): request weblogin */
         weblogin_requested = true;
@@ -389,12 +415,9 @@ static void draw_page_remote(int frame_idx)
     if (frame_idx < 0 || frame_idx >= REMOTE_FRAME_COUNT) return;
     const auto &frame = remote_frames[frame_idx];
 
-    if (frame.count == 0) {
-        /* Empty frame — skip to next page */
-        current_page = (current_page + 1) % PAGE_COUNT;
-        last_page_switch_ms = k_uptime_get_32();
-        return;
-    }
+    /* Empty frames are filtered out at rotation time, so we shouldn't reach
+     * here with count==0. Belt-and-braces: just leave the cleared screen. */
+    if (frame.count == 0) return;
 
     for (int i = 0; i < frame.count; i++) {
         const auto &elem = frame.elems[i];
@@ -501,20 +524,29 @@ void tinygs_display_update(void)
     if (!display_active) return;
 
     if ((now - last_page_switch_ms) >= PAGE_INTERVAL_MS) {
-        current_page = (current_page + 1) % PAGE_COUNT;
+        /* Advance through the rotation, skipping empty remote frames so the
+         * user never sees a blank flash for a page with nothing to show. */
+        for (int i = 0; i < (int)ROTATION_LEN; i++) {
+            rotation_idx = (rotation_idx + 1) % ROTATION_LEN;
+            int next = page_rotation[rotation_idx];
+            if (next == PAGE_REMOTE0 && remote_frames[0].count == 0) continue;
+            if (next == PAGE_REMOTE1 && remote_frames[1].count == 0) continue;
+            current_page = next;
+            break;
+        }
         last_page_switch_ms = now;
         clear_screen();
     }
 
     switch (current_page) {
-    case 0: draw_page_station(); break;     /* Logo + station name */
-    case 1: draw_page_status(); break;     /* Thread/MQTT real-time state */
-    case 2: draw_page_satellite(); break;  /* Current satellite config */
-    case 3: draw_page_worldmap(); break;   /* World map + station dot */
-    case 4: draw_page_lastpkt(); break;    /* Last received packet */
-    case 5: draw_page_info(); break;       /* Version/board/uptime */
-    case 6: draw_page_remote(0); break;     /* Remote frame 0 (server-pushed) */
-    case 7: draw_page_remote(1); break;    /* Remote frame 1 (server-pushed) */
+    case PAGE_STATION:   draw_page_station();   break;
+    case PAGE_STATUS:    draw_page_status();    break;
+    case PAGE_SATELLITE: draw_page_satellite(); break;
+    case PAGE_WORLDMAP:  draw_page_worldmap();  break;
+    case PAGE_LASTPKT:   draw_page_lastpkt();   break;
+    case PAGE_INFO:      draw_page_info();      break;
+    case PAGE_REMOTE0:   draw_page_remote(0);   break;
+    case PAGE_REMOTE1:   draw_page_remote(1);   break;
     }
 }
 

@@ -3013,10 +3013,9 @@ int main(void)
                 /* Heap stats now in periodic STATUS log */
                 LOG_INF("--- Thread attached, waiting 5s for routing to stabilize ---");
                 k_msleep(5000);
-#if defined(CONFIG_IOT_LOG)
-                /* Trigger deferred multicast join now that Thread is attached */
-                iot_log_poll();
-#endif
+                /* iot_log self-drives via its own workqueue (every 1s),
+                 * so deferred multicast join + drain run regardless of
+                 * which app state we are in. */
                 app_state = STATE_DNS_RESOLVE;
                 retry_count = 0;
             } else {
@@ -3131,10 +3130,7 @@ int main(void)
                 /* Update display (~every 100ms from poll timeout) */
                 tinygs_display_update();
 
-#if defined(CONFIG_IOT_LOG)
-                /* Check for remote log listener beacons */
-                iot_log_poll();
-#endif
+                /* iot_log self-drives via its own workqueue. */
 
                 /* Doppler compensation — every 4s if TLE available */
                 uint32_t now_ms = k_uptime_get_32();
