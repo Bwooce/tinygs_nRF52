@@ -1737,6 +1737,45 @@ static struct fs_mount_t mp = {
      * opt-in. Don't change unless you mean to disable auto-format. */
 };
 
+/* Re-mount FATFS, read config.json, compare against the last snapshot we
+ * persisted (cfg_last_snapshot). Returns true if the file content differs
+ * — caller should reboot so the boot-time snapshot-diff applies the edits.
+ *
+ * Cases:
+ *   - file exists, content == snapshot: no edit, return false (no reboot).
+ *   - file exists, content != snapshot: user edit, return true (reboot).
+ *   - file missing entirely (host nuked it): return true (reboot — boot
+ *     path will re-create the file from current NVS state).
+ *   - mount/read failure: return false (don't reboot on uncertainty —
+ *     a failed mount could mean USB MSC hasn't fully released the volume,
+ *     and the next VBUS toggle will retry). */
+static bool usb_detach_config_changed(void)
+{
+    if (fs_mount(&mp) != 0) {
+        return false;
+    }
+
+    static char buf[TINYGS_CONFIG_SNAPSHOT_MAX];
+    struct fs_file_t f;
+    fs_file_t_init(&f);
+    bool no_file = (fs_open(&f, "/NAND:/config.json", FS_O_READ) != 0);
+    ssize_t n = -1;
+    if (!no_file) {
+        n = fs_read(&f, buf, sizeof(buf) - 1);
+        fs_close(&f);
+    }
+    fs_unmount(&mp);
+
+    if (no_file) {
+        return true;   /* file was deleted — reboot, boot path will recreate */
+    }
+    if (n <= 0) {
+        return false;  /* read error — don't gamble on a reboot */
+    }
+    buf[n] = '\0';
+    return strcmp(buf, cfg_last_snapshot) != 0;
+}
+
 static const char *html_content =
     "<!DOCTYPE html><html><head><title>TinyGS Configurator</title>"
     "<style>body{font-family:sans-serif;max-width:600px;margin:40px auto;padding:20px;background:#f4f4f9;}"
@@ -1797,6 +1836,9 @@ static inline bool usb_vbus_present(void)
     return (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
 }
 
+/* Forward declare — defined later, after the FATFS mount struct exists. */
+static bool usb_detach_config_changed(void);
+
 /* VBUS poll runs on the system workqueue so hot-plug detection works
  * regardless of where the connection state machine is parked. The
  * MQTT-loop variant only fired in STATE_MQTT_CONNECTED — meaning a
@@ -1829,6 +1871,20 @@ static void usb_vbus_work_handler(struct k_work *work)
             usb_disable();
             usb_is_enabled = false;
             LOG_INF("USB cable removed — stack disabled (~1 mA saved)");
+
+            /* If the host edited config.json during this USB session, the
+             * device's NVS still holds the old values (FATFS writes go
+             * directly to flash via MSC, never through our settings layer
+             * while the drive is mounted). Re-read the file and compare
+             * against cfg_last_snapshot — if it changed, reboot so the
+             * snapshot-diff sync in setup_usb_storage applies the edits.
+             * If unchanged, stay running (avoids spurious reboots when the
+             * user just plugged in to view logs). */
+            if (usb_detach_config_changed()) {
+                LOG_INF("Config changed during USB session — rebooting to apply");
+                k_msleep(200);   /* let log + USB-down state flush */
+                sys_reboot(SYS_REBOOT_COLD);
+            }
         }
     }
 
