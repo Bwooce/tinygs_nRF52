@@ -3143,21 +3143,9 @@ int main(void)
                     last_doppler_ms = now_ms;
                 }
 
-                /* Send TinyGS ping (also serves as MQTT keepalive — see protocol doc). */
+                /* Send TinyGS ping (also serves as MQTT keepalive — see protocol doc) */
                 if ((now_ms - last_ping_ms) >= (TINYGS_PING_INTERVAL_S * 1000)) {
                     tinygs_send_ping(&mqtt_client, cfg_mqtt_user, cfg_station);
-                    /* Force an MQTT PINGREQ too. Zephyr's mqtt_live() suppresses
-                     * keepalive PINGREQ when we have any outbound activity (our
-                     * TinyGS publish above counts), so PINGRESP traffic — and
-                     * the watchdog feed it triggers — never happens. The right
-                     * detection target is "server isn't talking back", not
-                     * "we're not writing"; outbound success doesn't prove
-                     * the broker is alive (TCP half-open, NAT64 half-broken,
-                     * server hung — all let writes succeed but no PINGRESP).
-                     * mqtt_ping() pushes a PINGREQ regardless of mqtt_live
-                     * state, so PINGRESP-or-watchdog-fires becomes the clean
-                     * connection-health test we wanted. */
-                    mqtt_ping(&mqtt_client);
                     last_ping_ms = now_ms;
                 }
 
