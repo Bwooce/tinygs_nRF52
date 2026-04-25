@@ -151,6 +151,11 @@ static char __noinit crash_thread[16];
  * fault us inside the handler and prevent __noinit diagnostics from landing. */
 #define IN_SRAM(p) ((uintptr_t)(p) >= 0x20000000u && (uintptr_t)(p) < 0x20040000u)
 
+/* v3.3: openthread_context.instance is no longer populated by the L2 layer.
+ * Use the new singleton accessor via this forward declaration (defined in
+ * the openthread module's internal header which we don't pull in directly). */
+extern "C" struct otInstance *openthread_get_default_instance(void);
+
 /* z_arch_esf_t was renamed to arch_esf in Zephyr v3.x. */
 extern "C" void k_sys_fatal_error_handler(unsigned int reason,
                                            const struct arch_esf *esf)
@@ -601,7 +606,7 @@ static void ot_state_changed_handler(otChangedFlags flags,
     if (flags & OT_CHANGED_THREAD_ROLE) {
         static otDeviceRole prev_role = OT_DEVICE_ROLE_DISABLED;
         static int64_t detached_at_ms = 0;
-        otDeviceRole role = otThreadGetDeviceRole(ot_context->instance);
+        otDeviceRole role = otThreadGetDeviceRole(openthread_get_default_instance());
 
         bool was_attached = (prev_role == OT_DEVICE_ROLE_CHILD ||
                              prev_role == OT_DEVICE_ROLE_ROUTER ||
@@ -634,7 +639,7 @@ static struct openthread_state_changed_cb ot_state_cb = {
 static void dump_ot_dataset(struct openthread_context *ctx)
 {
     otOperationalDataset dataset;
-    otError err = otDatasetGetActive(ctx->instance, &dataset);
+    otError err = otDatasetGetActive(openthread_get_default_instance(), &dataset);
     if (err != OT_ERROR_NONE) {
         LOG_ERR("Failed to get active dataset: %d (%s)",
                 (int)err, otThreadErrorToString(err));
@@ -661,7 +666,7 @@ static void dump_ot_dataset(struct openthread_context *ctx)
 
 static void dump_ot_state(struct openthread_context *ctx)
 {
-    otInstance *inst = ctx->instance;
+    otInstance *inst = openthread_get_default_instance();
 
     LOG_INF("Thread state:");
     LOG_INF("  Role: %s", ot_role_str(otThreadGetDeviceRole(inst)));
@@ -702,12 +707,12 @@ static void joiner_callback(otError error, void *context)
     if (error == OT_ERROR_NONE) {
         LOG_INF("=== Joiner succeeded! Starting Thread... ===");
         struct openthread_context *ctx = openthread_get_default_context();
-        if (!ctx || !ctx->instance) {
+        if (!ctx || !openthread_get_default_instance()) {
             LOG_ERR("Joiner callback: NULL OT context/instance — cannot start Thread.");
             return;
         }
-        otIp6SetEnabled(ctx->instance, true);
-        otThreadSetEnabled(ctx->instance, true);
+        otIp6SetEnabled(openthread_get_default_instance(), true);
+        otThreadSetEnabled(openthread_get_default_instance(), true);
     } else {
         LOG_ERR("Joiner failed: %d (%s)", (int)error, otThreadErrorToString(error));
     }
@@ -721,13 +726,10 @@ static void init_openthread(void)
         return;
     }
 
-    /* v3.3 compat shim: openthread_context.instance is no longer populated
-     * by the L2 layer. Pull the global instance and stuff it into the legacy
-     * field so the (many) existing call-sites that read ctx->instance keep
-     * working. Done here instead of churning every caller; clean up later. */
-    extern struct otInstance *openthread_get_default_instance(void);
-    ctx->instance = openthread_get_default_instance();
-    if (!ctx->instance) {
+    /* v3.3 the L2 layer no longer populates openthread_context.instance;
+     * the singleton instance comes from openthread_get_default_instance().
+     * Pre-flight check that it's available before we start. */
+    if (!openthread_get_default_instance()) {
         LOG_ERR("openthread_get_default_instance() returned NULL — OT not initialised yet.");
         return;
     }
@@ -739,7 +741,7 @@ static void init_openthread(void)
     k_msleep(500);
 
     openthread_api_mutex_lock(ctx);
-    otInstance *inst = ctx->instance;
+    otInstance *inst = openthread_get_default_instance();
     if (!inst) {
         LOG_ERR("OpenThread instance is NULL after openthread_start — bailing.");
         openthread_api_mutex_unlock(ctx);
@@ -885,7 +887,7 @@ static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
     memset(&config, 0, sizeof(config));
     static const uint8_t dns_v4[4] = TINYGS_DNS_SERVER_V4;
     openthread_api_mutex_lock(ctx);
-    bool found = nat64_synth(ctx->instance, dns_v4, &config.mServerSockAddr.mAddress);
+    bool found = nat64_synth(openthread_get_default_instance(), dns_v4, &config.mServerSockAddr.mAddress);
     openthread_api_mutex_unlock(ctx);
     if (!found) {
         LOG_ERR("No /96 NAT64 route in Thread netdata — mesh has no NAT64 translator?");
@@ -908,7 +910,7 @@ static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
      * netdata, OT synthesises an AAAA from the A response — we get back
      * a NAT64-prefixed address directly usable as a peer. */
     openthread_api_mutex_lock(ctx);
-    otError err = otDnsClientResolveIp4Address(ctx->instance,
+    otError err = otDnsClientResolveIp4Address(openthread_get_default_instance(),
                                                hostname,
                                                dns_callback, (void *)(uintptr_t)current_dns_id,
                                                &config);
@@ -1507,8 +1509,8 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         openthread_get_default_context();
                     if (ot_ctx) {
                         openthread_api_mutex_lock(ot_ctx);
-                        otThreadSetEnabled(ot_ctx->instance, false);
-                        otIp6SetEnabled(ot_ctx->instance, false);
+                        otThreadSetEnabled(openthread_get_default_instance(), false);
+                        otIp6SetEnabled(openthread_get_default_instance(), false);
                         openthread_api_mutex_unlock(ot_ctx);
                     }
 
@@ -2426,7 +2428,7 @@ static void sntp_sync(void)
     k_sem_reset(&sntp_sem);
 
     openthread_api_mutex_lock(ot_ctx);
-    otError err = otSntpClientQuery(ot_ctx->instance, &query,
+    otError err = otSntpClientQuery(openthread_get_default_instance(), &query,
                                      sntp_response_handler, NULL);
     openthread_api_mutex_unlock(ot_ctx);
 
@@ -3063,7 +3065,7 @@ int main(void)
         struct openthread_context *ot_ctx = openthread_get_default_context();
         if (ot_ctx) {
             openthread_api_mutex_lock(ot_ctx);
-            bool commissioned = otDatasetIsCommissioned(ot_ctx->instance);
+            bool commissioned = otDatasetIsCommissioned(openthread_get_default_instance());
             openthread_api_mutex_unlock(ot_ctx);
 
             if (!commissioned) {
