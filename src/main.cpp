@@ -721,6 +721,17 @@ static void init_openthread(void)
         return;
     }
 
+    /* v3.3 compat shim: openthread_context.instance is no longer populated
+     * by the L2 layer. Pull the global instance and stuff it into the legacy
+     * field so the (many) existing call-sites that read ctx->instance keep
+     * working. Done here instead of churning every caller; clean up later. */
+    extern struct otInstance *openthread_get_default_instance(void);
+    ctx->instance = openthread_get_default_instance();
+    if (!ctx->instance) {
+        LOG_ERR("openthread_get_default_instance() returned NULL — OT not initialised yet.");
+        return;
+    }
+
     LOG_INF("Starting OpenThread (Joiner mode)...");
     openthread_state_changed_cb_register(ctx, &ot_state_cb);
     openthread_start(ctx);
