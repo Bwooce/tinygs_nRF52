@@ -281,9 +281,20 @@ static void draw_page_lastpkt(void)
 }
 
 /* Page 3: World map with station + satellite position */
+/* Pulsing satellite-dot animation state. Ramps 1→6 then 6→1 on each
+ * worldmap redraw (~100 ms cadence per display update tick). Mirrors the
+ * ESP32 `graphVal` pattern in tinyGS-esp32 Display.cpp. */
+static int sat_dot_radius = 1;
+static int sat_dot_delta = 1;
+
 static void draw_page_worldmap(void)
 {
     if (!disp_dev) return;
+
+    /* Advance the animation one frame per worldmap redraw. */
+    sat_dot_radius += sat_dot_delta;
+    if (sat_dot_radius >= 6)      sat_dot_delta = -1;
+    else if (sat_dot_radius <= 1) sat_dot_delta = +1;
 
     /* Render world map: land=dark green, ocean=dark blue, one row at a time */
     struct display_buffer_descriptor desc = {
@@ -309,14 +320,27 @@ static void draw_page_worldmap(void)
             }
         }
 
-        /* Draw satellite dot (3x3 red) from sat_pos_oled or P13 */
+        /* Draw satellite dot — pulsing filled red circle with white outline,
+         * matching the ESP32 reference (Display.cpp `graphVal` ramp 1↔6).
+         * Animation state lives in the radius variables below; updated once
+         * per worldmap redraw. The display loop calls draw_page_worldmap()
+         * every ~100 ms while page 3 is active, giving a visible breathing
+         * effect (~12 frames per page-show window). */
         if (tinygs_radio.sat_pos_x != 0 || tinygs_radio.sat_pos_y != 0) {
-            /* Scale from ESP32 128x64 coordinates to our 240x135 */
             int sat_x = (int)(tinygs_radio.sat_pos_x * DISP_W / 128);
             int sat_y = (int)(tinygs_radio.sat_pos_y * DISP_H / 64);
-            if (y >= sat_y - 1 && y <= sat_y + 1 && sat_x >= 1 && sat_x < DISP_W - 1) {
-                for (int dx = -1; dx <= 1; dx++) {
-                    line_buf[sat_x + dx] = COL_RED;
+            int dy = y - sat_y;
+            int r_fill = sat_dot_radius;            /* filled red */
+            int r_outline = sat_dot_radius + 1;     /* white halo */
+            if (dy >= -r_outline && dy <= r_outline) {
+                for (int dx = -r_outline; dx <= r_outline; dx++) {
+                    int x = sat_x + dx;
+                    if (x < 0 || x >= DISP_W) continue;
+                    int d2 = dx * dx + dy * dy;
+                    int rf2 = r_fill * r_fill;
+                    int ro2 = r_outline * r_outline;
+                    if (d2 <= rf2)         line_buf[x] = COL_RED;
+                    else if (d2 <= ro2)    line_buf[x] = COL_WHITE;
                 }
             }
         }
