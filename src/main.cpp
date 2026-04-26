@@ -29,6 +29,7 @@
 #include <zephyr/drivers/flash.h>
 #include <zephyr/drivers/adc.h>
 #include <zephyr/dt-bindings/adc/nrf-adc.h>
+#include <zephyr/dt-bindings/adc/nrf-saadc.h> /* NRF_SAADC_AIN2 — DT-binding index, not the PSEL register value */
 #include <zephyr/sys/base64.h>
 #include <zephyr/drivers/watchdog.h>
 #if defined(CONFIG_LED_STRIP)
@@ -527,12 +528,18 @@ int read_vbat_mv(void)
         k_msleep(2);
     }
 
+    /* NCS v3.3 SAADC driver expects input_positive as the DT-binding index
+     * (NRF_SAADC_AINn = n), NOT the PSEL register value (NRF_SAADC_INPUT_AINn,
+     * which differs by 1). The driver looks the index up in
+     * nrfx_saadc_external_ain_psels[] internally. v2.6 used PSEL directly;
+     * passing NRF_SAADC_INPUT_AIN2 (=3) to v3.3 silently selects AIN3 (P0.05)
+     * instead of AIN2 (P0.04) and gives a bogus low reading. */
     struct adc_channel_cfg ch_cfg = {
         .gain = ADC_GAIN_1_6,
         .reference = ADC_REF_INTERNAL,
         .acquisition_time = ADC_ACQ_TIME_DEFAULT,
         .channel_id = 2,
-        .input_positive = NRF_SAADC_AIN2,
+        .input_positive = NRF_SAADC_AIN2, /* DT index: P0.04 */
     };
     adc_channel_setup(adc_dev, &ch_cfg);
 
