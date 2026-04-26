@@ -479,20 +479,36 @@ captured cause, so we don't know which ones. Numbers carry ±10% spread because
 the cell isn't impedance-characterised. Real shunt measurement is item §4
 above and will supersede.
 
-### Phase 2.5: NCS Upgrade v2.6.0 → v3.3.0 (prerequisite for Phase 3)
-Must run **before** Phase 3 web UI, not after. Full breakdown in
-**[docs/NCS_UPGRADE_PLAN.md](docs/NCS_UPGRADE_PLAN.md)**. Three drivers:
-- Our current Zephyr has only a stub `CONFIG_HTTP_SERVER` — the real subsystem
-  Phase 3 needs landed in Zephyr v3.7 (shipped in NCS v3.3.0).
-- Two OpenThread DNS-client bugfixes directly touch our NAT64 code path and
-  aren't backported to the v2.6 LTS line.
-- 25 months of security fixes in mbedTLS / network stack / USB.
+### Phase 2.5: NCS Upgrade v2.6.0 → v3.3.0 — **DONE 2026-04-26**
+Migrated on the `ncs-v3.3-upgrade` branch. Key fixes that landed:
+- **OpenThread API:** `ctx->instance` is no longer populated by the L2 layer
+  in v3.3 — replaced 16+ call sites with `openthread_get_default_instance()`.
+- **SPI CS:** Zephyr v3.4 added `cs.cs_is_gpio` to `spi_cs_control`. Fixed
+  ZephyrHal to clear it (was hard-faulting in `_spi_context_cs_control` on
+  every SPI op). Fix committed to the RadioLib `zephyr-hal` branch.
+- **MIPI DBI:** ST7789V display node rewritten as `mipi_dbi_st7789v` wrapping
+  `&spi0` (Zephyr 3.7 requirement).
+- **Settings backend:** v3.0+ defaulted to ZMS; pinned `CONFIG_SETTINGS_NVS=y`
+  to keep our partition layout.
+- **mbedTLS X.509-over-PSA:** RSA-signed server certs need
+  `MBEDTLS_LEGACY_CRYPTO_C=y` + `MBEDTLS_RSA_C=y` (Nordic's PSA path doesn't
+  populate `oid.c`'s sig-alg descriptor table without it). And
+  `MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED=y` (defaults n with OPENTHREAD).
+- **Sysbuild:** `SB_CONFIG_PARTITION_MANAGER=n` (NCS Partition Manager
+  replaced by sysbuild-managed PM).
+- **Stack bump:** Main stack 8KB → 12KB; mbedTLS v3.x routes X.509/TLS
+  through PSA driver wrappers (an extra layer of frames over v2.6's direct
+  legacy mbedtls), and Oberon's PSA driver does ECDSA/ECDH curve operations
+  on the stack for constant-time safety. v2.6 high-water sat at ~3.5KB; v3.3
+  jumped to ~6KB measured during MQTT-TLS handshake.
+- **Build/flash scripts:** `build_v33.sh`/`flash_v33.sh` renamed to
+  `build.sh`/`flash.sh` after stable validation. Old v2.6 NCS workspace
+  preserved at `./ncs/` for archival.
 
-Desk-research pass resolved the four "scary" open questions (TLS ciphersuite
-still works, OT MTD timers unchanged, FATFS auto-format unchanged, http_server
-is the real gain). The migration is mostly a toolchain/kconfig exercise, not an
-API rewrite. Budget 7–10 days focused work. Gate on: `v0.2` tag validated on
-hardware + a clean power-run baseline + a 2-week window.
+Verified: TLS handshake to mqtt.tinygs.com:8883 succeeds; SAT positions and
+TLE updates flow end-to-end. Memory: 504KB flash (65%), 195KB RAM (75%).
+
+Full migration breakdown in **[docs/NCS_UPGRADE_PLAN.md](docs/NCS_UPGRADE_PLAN.md)**.
 
 **Post-upgrade follow-up — config-edit reboot trigger via SCSI eject**
 - **Today:** USB-detach reboot path (in `usb_vbus_work_handler`) is VBUS-edge

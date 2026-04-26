@@ -9,9 +9,9 @@ This document provides foundational mandates and workflows for AI agents working
 - **Architecture:** Zero Bluetooth/Matter. Use Pure USB Mass Storage Class (MSC) for initial configuration.
 
 ## 2. Development Workflow
-- **Environment:** The Zephyr/NCS workspace is isolated in `./ncs`. The Python virtual environment is in `./.venv`.
-- **Build:** Use `./build.sh`. It is optimized for 16 cores (`CMAKE_BUILD_PARALLEL_LEVEL=16`).
-- **Flash:** Use `./flash.sh`. It triggers a 1200-baud auto-reset, waits for the UF2 bootloader drive to mount, and copies the firmware.
+- **Environment:** Active NCS workspace is `./ncs_new` (NCS v3.3.0 / Zephyr 3.7 / Zephyr SDK 0.17.4). The legacy v2.6.0 workspace is preserved in `./ncs` for archival reference only — the build no longer points at it. The Python virtual environment is in `./.venv`.
+- **Build:** Use `./build.sh`. Builds against NCS v3.3.0, optimized for 16 cores (`CMAKE_BUILD_PARALLEL_LEVEL=16`). Output in `build/` (sysbuild layout: `build/tinygs_nRF52/zephyr/zephyr.uf2`).
+- **Flash:** Use `./flash.sh`. Performs a hard pre-flight UF2 safety check (refuses to flash if any block reaches outside the app partition into FATFS or the bootloader), triggers a 1200-baud auto-reset, waits for the UF2 bootloader drive, copies the firmware, and restarts the serial logger.
 - **Debugging:** All logs are routed to the USB CDC ACM serial port (`/dev/ttyACM0`). Always use `LOG_INF`, `LOG_ERR`, etc. Use `python3 scripts/serial_log.py` to monitor and log to file.
 
 ### USB Device Identities
@@ -55,14 +55,14 @@ The nRF52840 has 256KB RAM. The current baseline (Thread + USB MSC + mbedTLS) us
 
 ## 5. Kconfig vs Board Definition
 
-We build against `nrf52840dk_nrf52840` and override everything in `app.overlay` and `prj.conf`.
+We build against `nrf52840dk/nrf52840` (HWMv2 board name format introduced in Zephyr 3.7) and override everything in `app.overlay` and `prj.conf`.
 The board Kconfig (nrf52840dk) already sets some options like `SOC_DCDC_NRF52X` and clock sources.
 
 **Rules:**
 - **prj.conf** is for application-level config (MQTT, TLS, networking, app features). Prefer this.
 - **Board Kconfig** sets hardware-level defaults (DCDC, SoC features). Don't duplicate in prj.conf.
 - If a Kconfig symbol has no prompt ("not directly user-configurable"), it's set by board/SoC Kconfig. Do NOT add it to prj.conf — it will error.
-- Before adding a new CONFIG_ option, check if the board already provides it: `grep CONFIG_NAME ncs/zephyr/boards/arm/nrf52840dk_nrf52840/Kconfig*`
+- Before adding a new CONFIG_ option, check if the board already provides it: `grep CONFIG_NAME ncs_new/zephyr/boards/nordic/nrf52840dk/Kconfig*` (note: HWMv2 path is `boards/nordic/nrf52840dk/`, not the old `boards/arm/nrf52840dk_nrf52840/`).
 - Long-term: create a proper T114 board definition under `boards/` to replace the dk overlay hack.
 
 ## 6. Configuration Architecture
