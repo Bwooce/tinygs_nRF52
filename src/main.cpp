@@ -29,7 +29,7 @@
 #include <zephyr/drivers/flash.h>
 #include <zephyr/drivers/adc.h>
 #include <zephyr/dt-bindings/adc/nrf-adc.h>
-#include <hal/nrf_saadc.h>  /* NRF_SAADC_INPUT_AIN2 — v3.3 no longer pulled in via adc.h */
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>  /* NRF_SAADC_AIN2 — DT channel index */
 #include <zephyr/sys/base64.h>
 #include <zephyr/drivers/watchdog.h>
 #if defined(CONFIG_LED_STRIP)
@@ -537,12 +537,16 @@ int read_vbat_mv(void)
         k_msleep(2);
     }
 
+    /* input_positive is the SAADC channel index (NRF_SAADC_AINn = n), which
+     * the nrfx driver maps to the PSEL register via nrfx_saadc_external_ain_psels[].
+     * Do NOT use NRF_SAADC_INPUT_AINn here — that's the raw PSEL value and is
+     * off-by-one on legacy nRF5x, so it silently selects the wrong pin. */
     struct adc_channel_cfg ch_cfg = {
         .gain = ADC_GAIN_1_6,
         .reference = ADC_REF_INTERNAL,
         .acquisition_time = ADC_ACQ_TIME_DEFAULT,
         .channel_id = 2,
-        .input_positive = NRF_SAADC_INPUT_AIN2,
+        .input_positive = NRF_SAADC_AIN2, /* P0.04 */
     };
     adc_channel_setup(adc_dev, &ch_cfg);
 
