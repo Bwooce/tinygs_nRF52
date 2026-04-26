@@ -508,22 +508,32 @@ Migrated on the `ncs-v3.3-upgrade` branch. Key fixes that landed:
 Verified: TLS handshake to mqtt.tinygs.com:8883 succeeds; SAT positions and
 TLE updates flow end-to-end. Memory: 504KB flash (65%), 195KB RAM (75%).
 
-Full migration breakdown in **[docs/NCS_UPGRADE_PLAN.md](docs/NCS_UPGRADE_PLAN.md)**.
+**Open follow-up: USB-next stack migration for SCSI-eject reboot trigger.**
+The original assumption was that NCS v3.3's USB-next stack would expose SCSI
+events to application code so we could hook `START_STOP_UNIT` (0x1B) and
+trigger config-apply on host eject without requiring a physical unplug. On
+inspection (post-upgrade) USB-next does have the SCSI handler infrastructure
+(`usbd_msc_scsi.c::SCSI_CMD_HANDLER(START_STOP_UNIT)` properly tracks
+`medium_loaded`), but the `usbd_msg` event enum has no `USBD_MSG_MSC_*`
+entries — the new stack handles eject internally and never publishes it
+upward. Two paths forward, both carry fork-Zephyr risk PLAN previously
+warned against:
 
-**Post-upgrade follow-up — config-edit reboot trigger via SCSI eject**
-- **Today:** USB-detach reboot path (in `usb_vbus_work_handler`) is VBUS-edge
-  driven. Eject from the host (Finder/Explorer/`eject`) sends SCSI
-  START_STOP_UNIT (0x1B); Zephyr v2.6's `subsys/usb/device/class/msc.c:674`
-  has no handler — drops to `default → fail()` and logs
-  `usb_msc: >> default CB[0] 1b`. So eject-to-apply only works if the user
-  physically unplugs the cable.
-- **After upgrade:** Switch to USB-next stack (`CONFIG_USB_DEVICE_STACK_NEXT`,
-  available from Zephyr v3.x). Its MSC class exposes class-event callbacks
-  including SCSI events. Hook `START_STOP_UNIT` → invoke the same
-  `usb_detach_config_changed()` path we already have, then accept the eject
-  with `CSW_PASSED`.
-- **Avoid:** patching the legacy msc.c locally — small change but forks Zephyr
-  and disappears on `west update`. Wait for the upgrade.
+1. **Migrate to USB-next stack AND publish a new `USBD_MSG_MSC_EJECT`**
+   from the SCSI handler (one-line addition + new enum value upstream).
+   Substantial migration: legacy `usb_*` API → new `usbd_*` API for MSC,
+   CDC ACM, descriptor registration. Worth doing eventually for the
+   improved class-event model, but bigger than a quick hot-fix.
+2. **Patch the legacy stack locally** to add a START_STOP_UNIT handler
+   that calls a weak callback. ~10 lines, but we'd carry the patch as a
+   Zephyr-module overlay or local fork.
+
+Current behaviour (since v3.3 upgrade): user-facing config-edit flow still
+works correctly — *physical unplug* of USB cable triggers the reboot via
+the existing VBUS-edge path in `usb_vbus_work_handler`. Only the "eject
+from OS without unplug" shortcut is non-functional. Acceptable for soak
+and normal use; prioritise the migration when other Phase 3 work
+(WebUSB / device-side web UI) wants the modern stack anyway.
 
 ### Phase 5: RadioLib ZephyrHal Upstream PR
 The Zephyr HAL is functionally complete and multi-instance safe. To submit as a PR
