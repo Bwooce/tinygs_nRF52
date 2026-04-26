@@ -15,9 +15,14 @@ source "${NCS_DIR}/zephyr/zephyr-env.sh"
 export ZEPHYR_SDK_INSTALL_DIR="${SDK_DIR}"
 
 echo "Building Zephyr App against NCS v3.3.0 (SDK ${SDK_DIR##*-})..."
-CMAKE_BUILD_PARALLEL_LEVEL=16 west build -b nrf52840dk/nrf52840 -d build -- "$@"
+# Out-of-tree board lives at boards/heltec/heltec_mesh_node_t114/. Point
+# west at it via BOARD_ROOT so HWMv2 board discovery picks it up.
+CMAKE_BUILD_PARALLEL_LEVEL=16 west build \
+    -b heltec_mesh_node_t114/nrf52840 \
+    -d build \
+    -- -DBOARD_ROOT="${WORKSPACE_DIR}" "$@"
 
-UF2_FILE="${WORKSPACE_DIR}/build/zephyr/zephyr.uf2"
+UF2_FILE="${WORKSPACE_DIR}/build/tinygs_nRF52/zephyr/zephyr.uf2"
 if [ -f "$UF2_FILE" ]; then
     UF2_SIZE=$(stat -c%s "$UF2_FILE")
     if [ "$UF2_SIZE" -gt 1300000 ]; then
