@@ -1,0 +1,41 @@
+# Heltec Mesh Node T114 board configuration
+#
+# Copyright (c) 2026 Bruce Fitzsimons
+# SPDX-License-Identifier: Apache-2.0
+
+if BOARD_HELTEC_MESH_NODE_T114
+
+config HW_STACK_PROTECTION
+	default ARCH_HAS_STACK_PROTECTION
+
+# Application loads at 0x26000 (above the Nordic SoftDevice S140 region
+# preserved by the Adafruit UF2 bootloader). Bootloader sits at 0xF4000
+# and is read-only from the application's perspective.
+#
+# These addresses MUST match the partition table in the board DTS — they
+# are also baked into every shipped Adafruit bootloader, changing them
+# bricks all existing devices.
+config FLASH_LOAD_OFFSET
+	default 0x26000
+
+config FLASH_LOAD_SIZE
+	default 0xbc000
+
+# Adafruit UF2 lives at 0xF4000 and replaces MCUboot. Force MCUboot off
+# unconditionally — enabling it would relocate code_partition and brick
+# the device on first flash.
+config BOOTLOADER_MCUBOOT
+	default n
+
+# Generate UF2 output by default — the only way to flash this board
+# without disassembly is via the bootloader's USB mass storage drive.
+config BUILD_OUTPUT_UF2
+	default y
+
+# T114 has no MCUboot/Partition-Manager-managed regions. NCS's PM is
+# disabled at the sysbuild level (sysbuild.conf), this just keeps the
+# per-image PM consistent.
+config PM
+	default n
+
+endif # BOARD_HELTEC_MESH_NODE_T114

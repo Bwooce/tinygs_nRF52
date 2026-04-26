@@ -1,0 +1,352 @@
+/*
+ * Copyright (c) 2026 Bruce Fitzsimons
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Heltec Mesh Node T114 V2 (HT-n5262)
+ * ===================================
+ * Product:   https://heltec.org/project/mesh-node-t114/
+ * Schematic: https://resource.heltec.cn/download/Mesh_Node_T114/schematic/MeshNode-T114_V2.1.pdf
+ * Arduino:   https://github.com/HelTecAutomation/Heltec_nRF52
+ *
+ * Hardware
+ *   MCU      nRF52840 QIAA, 1 MB flash, 256 KB SRAM
+ *   LoRa     SX1262, DIO2 RF switch, DIO3 TCXO 1.8 V
+ *   Display  ST7789V 1.14" 240x135 RGB565 (optional)
+ *   GPS      L76K GNSS on UART1 (optional, GPS-equipped variant)
+ *   USB      Type-C, ESD protected, used for serial console + UF2 DFU
+ *   Battery  LiPo via 100k/390k divider on AIN2 (P0.04)
+ *   LEDs     Green LED (P1.03) + 2x SK6812 NeoPixel chain (P0.14)
+ *   Button   BOOT (P1.10, active low)
+ *
+ * Bootloader (read-only from app): Adafruit nRF52 UF2 at 0xF4000-0x100000.
+ * Application code partition starts at 0x26000 (above SoftDevice S140).
+ * Both addresses are baked into every shipped Adafruit bootloader and must
+ * never be changed without a coordinated bootloader re-flash via SWD.
+ */
+
+/dts-v1/;
+#include <nordic/nrf52840_qiaa.dtsi>
+#include "heltec_mesh_node_t114_nrf52840-pinctrl.dtsi"
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/led/led.h>
+#include <zephyr/dt-bindings/lora/sx126x.h>
+
+/ {
+	model = "Heltec Mesh Node T114 nRF52840";
+	compatible = "heltec,mesh-node-t114-nrf52840";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &code_partition;
+		zephyr,ieee802154 = &ieee802154;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		vext_pin: vext_pin {
+			gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;
+			label = "Vext Power Control";
+		};
+
+		green_led: green_led {
+			gpios = <&gpio1 3 GPIO_ACTIVE_LOW>;
+			label = "Green LED";
+		};
+
+		tft_en: tft_en {
+			gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
+			label = "TFT Power Enable";
+		};
+
+		backlight: backlight {
+			gpios = <&gpio0 15 GPIO_ACTIVE_LOW>;
+			label = "TFT Backlight";
+		};
+
+		adc_ctrl: adc_ctrl {
+			gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+			label = "Battery ADC Bias Enable";
+		};
+	};
+
+	buttons {
+		compatible = "gpio-keys";
+
+		boot_button: boot_button {
+			gpios = <&gpio1 10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			label = "BOOT Button";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	aliases {
+		led0 = &green_led;
+		sw0 = &boot_button;
+		mcuboot-button0 = &boot_button;
+		mcuboot-led0 = &green_led;
+		watchdog0 = &wdt0;
+		vext = &vext_pin;
+		backlight = &backlight;
+		adc-ctrl = &adc_ctrl;
+		lora0 = &sx1262;
+		led-strip = &led_strip;
+	};
+};
+
+&reg0 {
+	status = "okay";
+};
+
+&reg1 {
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&adc {
+	status = "okay";
+};
+
+&uicr {
+	gpio-as-nreset;
+};
+
+&gpiote {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+/*
+ * UART1 -> L76K GNSS (only populated on GPS-equipped variant). Marked
+ * disabled by default so a non-GPS board does not waste current on the
+ * peripheral; applications/overlays can re-enable as needed.
+ */
+&uart1 {
+	compatible = "nordic,nrf-uarte";
+	status = "disabled";
+	current-speed = <9600>;
+	pinctrl-0 = <&uart1_default>;
+	pinctrl-1 = <&uart1_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+&i2c0 {
+	compatible = "nordic,nrf-twi";
+	status = "disabled"; /* RTC footprint, unpopulated on V2 */
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+&i2c1 {
+	compatible = "nordic,nrf-twi";
+	status = "disabled"; /* available on header, off until used */
+	pinctrl-0 = <&i2c1_default>;
+	pinctrl-1 = <&i2c1_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+/*
+ * SPI1 -> SX1262 LoRa
+ *   SCK   P0.19   MOSI  P0.22   MISO  P0.23
+ *   CS    P0.24   DIO1  P0.20   BUSY  P0.17   RESET P0.25
+ *   DIO2 -> internal RF switch, DIO3 -> TCXO 1.8 V
+ */
+&spi1 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi1_default>;
+	pinctrl-1 = <&spi1_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio0 24 GPIO_ACTIVE_LOW>;
+
+	sx1262: sx1262@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+		reset-gpios = <&gpio0 25 GPIO_ACTIVE_LOW>;
+		busy-gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>;
+		dio1-gpios = <&gpio0 20 GPIO_ACTIVE_HIGH>;
+		dio2-tx-enable;
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+		tcxo-power-startup-delay-ms = <5>;
+	};
+};
+
+/*
+ * SPI0 -> ST7789V TFT (240x135 landscape)
+ *   SCK P1.08, MOSI P1.09, CS P0.11, DC P0.12, RESET P0.02
+ *   Backlight P0.15 (active LOW), TFT power enable P0.03 (active LOW)
+ */
+&spi0 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi0_default>;
+	pinctrl-1 = <&spi0_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;
+};
+
+/*
+ * Zephyr 3.7 moved the ST7789V driver under the MIPI DBI API. The
+ * display node is now a child of a `zephyr,mipi-dbi-spi` wrapper which
+ * owns DC + RESET; the inner node owns the controller-specific timing.
+ */
+/ {
+	mipi_dbi_st7789v {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi0>;
+		dc-gpios = <&gpio0 12 GPIO_ACTIVE_LOW>;
+		reset-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		st7789v: st7789v@0 {
+			compatible = "sitronix,st7789v";
+			reg = <0>;
+			mipi-max-frequency = <8000000>;
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+			width = <240>;
+			height = <135>;
+			x-offset = <40>;
+			y-offset = <53>;
+			vcom = <0x19>;
+			gctrl = <0x35>;
+			vrhs = <0x12>;
+			vdvs = <0x20>;
+			mdac = <0x60>;        /* 90-degree rotation */
+			gamma = <0x01>;
+			colmod = <0x55>;      /* RGB565 */
+			lcm = <0x2c>;
+			porch-param = [0c 0c 00 33 33];
+			cmd2en-param = [5a 69 02 01];
+			pwctrl1-param = [a4 a1];
+			pvgam-param = [D0 04 0D 11 13 2B 3F 54 4C 18 0D 0B 1F 23];
+			nvgam-param = [D0 04 0C 11 13 2C 3F 44 51 2F 1F 1F 20 23];
+			ram-param = [00 F0];
+			rgb-param = [CD 08 14];
+		};
+	};
+};
+
+/*
+ * SPI2 -> WS2812/SK6812 NeoPixel chain (2 pixels, GRB at 800 kHz).
+ * The nRF SPIM peripheral mandates an SCK pin; the dummy SCK is routed
+ * to the unpopulated UART2 RX pad (P0.09).
+ *
+ * NeoPixel power is gated by Vext (P0.21) — drive vext_pin high before
+ * sending data.
+ */
+&spi2 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi2_default>;
+	pinctrl-1 = <&spi2_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	led_strip: ws2812@0 {
+		compatible = "worldsemi,ws2812-spi";
+		reg = <0>;
+		spi-max-frequency = <4000000>;
+		chain-length = <2>;
+		color-mapping = <LED_COLOR_ID_GREEN
+				 LED_COLOR_ID_RED
+				 LED_COLOR_ID_BLUE>;
+		spi-one-frame = <0x70>;
+		spi-zero-frame = <0x40>;
+	};
+};
+
+/*
+ * QSPI: the T114 V2 schematic exposes pins for an external QSPI flash
+ * (MX25R16 footprint), but production V2 boards do not populate it.
+ * Keep QSPI disabled — leaving it enabled would also cause pin
+ * conflicts with our SPI1 (SX1262) on P0.19/22/23 and SX1262 BUSY on
+ * P0.17, both of which the nRF52840 DK board pinctrl reserves for QSPI.
+ */
+&qspi {
+	status = "disabled";
+};
+
+&ieee802154 {
+	status = "okay";
+};
+
+zephyr_udc0: &usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+};
+
+/*
+ * Flash partition map — Heltec Mesh Node T114 (1 MB nRF52840)
+ *
+ * Verified against the Adafruit nRF52 bootloader linker script and
+ * recovered SWD flash dumps.
+ *
+ *   0x00000  +-------------------------------+
+ *            | MBR + SoftDevice S140 (152K) | read-only
+ *   0x26000  +-------------------------------+
+ *            | Application       (752 KB)    | code_partition
+ *   0xE2000  +-------------------------------+
+ *            | FATFS Storage      (64 KB)    | tinygs_storage
+ *   0xF2000  +-------------------------------+
+ *            | NVS Settings        (8 KB)    | storage_partition
+ *   0xF4000  +-------------------------------+
+ *            | Adafruit Bootloader (48 KB)   | read-only
+ *   0x100000 +-------------------------------+
+ *
+ * CRITICAL: any write at or above 0xF4000 will brick the device — the
+ * Adafruit UF2 bootloader lives there and is the only path to recovery
+ * without SWD. Likewise the SoftDevice region (0..0x26000) is preserved
+ * even though we don't use the SoftDevice; relocating code_partition
+ * downward would also brick existing devices because the bootloader
+ * jumps to 0x26000.
+ */
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		boot_partition: partition@0 {
+			label = "softdevice";
+			reg = <0x00000000 0x00026000>;
+			read-only;
+		};
+
+		code_partition: partition@26000 {
+			label = "code_slot";
+			reg = <0x00026000 0x000bc000>;
+		};
+
+		/*
+		 * 64 KB FATFS — exposed over USB MSC as the configurator drive.
+		 * Must be >=128 sectors (64 KB at 512 B/sector) so that the
+		 * FatFs auto-format path will produce a valid FS.
+		 */
+		tinygs_storage: partition@e2000 {
+			label = "tinygs_storage";
+			reg = <0x000e2000 0x00010000>;
+		};
+
+		/* 8 KB NVS — OpenThread network credentials + app settings. */
+		storage_partition: partition@f2000 {
+			label = "storage";
+			reg = <0x000f2000 0x00002000>;
+		};
+
+		bootloader_partition: partition@f4000 {
+			label = "adafruit_bootloader";
+			reg = <0x000f4000 0x0000c000>;
+			read-only;
+		};
+	};
+};
