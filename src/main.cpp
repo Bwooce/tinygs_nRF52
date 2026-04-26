@@ -2239,12 +2239,16 @@ static void setup_usb_storage(void)
                 if ((size_t)len >= sizeof(file_buf)) len = sizeof(file_buf) - 1;
 
                 /* Skip the FATFS rewrite AND NVS snapshot save when the
-                 * rendered content matches the previous snapshot — it
-                 * means the file we just read already reflected our
-                 * current state, so neither needs touching. Saves one
-                 * FATFS-partition flash erase + one NVS write per boot
-                 * on a stable device. */
-                if (strcmp(file_buf, cfg_last_snapshot) == 0) {
+                 * rendered content matches the previous snapshot AND the
+                 * file already exists on disk. The snapshot lives in NVS
+                 * which survives a wiped/empty FATFS partition, so a
+                 * snapshot match alone doesn't mean the file is there.
+                 * Without the have_file guard a missing file would log
+                 * the contradictory "no config.json ... will create" then
+                 * "file matches snapshot, no rewrite needed" pair and
+                 * leave the file still missing. Saves one FATFS-partition
+                 * flash erase + one NVS write per boot on a stable device. */
+                if (have_file && strcmp(file_buf, cfg_last_snapshot) == 0) {
                     fs_close(&cfg);
                     EARLY_LOG("Config: file matches snapshot (%d bytes), no rewrite needed", len);
                 } else {
