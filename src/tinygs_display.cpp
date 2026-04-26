@@ -307,10 +307,10 @@ static void draw_page_lastpkt(void)
 }
 
 /* Page 3: World map with station + satellite position */
-/* Pulsing satellite-dot animation state. Ramps 1→6 then 6→1 on each
+/* Pulsing satellite-dot animation state. Ramps 3→10 then 10→3 on each
  * worldmap redraw (~100 ms cadence per display update tick). Mirrors the
  * ESP32 `graphVal` pattern in tinyGS-esp32 Display.cpp. */
-static int sat_dot_radius = 1;
+static int sat_dot_radius = 3;
 static int sat_dot_delta = 1;
 
 static void draw_page_worldmap(void)
@@ -319,8 +319,8 @@ static void draw_page_worldmap(void)
 
     /* Advance the animation one frame per worldmap redraw. */
     sat_dot_radius += sat_dot_delta;
-    if (sat_dot_radius >= 6)      sat_dot_delta = -1;
-    else if (sat_dot_radius <= 1) sat_dot_delta = +1;
+    if (sat_dot_radius >= 10)     sat_dot_delta = -1;
+    else if (sat_dot_radius <= 3) sat_dot_delta = +1;
 
     /* Render world map: land=dark green, ocean=dark blue, one row at a time */
     struct display_buffer_descriptor desc = {
@@ -329,6 +329,21 @@ static void draw_page_worldmap(void)
         .height = 1,
         .pitch = DISP_W,
     };
+
+    /* Pre-compute satellite name layout once per redraw. The name is
+     * blitted into line_buf inline with the map row write so map and
+     * text land in the same atomic display_write per row — eliminates
+     * the visible flicker the user saw with map-then-text-overlay
+     * (the bottom 16 rows were briefly text-less between the map row
+     * write and the subsequent draw_string overlay every ~100ms). */
+    const char *sat_name = tinygs_radio.satellite[0] ? tinygs_radio.satellite : NULL;
+    int text_y0 = DISP_H - 16;        /* font is 8x16, name pinned bottom */
+    int text_chars = 0;
+    if (sat_name) {
+        for (const char *p = sat_name; *p && text_chars * FONT_W + FONT_W <= DISP_W; p++) {
+            text_chars++;
+        }
+    }
 
     for (int y = 0; y < DISP_H; y++) {
         for (int x = 0; x < DISP_W; x++) {
@@ -371,12 +386,23 @@ static void draw_page_worldmap(void)
             }
         }
 
-        display_write(disp_dev, 0, y, &desc, line_buf);
-    }
+        /* Inline satellite-name overlay at the bottom — paint glyph
+         * pixels into line_buf so the row write is atomic. No flicker. */
+        if (sat_name && y >= text_y0 && y < text_y0 + FONT_H) {
+            int font_row = y - text_y0;
+            for (int ci = 0; ci < text_chars; ci++) {
+                char c = sat_name[ci];
+                if (c < FONT_FIRST_CHAR || c > FONT_LAST_CHAR) continue;
+                const uint8_t *glyph = &font8x16_data[(c - FONT_FIRST_CHAR) * FONT_H];
+                uint8_t bits = glyph[font_row];
+                int x0 = ci * FONT_W;
+                for (int col = 0; col < FONT_W; col++) {
+                    line_buf[x0 + col] = (bits & (0x80 >> col)) ? COL_WHITE : COL_OCEAN;
+                }
+            }
+        }
 
-    /* Overlay satellite name at bottom */
-    if (tinygs_radio.satellite[0]) {
-        draw_string(0, DISP_H - 16, tinygs_radio.satellite, COL_WHITE, COL_OCEAN);
+        display_write(disp_dev, 0, y, &desc, line_buf);
     }
 }
 

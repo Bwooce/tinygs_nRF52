@@ -203,7 +203,17 @@
 	mipi_dbi_st7789v {
 		compatible = "zephyr,mipi-dbi-spi";
 		spi-dev = <&spi0>;
-		dc-gpios = <&gpio0 12 GPIO_ACTIVE_LOW>;
+		/*
+		 * dc-gpios polarity is GPIO_ACTIVE_HIGH for the v3.7 mipi-dbi-spi
+		 * driver — it writes 0 for command, 1 for data per the binding
+		 * ("Set to low when sending a command, or high when sending data").
+		 * The legacy v2.6 ST7789V driver was the opposite (wrote 1 for
+		 * command), so the same physical pin needed GPIO_ACTIVE_LOW back
+		 * then; carrying that flag verbatim into the MIPI DBI rewrite
+		 * inverted DC, the chip read every command as data, init silently
+		 * did nothing, and the display stayed blank.
+		 */
+		dc-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
 		reset-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
 		write-only;
 		#address-cells = <1>;
