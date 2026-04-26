@@ -29,6 +29,7 @@
 #include <zephyr/drivers/flash.h>
 #include <zephyr/drivers/adc.h>
 #include <zephyr/dt-bindings/adc/nrf-adc.h>
+#include <hal/nrf_saadc.h>  /* NRF_SAADC_INPUT_AIN2 — v3.3 no longer pulled in via adc.h */
 #include <zephyr/sys/base64.h>
 #include <zephyr/drivers/watchdog.h>
 #if defined(CONFIG_LED_STRIP)
@@ -150,8 +151,14 @@ static char __noinit crash_thread[16];
  * fault us inside the handler and prevent __noinit diagnostics from landing. */
 #define IN_SRAM(p) ((uintptr_t)(p) >= 0x20000000u && (uintptr_t)(p) < 0x20040000u)
 
+/* v3.3: openthread_context.instance is no longer populated by the L2 layer.
+ * Use the new singleton accessor via this forward declaration (defined in
+ * the openthread module's internal header which we don't pull in directly). */
+extern "C" struct otInstance *openthread_get_default_instance(void);
+
+/* z_arch_esf_t was renamed to arch_esf in Zephyr v3.x. */
 extern "C" void k_sys_fatal_error_handler(unsigned int reason,
-                                           const z_arch_esf_t *esf)
+                                           const struct arch_esf *esf)
 {
     crash_reason = CRASH_MAGIC | (reason & 0xFFFF);
     crash_icsr = *(volatile uint32_t *)0xE000ED04; /* SCB->ICSR */
@@ -350,6 +357,7 @@ static void led_init(void)
 
 #include <nrfx_pwm.h>
 #include <nrfx_glue.h>   /* nrfx_isr — required for runtime IRQ binding */
+#include <drivers/nrfx_errors.h> /* NRFX_SUCCESS — no longer pulled in transitively in v3.3 */
 #include <hal/nrf_gpio.h>
 
 static nrfx_pwm_t pwm_led = NRFX_PWM_INSTANCE(0);
@@ -372,9 +380,9 @@ static nrf_pwm_sequence_t breath_seq = {
 static void breath_timer_handler(struct k_timer *timer);
 static K_TIMER_DEFINE(breath_timer, breath_timer_handler, NULL);
 
-static void breath_pwm_handler(nrfx_pwm_evt_type_t event_type, void *p_context)
+static void breath_pwm_handler(nrfx_pwm_event_type_t event_type, void *p_context)
 {
-    if (event_type == NRFX_PWM_EVT_FINISHED) {
+    if (event_type == NRFX_PWM_EVENT_FINISHED) {
         /* Pulse complete — start timer for the pause */
         k_timer_start(&breath_timer, K_SECONDS(BREATH_PAUSE_S), K_NO_WAIT);
     }
@@ -423,17 +431,19 @@ static void breathing_led_init(void)
      * IRQ_CONNECT doesn't build in C++, so register dynamically.
      * Requires CONFIG_DYNAMIC_INTERRUPTS=y.
      *
-     * Use `nrfx_isr` as the ISR trampoline with the nrfx handler passed
-     * as context — this is Zephyr's canonical pattern (see
-     * ncs/zephyr/modules/hal_nordic/nrfx/nrfx_glue.c). The previous
-     * direct-cast form only worked by accident of ARM calling
-     * convention (unused R0 arg) and would be fragile across nrfx
-     * versions. Priority matches nrfx's own default so the LED IRQ
-     * doesn't preempt higher-priority nrfx peripherals. */
+     * In nrfx ≥ 3.x (NCS v3.3) the per-instance handlers
+     * (nrfx_pwm_0_irq_handler etc.) were removed in favour of a single
+     * nrfx_pwm_irq_handler(nrfx_pwm_t *) that needs the instance. The
+     * Zephyr nrfx_isr trampoline calls the handler with NULL as the
+     * context, so we wrap it to inject &pwm_led. */
+    auto pwm_led_isr = +[](const void *unused) {
+        ARG_UNUSED(unused);
+        nrfx_pwm_irq_handler(&pwm_led);
+    };
     irq_connect_dynamic(PWM0_IRQn,
                         NRFX_PWM_DEFAULT_CONFIG_IRQ_PRIORITY,
-                        nrfx_isr,
-                        (const void *)nrfx_pwm_0_irq_handler,
+                        pwm_led_isr,
+                        NULL,
                         0);
     irq_enable(PWM0_IRQn);
     if (nrfx_pwm_init(&pwm_led, &config, breath_pwm_handler, NULL) == NRFX_SUCCESS) {
@@ -532,7 +542,7 @@ int read_vbat_mv(void)
         .reference = ADC_REF_INTERNAL,
         .acquisition_time = ADC_ACQ_TIME_DEFAULT,
         .channel_id = 2,
-        .input_positive = NRF_SAADC_AIN2,
+        .input_positive = NRF_SAADC_INPUT_AIN2,
     };
     adc_channel_setup(adc_dev, &ch_cfg);
 
@@ -596,7 +606,7 @@ static void ot_state_changed_handler(otChangedFlags flags,
     if (flags & OT_CHANGED_THREAD_ROLE) {
         static otDeviceRole prev_role = OT_DEVICE_ROLE_DISABLED;
         static int64_t detached_at_ms = 0;
-        otDeviceRole role = otThreadGetDeviceRole(ot_context->instance);
+        otDeviceRole role = otThreadGetDeviceRole(openthread_get_default_instance());
 
         bool was_attached = (prev_role == OT_DEVICE_ROLE_CHILD ||
                              prev_role == OT_DEVICE_ROLE_ROUTER ||
@@ -629,7 +639,7 @@ static struct openthread_state_changed_cb ot_state_cb = {
 static void dump_ot_dataset(struct openthread_context *ctx)
 {
     otOperationalDataset dataset;
-    otError err = otDatasetGetActive(ctx->instance, &dataset);
+    otError err = otDatasetGetActive(openthread_get_default_instance(), &dataset);
     if (err != OT_ERROR_NONE) {
         LOG_ERR("Failed to get active dataset: %d (%s)",
                 (int)err, otThreadErrorToString(err));
@@ -656,7 +666,7 @@ static void dump_ot_dataset(struct openthread_context *ctx)
 
 static void dump_ot_state(struct openthread_context *ctx)
 {
-    otInstance *inst = ctx->instance;
+    otInstance *inst = openthread_get_default_instance();
 
     LOG_INF("Thread state:");
     LOG_INF("  Role: %s", ot_role_str(otThreadGetDeviceRole(inst)));
@@ -683,6 +693,10 @@ static void dump_ot_state(struct openthread_context *ctx)
 static void log_ot_diagnostics(void)
 {
     struct openthread_context *ctx = openthread_get_default_context();
+    if (!ctx) {
+        LOG_WRN("OT diagnostics: NULL context, skipping");
+        return;
+    }
     openthread_api_mutex_lock(ctx);
     dump_ot_state(ctx);
     openthread_api_mutex_unlock(ctx);
@@ -693,8 +707,12 @@ static void joiner_callback(otError error, void *context)
     if (error == OT_ERROR_NONE) {
         LOG_INF("=== Joiner succeeded! Starting Thread... ===");
         struct openthread_context *ctx = openthread_get_default_context();
-        otIp6SetEnabled(ctx->instance, true);
-        otThreadSetEnabled(ctx->instance, true);
+        if (!ctx || !openthread_get_default_instance()) {
+            LOG_ERR("Joiner callback: NULL OT context/instance — cannot start Thread.");
+            return;
+        }
+        otIp6SetEnabled(openthread_get_default_instance(), true);
+        otThreadSetEnabled(openthread_get_default_instance(), true);
     } else {
         LOG_ERR("Joiner failed: %d (%s)", (int)error, otThreadErrorToString(error));
     }
@@ -703,6 +721,18 @@ static void joiner_callback(otError error, void *context)
 static void init_openthread(void)
 {
     struct openthread_context *ctx = openthread_get_default_context();
+    if (!ctx) {
+        LOG_ERR("OpenThread context is NULL — net stack not initialised? Aborting OT init.");
+        return;
+    }
+
+    /* v3.3 the L2 layer no longer populates openthread_context.instance;
+     * the singleton instance comes from openthread_get_default_instance().
+     * Pre-flight check that it's available before we start. */
+    if (!openthread_get_default_instance()) {
+        LOG_ERR("openthread_get_default_instance() returned NULL — OT not initialised yet.");
+        return;
+    }
 
     LOG_INF("Starting OpenThread (Joiner mode)...");
     openthread_state_changed_cb_register(ctx, &ot_state_cb);
@@ -711,7 +741,12 @@ static void init_openthread(void)
     k_msleep(500);
 
     openthread_api_mutex_lock(ctx);
-    otInstance *inst = ctx->instance;
+    otInstance *inst = openthread_get_default_instance();
+    if (!inst) {
+        LOG_ERR("OpenThread instance is NULL after openthread_start — bailing.");
+        openthread_api_mutex_unlock(ctx);
+        return;
+    }
 
     /* Check if we already have a valid dataset (from a previous successful join) */
     otOperationalDataset dataset;
@@ -852,7 +887,7 @@ static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
     memset(&config, 0, sizeof(config));
     static const uint8_t dns_v4[4] = TINYGS_DNS_SERVER_V4;
     openthread_api_mutex_lock(ctx);
-    bool found = nat64_synth(ctx->instance, dns_v4, &config.mServerSockAddr.mAddress);
+    bool found = nat64_synth(openthread_get_default_instance(), dns_v4, &config.mServerSockAddr.mAddress);
     openthread_api_mutex_unlock(ctx);
     if (!found) {
         LOG_ERR("No /96 NAT64 route in Thread netdata — mesh has no NAT64 translator?");
@@ -875,7 +910,7 @@ static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
      * netdata, OT synthesises an AAAA from the A response — we get back
      * a NAT64-prefixed address directly usable as a peer. */
     openthread_api_mutex_lock(ctx);
-    otError err = otDnsClientResolveIp4Address(ctx->instance,
+    otError err = otDnsClientResolveIp4Address(openthread_get_default_instance(),
                                                hostname,
                                                dns_callback, (void *)(uintptr_t)current_dns_id,
                                                &config);
@@ -1430,7 +1465,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                 tinygs_send_status(client, cfg_mqtt_user, cfg_station);
             } else if (strcmp(cmnd, "reset") == 0) {
                 LOG_WRN("*** SERVER RESET — rebooting ***");
-                mqtt_disconnect(client);
+                mqtt_disconnect(client, NULL);
                 k_msleep(2000);
                 sys_reboot(SYS_REBOOT_COLD);
             } else if (strcmp(cmnd, "tx") == 0) {
@@ -1465,7 +1500,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                      * MQTT disconnect first so the broker sees a clean drop,
                      * radio next since it's the biggest draw, then the rest.
                      * sys_reboot() on wake means we can be dirty here. */
-                    mqtt_disconnect(client);
+                    mqtt_disconnect(client, NULL);
                     k_msleep(200);
 
                     if (radio) radio->sleep();
@@ -1474,8 +1509,8 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         openthread_get_default_context();
                     if (ot_ctx) {
                         openthread_api_mutex_lock(ot_ctx);
-                        otThreadSetEnabled(ot_ctx->instance, false);
-                        otIp6SetEnabled(ot_ctx->instance, false);
+                        otThreadSetEnabled(openthread_get_default_instance(), false);
+                        otIp6SetEnabled(openthread_get_default_instance(), false);
                         openthread_api_mutex_unlock(ot_ctx);
                     }
 
@@ -2393,7 +2428,7 @@ static void sntp_sync(void)
     k_sem_reset(&sntp_sem);
 
     openthread_api_mutex_lock(ot_ctx);
-    otError err = otSntpClientQuery(ot_ctx->instance, &query,
+    otError err = otSntpClientQuery(openthread_get_default_instance(), &query,
                                      sntp_response_handler, NULL);
     openthread_api_mutex_unlock(ot_ctx);
 
@@ -3030,7 +3065,7 @@ int main(void)
         struct openthread_context *ot_ctx = openthread_get_default_context();
         if (ot_ctx) {
             openthread_api_mutex_lock(ot_ctx);
-            bool commissioned = otDatasetIsCommissioned(ot_ctx->instance);
+            bool commissioned = otDatasetIsCommissioned(openthread_get_default_instance());
             openthread_api_mutex_unlock(ot_ctx);
 
             if (!commissioned) {
@@ -3134,7 +3169,7 @@ int main(void)
                 }
                 if (app_state == STATE_MQTT_CONNECT) {
                     LOG_ERR("MQTT connect timeout (no CONNACK in 15s)");
-                    mqtt_disconnect(&mqtt_client);
+                    mqtt_disconnect(&mqtt_client, NULL);
                     app_state = STATE_ERROR;
                 }
             } else {
@@ -3176,7 +3211,7 @@ int main(void)
                     if (mqtt_client.unacked_ping >= TINYGS_MQTT_UNACKED_PING_MAX) {
                         LOG_WRN("MQTT: %d unacked PINGREQs — forcing reconnect",
                                 mqtt_client.unacked_ping);
-                        mqtt_disconnect(&mqtt_client);
+                        mqtt_disconnect(&mqtt_client, NULL);
                         app_state = STATE_MQTT_CONNECT;
                         break;
                     }

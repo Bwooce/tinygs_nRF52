@@ -1,7 +1,10 @@
 [submodule "lib/RadioLib"]
 	path = lib/RadioLib
 	url = https://github.com/Bwooce/RadioLib.git
-	branch = zephyr-hal
+	# `tinygs` carries the TinyGS-specific 400 MHz image calibration on top
+	# of the upstream-PR-clean `zephyr-hal` branch. For an upstream PR push
+	# only `zephyr-hal`; `tinygs` is internal use only.
+	branch = tinygs
 [submodule "lib/ArduinoJson"]
 	path = lib/ArduinoJson
 	url = https://github.com/bblanchon/ArduinoJson.git
