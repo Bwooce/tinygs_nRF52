@@ -42,12 +42,6 @@ target_sources(app PRIVATE
 # App Include Directories
 target_include_directories(app PRIVATE src/hal lib/RadioLib/src lib/ArduinoJson/src lib/AioP13/src)
 
-# v3.3 PSA path: try without the legacy mbedTLS RSA force-compile workaround.
-# v2.6 PSA returned FEATURE_UNAVAILABLE for PKCS1v15 RSA verify, forcing us
-# to compile pk.c/pk_wrap.c/pkparse.c/rsa.c with -UMBEDTLS_USE_PSA_CRYPTO.
-# v3.3's PSA crypto is reportedly fixed; if mqtt.tinygs.com TLS handshake
-# fails on hardware, restore the RSA_FIX_SRCS block from git history.
-
 # Toolchain-provided picolibc ships both nano-malloc.c and the regular
 # malloc.c in libc.a, both defining malloc/free. Combined with Zephyr's
 # COMMON_LIBC_MALLOC the linker sees duplicates. --allow-multiple-definition

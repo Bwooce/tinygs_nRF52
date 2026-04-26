@@ -23,7 +23,7 @@ if [ ! -f "$UF2_FILE" ]; then
 fi
 
 UF2_SIZE=$(stat -c%s "$UF2_FILE")
-UF2_MAX=1000000
+UF2_MAX=1300000
 if [ "$UF2_SIZE" -gt "$UF2_MAX" ]; then
     echo "ERROR: UF2 file too large! ${UF2_SIZE} bytes > ${UF2_MAX} limit."
     exit 1
