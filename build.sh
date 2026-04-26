@@ -22,7 +22,7 @@ CMAKE_BUILD_PARALLEL_LEVEL=16 west build \
     -d build \
     -- -DBOARD_ROOT="${WORKSPACE_DIR}" "$@"
 
-UF2_FILE="${WORKSPACE_DIR}/build/zephyr/zephyr.uf2"
+UF2_FILE="${WORKSPACE_DIR}/build/tinygs_nRF52/zephyr/zephyr.uf2"
 if [ -f "$UF2_FILE" ]; then
     UF2_SIZE=$(stat -c%s "$UF2_FILE")
     if [ "$UF2_SIZE" -gt 1300000 ]; then
