@@ -1,6 +1,5 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <malloc.h>  /* picolibc mallinfo() for STATUS log pmem tracking */
 #include <stdarg.h>  /* va_list for early_log_appendf */
 #include <zephyr/net/openthread.h>
 #include <zephyr/net/mqtt.h>
@@ -258,97 +257,38 @@ extern "C" void k_sys_fatal_error_handler(unsigned int reason,
 extern struct k_heap _system_heap;
 
 /* -------------------------------------------------------------------------- */
-/* libc malloc-arena tracking                                                 */
+/* Heap unification: malloc/free routed to k_malloc/k_free                    */
 /*                                                                            */
-/* malloc()/free() in this build go through Zephyr's COMMON_LIBC_MALLOC,      */
-/* which calls sys_heap_aligned_alloc on z_malloc_heap (a static struct in    */
-/* zephyr/lib/libc/common/source/stdlib/malloc.c — sized by                   */
-/* CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE, separate from _system_heap). Since   */
-/* z_malloc_heap is static we can't introspect it; mallinfo() in this combo   */
-/* always returns 0 and gave us false confidence that the arena was unused.   */
+/* By default Zephyr keeps two separate heaps: _system_heap (k_malloc, sized  */
+/* by HEAP_MEM_POOL_SIZE) and z_malloc_heap (libc malloc, sized by            */
+/* COMMON_LIBC_MALLOC_ARENA_SIZE). RadioLib's per-SPI-op transient mallocs    */
+/* and our `new Module()` / `new SX1262()` go to the libc heap; getaddrinfo / */
+/* internal Zephyr go to _system_heap. Each is over-provisioned in isolation  */
+/* (4 KB libc / 2 KB sys, peaks 1.7 / 0.5 KB) — wasted ~3.5 KB combined.      */
 /*                                                                            */
-/* RadioLib actually mallocs/frees a buffer per SPI op (Module::SPItransfer + */
-/* SPItransferStream) and our own init_radio() does `new Module()` /          */
-/* `new SX1262()` — all routed through this arena. Without the wrap below     */
-/* we have no peak-usage measurement and risk crashing if we shrink the      */
-/* arena based on the bogus pmem=0 reading.                                   */
-/*                                                                            */
-/* The wrap stashes the requested size in an 8-byte header (kept at 8 to     */
-/* preserve max_align). irq_lock around the counter update is enough — the   */
-/* critical section is two instructions and we don't care about ISR malloc.  */
+/* The --wrap=malloc,calloc,realloc,free linker flag lets us redirect all     */
+/* libc malloc traffic into k_malloc, so both consumers share _system_heap.   */
+/* z_malloc_heap is now unused (its 64-byte stub arena is dead BSS) but we    */
+/* can't drop it cleanly: ARENA_SIZE=0 makes malloc grab all unused SRAM.     */
 /* -------------------------------------------------------------------------- */
-extern "C" {
-    void *__real_malloc(size_t size);
-    void *__real_calloc(size_t nmemb, size_t size);
-    void *__real_realloc(void *ptr, size_t size);
-    void  __real_free(void *ptr);
-}
-
-#define PMEM_HDR_BYTES 8
-struct pmem_hdr { size_t size; uint32_t pad; };
-
-static volatile size_t pmem_cur_bytes;
-static volatile size_t pmem_peak_bytes;
-
-static inline void pmem_record_alloc(size_t bytes)
-{
-    unsigned int key = irq_lock();
-    pmem_cur_bytes += bytes;
-    if (pmem_cur_bytes > pmem_peak_bytes) {
-        pmem_peak_bytes = pmem_cur_bytes;
-    }
-    irq_unlock(key);
-}
-
-static inline void pmem_record_free(size_t bytes)
-{
-    unsigned int key = irq_lock();
-    pmem_cur_bytes -= bytes;
-    irq_unlock(key);
-}
-
 extern "C" void *__wrap_malloc(size_t size)
 {
-    void *raw = __real_malloc(size + PMEM_HDR_BYTES);
-    if (!raw) return NULL;
-    ((struct pmem_hdr *)raw)->size = size;
-    pmem_record_alloc(size);
-    return (char *)raw + PMEM_HDR_BYTES;
+    return k_malloc(size);
 }
 
 extern "C" void __wrap_free(void *p)
 {
-    if (!p) return;
-    void *raw = (char *)p - PMEM_HDR_BYTES;
-    size_t size = ((struct pmem_hdr *)raw)->size;
-    pmem_record_free(size);
-    __real_free(raw);
+    k_free(p);
 }
 
 extern "C" void *__wrap_calloc(size_t nmemb, size_t size)
 {
-    if (nmemb && size > SIZE_MAX / nmemb) return NULL;  /* overflow */
-    size_t total = nmemb * size;
-    void *p = __wrap_malloc(total);
-    if (p) memset(p, 0, total);
-    return p;
+    return k_calloc(nmemb, size);
 }
 
 extern "C" void *__wrap_realloc(void *ptr, size_t size)
 {
-    if (!ptr) return __wrap_malloc(size);
-    if (size == 0) { __wrap_free(ptr); return NULL; }
-
-    void *old_raw = (char *)ptr - PMEM_HDR_BYTES;
-    size_t old_size = ((struct pmem_hdr *)old_raw)->size;
-
-    void *new_raw = __real_realloc(old_raw, size + PMEM_HDR_BYTES);
-    if (!new_raw) return NULL;
-
-    pmem_record_free(old_size);
-    ((struct pmem_hdr *)new_raw)->size = size;
-    pmem_record_alloc(size);
-    return (char *)new_raw + PMEM_HDR_BYTES;
+    return k_realloc(ptr, size);
 }
 
 static void log_heap_usage(const char *label)
@@ -3515,17 +3455,6 @@ int main(void)
 #endif
                     size_t stack_used = stack_size - stack_unused;
 
-                    /* libc malloc arena usage — fed by __wrap_malloc/free
-                     * counters declared above. mallinfo() returns 0 in this
-                     * Zephyr+picolibc combo so this is the only real signal. */
-                    size_t pmem_cur, pmem_peak;
-                    {
-                        unsigned int key = irq_lock();
-                        pmem_cur  = pmem_cur_bytes;
-                        pmem_peak = pmem_peak_bytes;
-                        irq_unlock(key);
-                    }
-
                     /* mbedTLS private heap — TLS handshake is the dominant
                      * consumer (peaks during initial CONNECT, shrinks back
                      * during steady-state). Both queries are O(1). */
@@ -3538,20 +3467,19 @@ int main(void)
                     }
 #endif
 
+                    /* heap= now reports the unified pool: malloc/new (via
+                     * __wrap_*) and k_malloc both land in _system_heap. */
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
                     struct sys_memory_stats stats;
                     sys_heap_runtime_stats_get(&_system_heap.heap, &stats);
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
-                            "heap=%u/%u(peak=%u) pmem=%u(peak=%u/%u) "
-                            "mtls=%u(peak=%u/%u) "
+                            "heap=%u/%u(peak=%u) mtls=%u(peak=%u/%u) "
                             "stack=%u/%u vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
                             (unsigned)stats.allocated_bytes,
                             (unsigned)CONFIG_HEAP_MEM_POOL_SIZE,
                             (unsigned)stats.max_allocated_bytes,
-                            (unsigned)pmem_cur, (unsigned)pmem_peak,
-                            (unsigned)CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE,
                             (unsigned)mtls_cur, (unsigned)mtls_max,
                             (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
                             (unsigned)stack_used, (unsigned)stack_size,
@@ -3559,12 +3487,10 @@ int main(void)
                             tinygs_radio.satellite);
 #else
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
-                            "pmem=%u(peak=%u/%u) mtls=%u(peak=%u/%u) "
+                            "mtls=%u(peak=%u/%u) "
                             "stack=%u/%u vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
-                            (unsigned)pmem_cur, (unsigned)pmem_peak,
-                            (unsigned)CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE,
                             (unsigned)mtls_cur, (unsigned)mtls_max,
                             (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
                             (unsigned)stack_used, (unsigned)stack_size,
