@@ -47,7 +47,15 @@ target_include_directories(app PRIVATE src/hal lib/RadioLib/src lib/ArduinoJson/
 # COMMON_LIBC_MALLOC the linker sees duplicates. --allow-multiple-definition
 # tells ld to use the first definition seen (COMMON_LIBC_MALLOC, listed
 # before libc.a) and silently drop the picolibc nano-malloc duplicate.
-zephyr_link_libraries(-Wl,--allow-multiple-definition)
+#
+# --wrap=<sym> intercepts every reference to <sym> through __wrap_<sym>
+# and exposes the original as __real_<sym>. We use this to track bytes
+# in the libc malloc arena (z_malloc_heap), which is otherwise opaque
+# (the symbol is static in libc/common/source/stdlib/malloc.c). See
+# pmem_* in src/main.cpp for the tracking shim.
+zephyr_link_libraries(
+    -Wl,--allow-multiple-definition
+    -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
 
 # Generate UF2 for Adafruit/Heltec bootloaders
 set_target_properties(app PROPERTIES BUILD_OUTPUT_UF2 TRUE)

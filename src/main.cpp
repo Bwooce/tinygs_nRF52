@@ -257,6 +257,100 @@ extern "C" void k_sys_fatal_error_handler(unsigned int reason,
 
 extern struct k_heap _system_heap;
 
+/* -------------------------------------------------------------------------- */
+/* libc malloc-arena tracking                                                 */
+/*                                                                            */
+/* malloc()/free() in this build go through Zephyr's COMMON_LIBC_MALLOC,      */
+/* which calls sys_heap_aligned_alloc on z_malloc_heap (a static struct in    */
+/* zephyr/lib/libc/common/source/stdlib/malloc.c — sized by                   */
+/* CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE, separate from _system_heap). Since   */
+/* z_malloc_heap is static we can't introspect it; mallinfo() in this combo   */
+/* always returns 0 and gave us false confidence that the arena was unused.   */
+/*                                                                            */
+/* RadioLib actually mallocs/frees a buffer per SPI op (Module::SPItransfer + */
+/* SPItransferStream) and our own init_radio() does `new Module()` /          */
+/* `new SX1262()` — all routed through this arena. Without the wrap below     */
+/* we have no peak-usage measurement and risk crashing if we shrink the      */
+/* arena based on the bogus pmem=0 reading.                                   */
+/*                                                                            */
+/* The wrap stashes the requested size in an 8-byte header (kept at 8 to     */
+/* preserve max_align). irq_lock around the counter update is enough — the   */
+/* critical section is two instructions and we don't care about ISR malloc.  */
+/* -------------------------------------------------------------------------- */
+extern "C" {
+    void *__real_malloc(size_t size);
+    void *__real_calloc(size_t nmemb, size_t size);
+    void *__real_realloc(void *ptr, size_t size);
+    void  __real_free(void *ptr);
+}
+
+#define PMEM_HDR_BYTES 8
+struct pmem_hdr { size_t size; uint32_t pad; };
+
+static volatile size_t pmem_cur_bytes;
+static volatile size_t pmem_peak_bytes;
+
+static inline void pmem_record_alloc(size_t bytes)
+{
+    unsigned int key = irq_lock();
+    pmem_cur_bytes += bytes;
+    if (pmem_cur_bytes > pmem_peak_bytes) {
+        pmem_peak_bytes = pmem_cur_bytes;
+    }
+    irq_unlock(key);
+}
+
+static inline void pmem_record_free(size_t bytes)
+{
+    unsigned int key = irq_lock();
+    pmem_cur_bytes -= bytes;
+    irq_unlock(key);
+}
+
+extern "C" void *__wrap_malloc(size_t size)
+{
+    void *raw = __real_malloc(size + PMEM_HDR_BYTES);
+    if (!raw) return NULL;
+    ((struct pmem_hdr *)raw)->size = size;
+    pmem_record_alloc(size);
+    return (char *)raw + PMEM_HDR_BYTES;
+}
+
+extern "C" void __wrap_free(void *p)
+{
+    if (!p) return;
+    void *raw = (char *)p - PMEM_HDR_BYTES;
+    size_t size = ((struct pmem_hdr *)raw)->size;
+    pmem_record_free(size);
+    __real_free(raw);
+}
+
+extern "C" void *__wrap_calloc(size_t nmemb, size_t size)
+{
+    if (nmemb && size > SIZE_MAX / nmemb) return NULL;  /* overflow */
+    size_t total = nmemb * size;
+    void *p = __wrap_malloc(total);
+    if (p) memset(p, 0, total);
+    return p;
+}
+
+extern "C" void *__wrap_realloc(void *ptr, size_t size)
+{
+    if (!ptr) return __wrap_malloc(size);
+    if (size == 0) { __wrap_free(ptr); return NULL; }
+
+    void *old_raw = (char *)ptr - PMEM_HDR_BYTES;
+    size_t old_size = ((struct pmem_hdr *)old_raw)->size;
+
+    void *new_raw = __real_realloc(old_raw, size + PMEM_HDR_BYTES);
+    if (!new_raw) return NULL;
+
+    pmem_record_free(old_size);
+    ((struct pmem_hdr *)new_raw)->size = size;
+    pmem_record_alloc(size);
+    return (char *)new_raw + PMEM_HDR_BYTES;
+}
+
 static void log_heap_usage(const char *label)
 {
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
@@ -3421,13 +3515,16 @@ int main(void)
 #endif
                     size_t stack_used = stack_size - stack_unused;
 
-                    /* picolibc malloc usage (separate arena from sys_heap;
-                     * mallinfo isn't tracked anywhere else in our STATUS).
-                     * Track high-water mark ourselves — mallinfo only
-                     * reports current live use, not peak. */
-                    struct mallinfo mi = mallinfo();
-                    static size_t pmem_hwm = 0;
-                    if (mi.uordblks > pmem_hwm) pmem_hwm = mi.uordblks;
+                    /* libc malloc arena usage — fed by __wrap_malloc/free
+                     * counters declared above. mallinfo() returns 0 in this
+                     * Zephyr+picolibc combo so this is the only real signal. */
+                    size_t pmem_cur, pmem_peak;
+                    {
+                        unsigned int key = irq_lock();
+                        pmem_cur  = pmem_cur_bytes;
+                        pmem_peak = pmem_peak_bytes;
+                        irq_unlock(key);
+                    }
 
                     /* mbedTLS private heap — TLS handshake is the dominant
                      * consumer (peaks during initial CONNECT, shrinks back
@@ -3453,7 +3550,7 @@ int main(void)
                             (unsigned)stats.allocated_bytes,
                             (unsigned)CONFIG_HEAP_MEM_POOL_SIZE,
                             (unsigned)stats.max_allocated_bytes,
-                            (unsigned)mi.uordblks, (unsigned)pmem_hwm,
+                            (unsigned)pmem_cur, (unsigned)pmem_peak,
                             (unsigned)CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE,
                             (unsigned)mtls_cur, (unsigned)mtls_max,
                             (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
@@ -3466,7 +3563,7 @@ int main(void)
                             "stack=%u/%u vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
-                            (unsigned)mi.uordblks, (unsigned)pmem_hwm,
+                            (unsigned)pmem_cur, (unsigned)pmem_peak,
                             (unsigned)CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE,
                             (unsigned)mtls_cur, (unsigned)mtls_max,
                             (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
