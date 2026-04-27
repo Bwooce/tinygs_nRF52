@@ -43,6 +43,9 @@
 #include <hal/nrf_ficr.h>
 
 #include <mbedtls/debug.h>
+#if defined(CONFIG_MBEDTLS_MEMORY_BUFFER_ALLOC_C)
+#include <mbedtls/memory_buffer_alloc.h>
+#endif
 #include <RadioLib.h>
 #include "hal/Zephyr/ZephyrHal.h"
 #include "tinygs_protocol.h"
@@ -137,13 +140,59 @@ static void lora_rx_callback(void);
 static volatile bool lora_packet_received = false;
 
 /* Crash diagnostic — __noinit survives warm reset (SREQ doesn't clear RAM) */
-#define CRASH_MAGIC 0xDEAD0000
+#define CRASH_MAGIC     0xDEAD0000  /* CPU fault (k_sys_fatal_error_handler) */
+#define WDT_CRASH_MAGIC 0xD06D0000  /* Watchdog pre-fire (the "DOG" died) */
 static volatile uint32_t __noinit crash_reason;
 static volatile uint32_t __noinit crash_pc;
 static volatile uint32_t __noinit crash_lr;
 static volatile uint32_t __noinit crash_icsr;  /* SCB->ICSR — VECTACTIVE identifies the IRQ */
 static volatile uint32_t __noinit crash_thread_ptr; /* raw k_current_get() for post-mortem decode */
 static char __noinit crash_thread[16];
+
+/* Watchdog feeder tracking — last thread to call watchdog_feed(), captured
+ * at pre-fire so we can identify whose loop went silent. The hung thread
+ * is usually NOT this one (this one was running fine until something else
+ * blocked the system); often the more useful clue is "feeder is X, but
+ * crash_thread (the thread running at WDT pre-fire) is Y". */
+static volatile uint32_t __noinit wdt_last_feed_uptime_ms;
+static volatile uint32_t __noinit wdt_last_feeder_thread_ptr;
+static char __noinit wdt_last_feeder_name[16];
+
+/* Main-loop liveness — bumped each iteration of the STATE_MQTT_CONNECTED
+ * inner loop, with a phase tag set at each step inside that iteration.
+ * The whole point: WDT feed lives in the MQTT event handler, so a fire
+ * means MQTT went silent — but the feeder thread name alone can't tell
+ * us whether main is also hung or just spinning healthily waiting for
+ * traffic. main_alive_uptime_ms close to wdt_last_feed_uptime_ms = main
+ * is fine, broker silent. main_alive far older = main itself wedged in
+ * whatever step main_phase identifies. */
+#define MAIN_PHASE_INIT      0
+#define MAIN_PHASE_POLL      1  /* zsock_poll on MQTT socket */
+#define MAIN_PHASE_MQTT_LIVE 2  /* mqtt_live (PINGREQ etc.) */
+#define MAIN_PHASE_LORA_RX   3  /* lora_check_rx */
+#define MAIN_PHASE_DISPLAY   4  /* tinygs_display_update */
+#define MAIN_PHASE_DOPPLER   5  /* doppler_update */
+#define MAIN_PHASE_PING      6  /* tinygs_send_ping */
+#define MAIN_PHASE_WEBLOGIN  7  /* tinygs_send_weblogin_request */
+#define MAIN_PHASE_STATUS    8  /* periodic STATUS log */
+static volatile uint8_t  __noinit main_phase;
+static volatile uint32_t __noinit main_alive_uptime_ms;
+
+static const char *main_phase_name(uint8_t p)
+{
+    switch (p) {
+    case MAIN_PHASE_INIT:      return "init";
+    case MAIN_PHASE_POLL:      return "poll";
+    case MAIN_PHASE_MQTT_LIVE: return "mqtt_live";
+    case MAIN_PHASE_LORA_RX:   return "lora_rx";
+    case MAIN_PHASE_DISPLAY:   return "display";
+    case MAIN_PHASE_DOPPLER:   return "doppler";
+    case MAIN_PHASE_PING:      return "ping";
+    case MAIN_PHASE_WEBLOGIN:  return "weblogin";
+    case MAIN_PHASE_STATUS:    return "status";
+    default:                   return "?";
+    }
+}
 
 /* nRF52840 SRAM covers 0x20000000 – 0x2003FFFF (256 KB). Any pointer used
  * in the fault handler is sanity-checked against this range before we
@@ -284,6 +333,55 @@ static void enable_peripherals(void)
 static const struct device *wdt_dev = DEVICE_DT_GET(DT_NODELABEL(wdt0));
 static int wdt_channel_id = -1;
 
+/* Pre-fire callback — nRF52840 WDT fires this ~62.5 ms before the actual
+ * SoC reset (one CRV tick at 32.768 kHz LFCLK). Capture which thread was
+ * running at the time of the hang into the crash_* __noinit slots so the
+ * next boot can identify it. Same fields as k_sys_fatal_error_handler
+ * uses, distinguished by WDT_CRASH_MAGIC vs CRASH_MAGIC.
+ *
+ * Runs in IRQ context with interrupts otherwise enabled — keep it short,
+ * don't take mutexes, don't allocate. Touch only volatile + range-checked
+ * pointers, exactly like the fault handler's belt-and-braces pattern. */
+static void wdt_pre_fire_handler(const struct device *dev, int channel_id)
+{
+    ARG_UNUSED(dev);
+    ARG_UNUSED(channel_id);
+
+    crash_reason = WDT_CRASH_MAGIC;
+    crash_icsr = *(volatile uint32_t *)0xE000ED04;
+
+    /* WDT IRQ entry pushed an exception frame onto whichever stack was
+     * active. Almost always PSP (we preempted thread mode); read it and
+     * grab the saved PC at frame[6], LR at frame[5]. addr2line on PC
+     * pinpoints the instruction the thread was about to execute when
+     * the WDT fired. Safety: PSP must be 8-byte aligned and within
+     * SRAM with room for the 32-byte frame. */
+    crash_pc = 0;
+    crash_lr = 0;
+    uint32_t psp = __get_PSP();
+    if ((psp & 7) == 0 && psp >= 0x20000000 && psp <= (0x20000000 + 0x40000 - 32)) {
+        const uint32_t *frame = (const uint32_t *)psp;
+        crash_lr = frame[5];
+        crash_pc = frame[6];
+    }
+
+    void *tp = k_current_get();
+    crash_thread_ptr = (uint32_t)(uintptr_t)tp;
+
+    crash_thread[0] = '\0';
+    if (IN_SRAM(tp)) {
+        const char *name = k_thread_name_get((k_tid_t)tp);
+        if (name) {
+            unsigned i = 0;
+            for (; i < sizeof(crash_thread) - 1 && name[i]; i++) {
+                crash_thread[i] = name[i];
+            }
+            crash_thread[i] = '\0';
+        }
+    }
+    crash_thread[sizeof(crash_thread) - 1] = '\0';
+}
+
 static void watchdog_init(void)
 {
     if (!device_is_ready(wdt_dev)) {
@@ -296,7 +394,7 @@ static void watchdog_init(void)
             .min = 0,
             .max = CONFIG_MQTT_KEEPALIVE * 2 * 1000, /* 2x keepalive in ms */
         },
-        .callback = NULL, /* reset on timeout */
+        .callback = wdt_pre_fire_handler,
         .flags = WDT_FLAG_RESET_SOC,
     };
 
@@ -319,6 +417,24 @@ static void watchdog_feed(void)
 {
     if (wdt_channel_id >= 0) {
         wdt_feed(wdt_dev, wdt_channel_id);
+
+        /* Record who fed the dog last so the pre-fire handler can identify
+         * the loop that's still alive vs the one that hung. */
+        void *tp = k_current_get();
+        wdt_last_feed_uptime_ms = k_uptime_get_32();
+        wdt_last_feeder_thread_ptr = (uint32_t)(uintptr_t)tp;
+        wdt_last_feeder_name[0] = '\0';
+        if (IN_SRAM(tp)) {
+            const char *name = k_thread_name_get((k_tid_t)tp);
+            if (name) {
+                unsigned i = 0;
+                for (; i < sizeof(wdt_last_feeder_name) - 1 && name[i]; i++) {
+                    wdt_last_feeder_name[i] = name[i];
+                }
+                wdt_last_feeder_name[i] = '\0';
+            }
+        }
+        wdt_last_feeder_name[sizeof(wdt_last_feeder_name) - 1] = '\0';
     }
 }
 
@@ -1008,7 +1124,6 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
     case MQTT_EVT_CONNACK:
         if (evt->result == 0) {
             mqtt_connected_uptime_ms = now;
-            watchdog_feed(); /* connection alive */
             LOG_INF("MQTT CONNECTED to %s:%d", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
 
             {
@@ -1042,14 +1157,12 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 
     case MQTT_EVT_PINGRESP:
         mqtt_last_pingresp_ms = now;
-        watchdog_feed();
         LOG_INF("MQTT PINGRESP (connected %us)",
                 (unsigned)(now - mqtt_connected_uptime_ms) / 1000);
         break;
 
     case MQTT_EVT_PUBLISH: {
         mqtt_rx_count++;
-        watchdog_feed(); /* Any RX proves connection is alive */
         const struct mqtt_publish_param *pub = &evt->param.publish;
         static char rx_topic[128];
         /* Sized to match TINYGS_BEGINE_MAX_LEN — parser's stated ceiling.
@@ -3050,6 +3163,30 @@ int main(void)
         LOG_ERR("Use: arm-zephyr-eabi-addr2line -e build/zephyr/zephyr.elf 0x%08x",
                 (unsigned)crash_pc);
         crash_reason = 0; /* Clear so we don't report again */
+    } else if ((crash_reason & 0xFFFF0000) == WDT_CRASH_MAGIC) {
+        /* Watchdog pre-fire snapshot. "Running at pre-fire" is the thread
+         * the WDT IRQ preempted; PC/LR are the saved values from its
+         * exception frame on PSP. main_alive_uptime_ms + main_phase narrow
+         * the diagnosis to which step inside main was active when the
+         * loop last ran. (No VECTACTIVE: it always reads as the WDT IRQ
+         * itself from inside this handler.) */
+        LOG_ERR("*** PREVIOUS WATCHDOG RESET ***");
+        LOG_ERR("  preempted thread: '%s' (%p) PC=0x%08x LR=0x%08x",
+                crash_thread[0] ? crash_thread : "?",
+                (void *)(uintptr_t)crash_thread_ptr,
+                (unsigned)crash_pc, (unsigned)crash_lr);
+        LOG_ERR("  last wdt_feed: thread='%s' (%p) at uptime=%u ms",
+                wdt_last_feeder_name[0] ? wdt_last_feeder_name : "?",
+                (void *)(uintptr_t)wdt_last_feeder_thread_ptr,
+                (unsigned)wdt_last_feed_uptime_ms);
+        LOG_ERR("  main loop: phase=%u(%s) last_alive_uptime=%u ms",
+                main_phase, main_phase_name(main_phase),
+                (unsigned)main_alive_uptime_ms);
+        if (crash_pc) {
+            LOG_ERR("  Use: arm-zephyr-eabi-addr2line -e build/zephyr/zephyr.elf 0x%08x",
+                    (unsigned)crash_pc);
+        }
+        crash_reason = 0;
     }
 
     log_heap_usage("boot");
@@ -3199,11 +3336,20 @@ int main(void)
             #define STATUS_LOG_INTERVAL_MS 300000 /* 5 minutes */
 
             while (app_state == STATE_MQTT_CONNECTED) {
-                /* Poll MQTT socket for incoming data */
+                /* Liveness for the WDT pre-fire diagnostic. main_alive shows
+                 * "main was here this recently" and main_phase narrows it to
+                 * which step inside the iteration. Watchdog itself is fed at
+                 * the top of every iteration: a WDT fire now means the CPU
+                 * is genuinely wedged, not just MQTT going silent. */
+                main_alive_uptime_ms = k_uptime_get_32();
+                watchdog_feed();
+
+                main_phase = MAIN_PHASE_POLL;
                 int rc = zsock_poll(&mqtt_poll_fd, mqtt_poll_fd_count, 100);
                 if (rc > 0) {
                     mqtt_input(&mqtt_client);
                 }
+                main_phase = MAIN_PHASE_MQTT_LIVE;
                 {
                     int live_ret = mqtt_live(&mqtt_client);
                     if (live_ret && live_ret != -EAGAIN) {
@@ -3225,28 +3371,28 @@ int main(void)
                     }
                 }
 
-                /* Check for LoRa packet reception */
+                main_phase = MAIN_PHASE_LORA_RX;
                 lora_check_rx();
 
-                /* Update display (~every 100ms from poll timeout) */
+                main_phase = MAIN_PHASE_DISPLAY;
                 tinygs_display_update();
 
                 /* iot_log self-drives via its own workqueue. */
 
-                /* Doppler compensation — every 4s if TLE available */
+                main_phase = MAIN_PHASE_DOPPLER;
                 uint32_t now_ms = k_uptime_get_32();
                 if ((now_ms - last_doppler_ms) >= doppler_interval_ms) {
                     doppler_update();
                     last_doppler_ms = now_ms;
                 }
 
-                /* Send TinyGS ping (also serves as MQTT keepalive — see protocol doc) */
+                main_phase = MAIN_PHASE_PING;
                 if ((now_ms - last_ping_ms) >= (TINYGS_PING_INTERVAL_S * 1000)) {
                     tinygs_send_ping(&mqtt_client, cfg_mqtt_user, cfg_station);
                     last_ping_ms = now_ms;
                 }
 
-                /* Weblogin request via BOOT button */
+                main_phase = MAIN_PHASE_WEBLOGIN;
                 if (tinygs_display_weblogin_requested()) {
                     tinygs_send_weblogin_request(&mqtt_client, cfg_mqtt_user, cfg_station);
                 }
@@ -3262,7 +3408,7 @@ int main(void)
                 }
 #endif
 
-                /* Periodic status log — every 5 minutes */
+                main_phase = MAIN_PHASE_STATUS;
                 if ((now_ms - last_status_log_ms) >= STATUS_LOG_INTERVAL_MS) {
                     uint32_t uptime_s = k_uptime_get_32() / 1000;
                     uint32_t conn_s = (now_ms - mqtt_connected_uptime_ms) / 1000;
@@ -3283,11 +3429,24 @@ int main(void)
                     static size_t pmem_hwm = 0;
                     if (mi.uordblks > pmem_hwm) pmem_hwm = mi.uordblks;
 
+                    /* mbedTLS private heap — TLS handshake is the dominant
+                     * consumer (peaks during initial CONNECT, shrinks back
+                     * during steady-state). Both queries are O(1). */
+                    size_t mtls_cur = 0, mtls_max = 0;
+#if defined(CONFIG_MBEDTLS_MEMORY_BUFFER_ALLOC_C)
+                    {
+                        size_t blk_unused;
+                        mbedtls_memory_buffer_alloc_cur_get(&mtls_cur, &blk_unused);
+                        mbedtls_memory_buffer_alloc_max_get(&mtls_max, &blk_unused);
+                    }
+#endif
+
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
                     struct sys_memory_stats stats;
                     sys_heap_runtime_stats_get(&_system_heap.heap, &stats);
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
                             "heap=%u/%u(peak=%u) pmem=%u(peak=%u/%u) "
+                            "mtls=%u(peak=%u/%u) "
                             "stack=%u/%u vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
@@ -3296,16 +3455,21 @@ int main(void)
                             (unsigned)stats.max_allocated_bytes,
                             (unsigned)mi.uordblks, (unsigned)pmem_hwm,
                             (unsigned)CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE,
+                            (unsigned)mtls_cur, (unsigned)mtls_max,
+                            (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
                             (unsigned)stack_used, (unsigned)stack_size,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
 #else
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
-                            "pmem=%u(peak=%u/%u) stack=%u/%u vbat=%dmV sat=%s",
+                            "pmem=%u(peak=%u/%u) mtls=%u(peak=%u/%u) "
+                            "stack=%u/%u vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
                             (unsigned)mi.uordblks, (unsigned)pmem_hwm,
                             (unsigned)CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE,
+                            (unsigned)mtls_cur, (unsigned)mtls_max,
+                            (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
                             (unsigned)stack_used, (unsigned)stack_size,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
