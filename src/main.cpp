@@ -141,10 +141,11 @@ static volatile bool lora_packet_received = false;
 /* Crash diagnostic — __noinit survives warm reset (SREQ doesn't clear RAM) */
 #define CRASH_MAGIC     0xDEAD0000  /* CPU fault (k_sys_fatal_error_handler) */
 #define WDT_CRASH_MAGIC 0xD06D0000  /* Watchdog pre-fire (the "DOG" died) */
-#define MQTT_SILENCE_MAGIC 0xC0FFEE00 /* MQTT-alive watchdog forced reboot — main + WDT
+#define MQTT_SILENCE_MAGIC 0xC0FF0000 /* MQTT-alive watchdog forced reboot — main + WDT
                                        * stayed happy but no MQTT activity for too long.
                                        * Catches Thread-stack/network-layer wedges that
-                                       * the CPU-level WDT can't see. */
+                                       * the CPU-level WDT can't see. High-16 only so
+                                       * the boot-time `& 0xFFFF0000 ==` check matches. */
 static volatile uint32_t __noinit crash_reason;
 static volatile uint32_t __noinit crash_pc;
 static volatile uint32_t __noinit crash_lr;
