@@ -190,7 +190,8 @@ static volatile uint32_t __noinit main_alive_uptime_ms;
  * happily but cut us off from the broker — modes the old MQTT-fed WDT used to
  * catch implicitly via missed PINGRESPs. The __noinit silence_uptime_ms
  * captures the last_activity at trigger time so we know how long the gap was. */
-#define MQTT_SILENCE_TIMEOUT_MS 300000  /* 5 minutes */
+#define MQTT_SILENCE_RECONNECT_MS 180000  /* 3 minutes — try a clean reconnect first */
+#define MQTT_SILENCE_TIMEOUT_MS   300000  /* 5 minutes — last-resort sys_reboot */
 static volatile uint32_t mqtt_last_activity_ms;          /* per-boot, not __noinit */
 static volatile uint32_t __noinit mqtt_silence_uptime_ms;
 
@@ -3411,17 +3412,35 @@ int main(void)
                 main_alive_uptime_ms = k_uptime_get_32();
                 watchdog_feed();
 
-                /* MQTT-alive watchdog. Independent of the hardware WDT: catches
-                 * Thread/network-layer wedges where main is healthy but the
-                 * broker has been silent. Reboot with a magic so next boot
-                 * prints the diagnostic. */
-                if ((main_alive_uptime_ms - mqtt_last_activity_ms) > MQTT_SILENCE_TIMEOUT_MS) {
-                    crash_reason = MQTT_SILENCE_MAGIC;
-                    mqtt_silence_uptime_ms = mqtt_last_activity_ms;
-                    LOG_ERR("MQTT silent for %u ms — forcing reboot for recovery",
-                            (unsigned)(main_alive_uptime_ms - mqtt_last_activity_ms));
-                    k_msleep(100);  /* let LOG_ERR flush before reset */
-                    sys_reboot(SYS_REBOOT_COLD);
+                /* MQTT-alive watchdog, two-stage: try a cheap clean reconnect
+                 * at 3 min of broker silence, fall through to a sys_reboot at
+                 * 5 min if the reconnect itself didn't recover. Catches
+                 * Thread/network-layer wedges that are invisible to the
+                 * hardware WDT (main keeps feeding it just fine).
+                 *
+                 * Test order matters: reboot check first so it wins if both
+                 * thresholds trip in the same iteration (i.e. reconnect tried
+                 * and failed silently for 2 more minutes). */
+                {
+                    uint32_t silence_ms = main_alive_uptime_ms - mqtt_last_activity_ms;
+                    if (silence_ms > MQTT_SILENCE_TIMEOUT_MS) {
+                        crash_reason = MQTT_SILENCE_MAGIC;
+                        mqtt_silence_uptime_ms = mqtt_last_activity_ms;
+                        LOG_ERR("MQTT silent for %u ms — forcing reboot for recovery",
+                                (unsigned)silence_ms);
+                        k_msleep(100);  /* let LOG_ERR flush before reset */
+                        sys_reboot(SYS_REBOOT_COLD);
+                    } else if (silence_ms > MQTT_SILENCE_RECONNECT_MS) {
+                        LOG_WRN("MQTT silent for %u ms — forcing clean reconnect",
+                                (unsigned)silence_ms);
+                        mqtt_disconnect(&mqtt_client, NULL);
+                        app_state = STATE_MQTT_CONNECT;
+                        /* Reset the timestamp so we don't re-trigger the
+                         * 3-min check immediately on the next CONNECTED
+                         * iteration before the new CONNACK lands. */
+                        mqtt_last_activity_ms = main_alive_uptime_ms;
+                        break;
+                    }
                 }
 
                 main_phase = MAIN_PHASE_POLL;
