@@ -141,6 +141,10 @@ static volatile bool lora_packet_received = false;
 /* Crash diagnostic — __noinit survives warm reset (SREQ doesn't clear RAM) */
 #define CRASH_MAGIC     0xDEAD0000  /* CPU fault (k_sys_fatal_error_handler) */
 #define WDT_CRASH_MAGIC 0xD06D0000  /* Watchdog pre-fire (the "DOG" died) */
+#define MQTT_SILENCE_MAGIC 0xC0FFEE00 /* MQTT-alive watchdog forced reboot — main + WDT
+                                       * stayed happy but no MQTT activity for too long.
+                                       * Catches Thread-stack/network-layer wedges that
+                                       * the CPU-level WDT can't see. */
 static volatile uint32_t __noinit crash_reason;
 static volatile uint32_t __noinit crash_pc;
 static volatile uint32_t __noinit crash_lr;
@@ -176,6 +180,18 @@ static char __noinit wdt_last_feeder_name[16];
 #define MAIN_PHASE_STATUS    8  /* periodic STATUS log */
 static volatile uint8_t  __noinit main_phase;
 static volatile uint32_t __noinit main_alive_uptime_ms;
+
+/* MQTT-alive watchdog — separate from the hardware WDT. Tracks the most recent
+ * MQTT round-trip (CONNACK / PINGRESP / any incoming PUBLISH). Main loop checks
+ * the gap each iteration while in STATE_MQTT_CONNECTED; if it exceeds the
+ * threshold below, force a sys_reboot so the boot diagnostic can record the
+ * cause. Catches Thread-stack/network-stack wedges that leave main looping
+ * happily but cut us off from the broker — modes the old MQTT-fed WDT used to
+ * catch implicitly via missed PINGRESPs. The __noinit silence_uptime_ms
+ * captures the last_activity at trigger time so we know how long the gap was. */
+#define MQTT_SILENCE_TIMEOUT_MS 300000  /* 5 minutes */
+static volatile uint32_t mqtt_last_activity_ms;          /* per-boot, not __noinit */
+static volatile uint32_t __noinit mqtt_silence_uptime_ms;
 
 static const char *main_phase_name(uint8_t p)
 {
@@ -1158,6 +1174,7 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
     case MQTT_EVT_CONNACK:
         if (evt->result == 0) {
             mqtt_connected_uptime_ms = now;
+            mqtt_last_activity_ms = now;
             LOG_INF("MQTT CONNECTED to %s:%d", MQTT_BROKER_HOSTNAME, MQTT_BROKER_PORT);
 
             {
@@ -1191,12 +1208,14 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
 
     case MQTT_EVT_PINGRESP:
         mqtt_last_pingresp_ms = now;
+        mqtt_last_activity_ms = now;
         LOG_INF("MQTT PINGRESP (connected %us)",
                 (unsigned)(now - mqtt_connected_uptime_ms) / 1000);
         break;
 
     case MQTT_EVT_PUBLISH: {
         mqtt_rx_count++;
+        mqtt_last_activity_ms = now;
         const struct mqtt_publish_param *pub = &evt->param.publish;
         static char rx_topic[128];
         /* Sized to match TINYGS_BEGINE_MAX_LEN — parser's stated ceiling.
@@ -3221,6 +3240,19 @@ int main(void)
                     (unsigned)crash_pc);
         }
         crash_reason = 0;
+    } else if ((crash_reason & 0xFFFF0000) == MQTT_SILENCE_MAGIC) {
+        /* Soft reboot triggered by main when MQTT went silent past the
+         * timeout. Caught a network/Thread-stack wedge that the hardware
+         * WDT couldn't see (because main was happily looping and feeding
+         * it). The recorded last_activity_ms is from the *previous* boot's
+         * uptime — the gap between that and reboot was at least the
+         * configured timeout. */
+        LOG_ERR("*** PREVIOUS MQTT-SILENCE REBOOT ***");
+        LOG_ERR("  last MQTT activity at uptime=%u ms (pre-boot timeline)",
+                (unsigned)mqtt_silence_uptime_ms);
+        LOG_ERR("  threshold=%u ms — main loop and WDT were healthy; broker round-trip wasn't",
+                (unsigned)MQTT_SILENCE_TIMEOUT_MS);
+        crash_reason = 0;
     }
 
     log_heap_usage("boot");
@@ -3377,6 +3409,19 @@ int main(void)
                  * is genuinely wedged, not just MQTT going silent. */
                 main_alive_uptime_ms = k_uptime_get_32();
                 watchdog_feed();
+
+                /* MQTT-alive watchdog. Independent of the hardware WDT: catches
+                 * Thread/network-layer wedges where main is healthy but the
+                 * broker has been silent. Reboot with a magic so next boot
+                 * prints the diagnostic. */
+                if ((main_alive_uptime_ms - mqtt_last_activity_ms) > MQTT_SILENCE_TIMEOUT_MS) {
+                    crash_reason = MQTT_SILENCE_MAGIC;
+                    mqtt_silence_uptime_ms = mqtt_last_activity_ms;
+                    LOG_ERR("MQTT silent for %u ms — forcing reboot for recovery",
+                            (unsigned)(main_alive_uptime_ms - mqtt_last_activity_ms));
+                    k_msleep(100);  /* let LOG_ERR flush before reset */
+                    sys_reboot(SYS_REBOOT_COLD);
+                }
 
                 main_phase = MAIN_PHASE_POLL;
                 int rc = zsock_poll(&mqtt_poll_fd, mqtt_poll_fd_count, 100);
