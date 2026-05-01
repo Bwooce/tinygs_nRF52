@@ -190,8 +190,19 @@ static volatile uint32_t __noinit main_alive_uptime_ms;
  * happily but cut us off from the broker — modes the old MQTT-fed WDT used to
  * catch implicitly via missed PINGRESPs. The __noinit silence_uptime_ms
  * captures the last_activity at trigger time so we know how long the gap was. */
-#define MQTT_SILENCE_RECONNECT_MS 180000  /* 3 minutes — try a clean reconnect first */
-#define MQTT_SILENCE_TIMEOUT_MS   300000  /* 5 minutes — last-resort sys_reboot */
+/* Reconnect tier (primary): forced PINGREQ every MQTT_FORCE_PING_INTERVAL_MS,
+ * then existing TINYGS_MQTT_UNACKED_PING_MAX (=2) check fires a clean
+ * reconnect after broker silence ≈ 2 × interval. Catches genuinely-broken
+ * connections without false-positiving on quiet idle (server-pushed
+ * commands can be minutes apart during quiet sat windows).
+ *
+ * Reboot tier (catastrophic-only): MQTT_SILENCE_TIMEOUT_MS of total
+ * inbound silence triggers sys_reboot. Only fires if even mqtt_ping itself
+ * is wedged (TX path broken / mutex deadlock) — the unacked-ping reconnect
+ * should win in normal failure modes long before this. Threshold raised
+ * from earlier 5 min → 10 min to give the reconnect path more headroom. */
+#define MQTT_FORCE_PING_INTERVAL_MS 60000   /* 60 s — sized so 2 missed PINGRESPs = ~120 s detection */
+#define MQTT_SILENCE_TIMEOUT_MS    600000   /* 10 min — sys_reboot last resort */
 static volatile uint32_t mqtt_last_activity_ms;          /* per-boot, not __noinit */
 static volatile uint32_t __noinit mqtt_silence_uptime_ms;
 
@@ -3401,6 +3412,7 @@ int main(void)
             /* TinyGS main loop — process MQTT, LoRa RX, and pings */
             uint32_t last_ping_ms = k_uptime_get_32();
             uint32_t last_status_log_ms = last_ping_ms;
+            uint32_t last_force_ping_ms = last_ping_ms;
             #define STATUS_LOG_INTERVAL_MS 300000 /* 5 minutes */
 
             while (app_state == STATE_MQTT_CONNECTED) {
@@ -3412,35 +3424,19 @@ int main(void)
                 main_alive_uptime_ms = k_uptime_get_32();
                 watchdog_feed();
 
-                /* MQTT-alive watchdog, two-stage: try a cheap clean reconnect
-                 * at 3 min of broker silence, fall through to a sys_reboot at
-                 * 5 min if the reconnect itself didn't recover. Catches
-                 * Thread/network-layer wedges that are invisible to the
-                 * hardware WDT (main keeps feeding it just fine).
-                 *
-                 * Test order matters: reboot check first so it wins if both
-                 * thresholds trip in the same iteration (i.e. reconnect tried
-                 * and failed silently for 2 more minutes). */
-                {
-                    uint32_t silence_ms = main_alive_uptime_ms - mqtt_last_activity_ms;
-                    if (silence_ms > MQTT_SILENCE_TIMEOUT_MS) {
-                        crash_reason = MQTT_SILENCE_MAGIC;
-                        mqtt_silence_uptime_ms = mqtt_last_activity_ms;
-                        LOG_ERR("MQTT silent for %u ms — forcing reboot for recovery",
-                                (unsigned)silence_ms);
-                        k_msleep(100);  /* let LOG_ERR flush before reset */
-                        sys_reboot(SYS_REBOOT_COLD);
-                    } else if (silence_ms > MQTT_SILENCE_RECONNECT_MS) {
-                        LOG_WRN("MQTT silent for %u ms — forcing clean reconnect",
-                                (unsigned)silence_ms);
-                        mqtt_disconnect(&mqtt_client, NULL);
-                        app_state = STATE_MQTT_CONNECT;
-                        /* Reset the timestamp so we don't re-trigger the
-                         * 3-min check immediately on the next CONNECTED
-                         * iteration before the new CONNACK lands. */
-                        mqtt_last_activity_ms = main_alive_uptime_ms;
-                        break;
-                    }
+                /* Catastrophic-only fallback: if even mqtt_ping can't push
+                 * (TX path wedged) the unacked-ping check below never
+                 * climbs and we'd loop forever. Reboot after 10 min of
+                 * total inbound silence covers that case. Normal failures
+                 * (broker silent but TX works) are caught much faster by
+                 * the forced-PINGREQ → unacked_ping reconnect path. */
+                if ((main_alive_uptime_ms - mqtt_last_activity_ms) > MQTT_SILENCE_TIMEOUT_MS) {
+                    crash_reason = MQTT_SILENCE_MAGIC;
+                    mqtt_silence_uptime_ms = mqtt_last_activity_ms;
+                    LOG_ERR("MQTT silent for %u ms — forcing reboot (last resort)",
+                            (unsigned)(main_alive_uptime_ms - mqtt_last_activity_ms));
+                    k_msleep(100);  /* let LOG_ERR flush before reset */
+                    sys_reboot(SYS_REBOOT_COLD);
                 }
 
                 main_phase = MAIN_PHASE_POLL;
@@ -3454,13 +3450,26 @@ int main(void)
                     if (live_ret && live_ret != -EAGAIN) {
                         LOG_DBG("mqtt_live: %d (%s)", live_ret, errno_name(live_ret));
                     }
-                    /* Zephyr mqtt_client doesn't auto-disconnect on missed
-                     * PINGRESPs — it just increments unacked_ping forever.
-                     * Force a clean reconnect after 2 missed responses so
-                     * the server drops our stale session rather than
-                     * waiting for the 600 s watchdog (which we saw fire
-                     * 4× overnight from NAT64 idle hangs).
-                     * PubSubClient on ESP32 does this for free. */
+
+                    /* Active broker liveness probe. Zephyr's mqtt_live() only
+                     * issues PINGREQ when its own internal.last_activity is
+                     * stale, but our 60 s TinyGS publishes keep that fresh
+                     * forever — so unacked_ping never climbs and the
+                     * existing reconnect-on-unacked check below never fires.
+                     * Force PINGREQ at a fixed cadence so unacked_ping
+                     * actually reflects broker responsiveness:
+                     *   - alive broker: PINGRESP arrives, unacked decrements
+                     *   - silent broker: 2 PINGREQs → unacked = 2 → reconnect
+                     *
+                     * mqtt_ping() is non-blocking and just queues the request. */
+                    if ((main_alive_uptime_ms - last_force_ping_ms) >= MQTT_FORCE_PING_INTERVAL_MS) {
+                        if (mqtt_ping(&mqtt_client) == 0) {
+                            last_force_ping_ms = main_alive_uptime_ms;
+                        }
+                    }
+
+                    /* Existing unacked-ping reconnect — primary recovery path
+                     * now that PINGREQs are actively driven above. */
                     if (mqtt_client.unacked_ping >= TINYGS_MQTT_UNACKED_PING_MAX) {
                         LOG_WRN("MQTT: %d unacked PINGREQs — forcing reconnect",
                                 mqtt_client.unacked_ping);
