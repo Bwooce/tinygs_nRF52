@@ -2579,7 +2579,7 @@ int64_t get_utc_epoch_us(void)
     return (k_uptime_get() + sntp_epoch_offset_ms) * 1000LL;
 }
 
-int64_t get_utc_epoch(void)
+extern "C" int64_t get_utc_epoch(void)
 {
     if (!time_synced) return 0;
     return (k_uptime_get() + sntp_epoch_offset_ms) / 1000LL;
