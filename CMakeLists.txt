@@ -36,11 +36,13 @@ target_sources(app PRIVATE
     src/tinygs_display.cpp
     src/font8x16.c
     src/bitcode.c
+    src/web/web_ui.cpp
+    src/web/log_backend_web.c
     lib/AioP13/src/AioP13.cpp
 )
 
 # App Include Directories
-target_include_directories(app PRIVATE src/hal lib/RadioLib/src lib/ArduinoJson/src lib/AioP13/src)
+target_include_directories(app PRIVATE src src/hal src/web lib/RadioLib/src lib/ArduinoJson/src lib/AioP13/src)
 
 # Toolchain-provided picolibc ships both nano-malloc.c and the regular
 # malloc.c in libc.a, both defining malloc/free. Combined with Zephyr's
@@ -56,6 +58,11 @@ target_include_directories(app PRIVATE src/hal lib/RadioLib/src lib/ArduinoJson/
 zephyr_link_libraries(
     -Wl,--allow-multiple-definition
     -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+
+# Web UI HTTP service iterable section.
+zephyr_linker_sources(SECTIONS sections-rom.ld)
+zephyr_linker_section(NAME http_resource_desc_tinygs_web
+                      KVMA RAM_REGION GROUP RODATA_REGION)
 
 # Generate UF2 for Adafruit/Heltec bootloaders
 set_target_properties(app PROPERTIES BUILD_OUTPUT_UF2 TRUE)

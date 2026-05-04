@@ -100,9 +100,26 @@ This requires a hardware modification and a **one-time, irreversible software mi
 **Hardware Prerequisites:**
 1.  An SWD debug probe (J-Link EDU Mini ~$20, or any CMSIS-DAP probe).
 2.  SWD access to the T114 board (test pads or header).
-    3.  A 4MB to 16MB external SPI flash breakout board (e.g., Winbond W25Q32/W25Q128 or Macronix MX25R32).
+3.  A 4MB to 16MB external SPI flash breakout board (e.g., Winbond W25Q32/W25Q128 or Macronix MX25R32).
     *   *Warning:* Do **not** populate the empty MX25R16 footprint on the back of the T114 board. Heltec wired those pads in parallel with the SX1262 LoRa radio's SCK/MOSI/MISO, DIO1, and BUSY pins. Using this footprint will cause severe bus contention and crash the radio during flash writes.
-    *   *Solution:* Use the **8-pin 1.25mm GPS connector**. This offboard connector provides 3.3V, GND, and multiple unused GPIOs (normally used for UART/PPS). Use an 8-pin 1.25mm pigtail cable to wire the SPI flash breakout (CS, CLK, MOSI, MISO) directly into this port. Map these pins to the completely unused `SPIM3` peripheral in Zephyr.
+    *   *Solution:* Use the **8-pin 1.25mm GPS connector**. This offboard connector provides 3V3 (Vext-gated), GND, and four GPS-module GPIOs that are completely unused in TinyGS. Use an 8-pin 1.25mm pigtail cable to wire the SPI flash breakout into this port. Map these pins to the completely unused `SPIM3` peripheral in Zephyr.
+
+**GPS-port pin map (verified against Heltec schematic V2.1 + Meshtastic `variant.h`):**
+
+| GPS port pin | nRF52840 pin | Original GPS function | Repurposed for SPI flash |
+|---|---|---|---|
+| 3V3 | (Vext rail, gated by P0.21) | GPS_EN — module power | Flash VCC; raise P0.21 HIGH for flash access, LOW when idle |
+| GND | — | GND | Flash GND |
+| GPS_TX | P1.07 | UART1 RX (CPU-side) | **SPIM3 MISO** |
+| GPS_RX | P1.05 | UART1 TX (CPU-side) | **SPIM3 MOSI** |
+| GPS_PPS | P1.04 | PPS input | **SPIM3 SCK** |
+| GPS_STANDBY | P1.02 | Wake/sleep control | **SPIM3 CS** |
+| GPS_RESET | P1.06 | Reset (datasheet ≥100 ms LOW) | unused (or secondary CS for a future second device) |
+| (8th pin) | — | varies by harness | leave unconnected |
+
+All four signal pins are on the P1 GPIO port and are otherwise idle in the TinyGS firmware (the GPS module is not used; UART1 is unbound in our overlay), so no pinmux conflicts. SPIM3 supports any pinctrl mapping on the nRF52840 — there is no peripheral-pin restriction here.
+
+*SPIM3 caveat:* SPIM3 is the high-speed peripheral and draws ~1 mA more than SPIM0/1/2 when active. PM_DEVICE will gate it idle (handled by `CONFIG_SPI_NOR_IDLE_IN_DPD` below); active use during OTA streaming is short, so the extra current is paid only during updates.
 
 **Migration Steps:**
 1.  Wire the external SPI flash to the GPS port pigtail.
@@ -123,10 +140,56 @@ This requires a hardware modification and a **one-time, irreversible software mi
 8.  Flash MCUboot: `west flash --runner jlink` targeting the MCUboot child image.
 9.  Flash signed application image via `west flash` or `mcumgr` over USB serial.
 
+**Image signing & key management:**
+
+*   **Algorithm:** ECDSA-P256 (MCUboot default; ~10 KB smaller than RSA-2048 in the bootloader and validates ~3× faster on Cortex-M4F). Configure `CONFIG_BOOT_SIGNATURE_TYPE_ECDSA_P256=y` in the MCUboot child image.
+*   **Key model:** **single fleet key**. One ECDSA-P256 keypair signs every image for every device. Per-device keys are not justified at this fleet size and would block recovery flashing.
+*   **Private key location:** `keys/tinygs-fota-priv.pem` in this repo, **gitignored** and stored offline (USB stick + paper-printed PEM in a safe). Never on a CI runner, never on the device.
+*   **Public key compilation:** `imgtool keygen -k keys/tinygs-fota-priv.pem -t ecdsa-p256` then `imgtool getpub -k keys/tinygs-fota-priv.pem > bootloader/key.c` so MCUboot links the pubkey statically. Public key in clear is fine — verification only.
+*   **Signing at build:** `imgtool sign --key keys/tinygs-fota-priv.pem --version <ver> --header-size 0x200 --slot-size 0x80000 zephyr.bin signed.bin`. Wire into `build.sh` as a final step; unsigned images don't ship.
+*   **Key rotation:** requires a one-time SWD-flash of every device. Treat as a multi-year cadence; rotate only on suspected compromise. Migration path: MCUboot supports two pubkeys simultaneously during a transition window.
+*   **Manifest schema** (served by tinygs.com or a user-supplied URL): `{"version": <int>, "url": "<https-url>", "size": <bytes>, "sha256": "<hex>", "signed_image": true}`. Device verifies SHA over streamed bytes before handing off to MCUboot; MCUboot re-verifies the embedded ECDSA signature on the next boot. Two layers — SHA catches transport corruption, signature catches authenticity.
+
+**Confirm-on-boot semantics:**
+
+MCUboot installs new images as `pending` — they swap once, then if `boot_set_confirmed()` isn't called within the next reboot cycle, the swap reverts to the previous image. Application is responsible for confirming a boot is healthy. Definition of "healthy enough to confirm":
+
+1.  Thread role is `Child` (or higher).
+2.  MQTT-TLS handshake completed and CONNACK received.
+3.  At least one PINGRESP received after CONNACK (proves the connection survives traffic, not just initial handshake).
+4.  All three above persist for ≥ 5 minutes of continuous uptime.
+
+When all four hold, call `boot_write_img_confirmed()`. If any of (1)-(3) fails over an extended retry budget (suggested: 30 min and ≥ 5 reconnect attempts), do **not** confirm and trigger `sys_reboot(SYS_REBOOT_COLD)`. MCUboot's swap-on-reboot will then revert.
+
+This rule blocks two classes of bad image:
+
+*   *Boots but can't reach broker* (e.g. broken DNS code, bad cert): rolled back automatically.
+*   *Boots but immediately panics on first MQTT publish*: the panic causes a reboot before 5 min of confirmed activity, also rolled back.
+
+**Migration brick recovery:**
+
+If the MCUboot install fails mid-flight (USB cable yanked, image corrupt, signing key wrong), the device is dead until SWD reflash. Recovery procedure:
+
+1.  Reconnect SWD probe; verify `nrfjprog --readback` reports the chip.
+2.  `nrfjprog --eraseall` to clear partial state.
+3.  `west flash --runner jlink` to reflash MCUboot.
+4.  `mcumgr image upload signed.bin && mcumgr image confirm` to load the application.
+
+Keep one good `mcuboot.hex` + one good `signed-app.bin` archived in the repo (or in `keys/recovery/`) for every release so recovery doesn't depend on having a working build environment.
+
+**Delivery path (HTTPS-client, not MQTT, not on-device server):**
+
+*   Device polls a manifest URL (configurable; default `https://api.tinygs.com/v1/firmware/<board>/latest`) on a long cadence (default once/24 h, plus on every boot, plus on demand via the `/firmware` web UI button or MQTT `cmnd/update`).
+*   If the manifest's version > running version, the device streams the signed image over HTTPS (reuses the existing mbedTLS stack — no new client code beyond a thin chunked GET) directly into Slot 1, verifying SHA-256 inline.
+*   On SHA match, call `boot_set_pending()` and `sys_reboot(SYS_REBOOT_COLD)`. MCUboot ECDSA-verifies and swaps.
+*   The HTTP **server** (§21) is not on the OTA delivery path — it only *triggers* the client. They share no transport code.
+
 **After migration:**
-*   **Safe FOTA:** Production OTA via MQTT streams the new image to External Flash (Slot 1). MCUboot atomically swaps it into internal flash on reboot.
-*   **Automatic Rollback:** If the new firmware fails to boot or fails to confirm network connectivity, MCUboot automatically reverts to the old firmware.
+*   **Safe FOTA:** Production OTA via the HTTPS-client delivery path above. The image is streamed into External Flash (Slot 1); MCUboot atomically swaps it into internal flash on reboot. The web UI's `/firmware` endpoint is a trigger only — actual bytes never traverse the on-device HTTP server.
+*   **Automatic Rollback:** If the new firmware fails the confirm-on-boot rule above, MCUboot automatically reverts to the old firmware on the next reboot.
 *   **Development Flashing:** USB drag-and-drop (.uf2) is gone. Local development flashing is now done via `mcumgr` over the USB serial port, which uses the exact same secure staging/swap architecture.
+
+**SoftDevice consequence:** `nrfjprog --eraseall` destroys both the Adafruit UF2 bootloader **and** the SoftDevice (BLE stack at 0x0–0x26000). TinyGS does not use BLE so there is no functional loss, but this is a one-way door — there is no path back to the UF2 bootloader without a SoftDevice reflash. Document this in the release notes for any user attempting the migration.
 
 ### 3.5 RadioLib Zephyr Integration
 RadioLib is natively designed for the Arduino ecosystem. To run it on Zephyr RTOS, we will create a custom HAL (Hardware Abstraction Layer) class inheriting from `RadioLibHal`.
@@ -289,14 +352,14 @@ All Phase 1 objectives proven:
 
     | ESP32 endpoint | Purpose | Port decision |
     |---|---|---|
-    | `GET /` | Root page: dashboard/config/firmware/restart buttons + OTP code | **Port** — drop firmware button (USB-only) |
+    | `GET /` | Root page: dashboard/config/firmware/restart buttons + OTP code | **Port** — keep firmware button (FOTA unlocked by Phase 3) |
     | `GET /logo.png` | TinyGS logo | **Port** — same PNG from `logos.h`, ~2.5 KB |
     | `GET /config` | Station config form (lat/lon, MQTT, board, TZ, modemStartup, boardTemplate, adv_prm) | **Port** — POST handler writes NVS, triggers reboot on MQTT changes |
     | `GET /dashboard` | SVG world map + cards (GS/modem/sat/last packet) + web serial console | **Port** — same layout, feed from same `status` struct |
     | `GET /restart` | Confirm page + reboot | **Port** — `sys_reboot(SYS_REBOOT_COLD)` |
     | `GET /cs?c1=<cmd>&c2=<counter>` | Console poll + command (`!p` test packet, `!w` weblogin, `!e` reset, `!o` OTP) | **Port** — hook into our existing log ring buffer |
     | `GET /wm` | Worldmap data (CSV of sat pos + modem + GS status + sat data + last packet) | **Port** — exact same payload shape, fed from `status` |
-    | `GET /firmware` | ArduinoOTA update page | **Drop** — USB UF2 only |
+    | `POST /firmware` | FOTA update upload | **Port** — streams upload to external SPI flash for MCUboot |
 
     **Scope — what we drop:**
     - Wi-Fi AP / captive portal — Thread replaces this; joining is handled at OTBR
@@ -356,12 +419,15 @@ All Phase 1 objectives proven:
     - **Zephyr `http_server` maturity:** the in-tree server is marked experimental. Fallback plan is a ~200-line hand-rolled HTTP/1.0 parser on a listening socket (see implementation §1).
     - **Cross-thread torn reads:** introducing the HTTP thread breaks the current "main() is the only mutator" invariant. Without mitigation, the `/wm` poll can observe `tinygs_radio` mid-update and render inconsistent values. Mitigated by `radio_mutex` snapshot pattern (see implementation §9). Audit any new shared state before exposing it via HTTP.
 
-    **Build phasing:**
-    1. Static responses + routing skeleton (root, logo, restart). Verifies the HTTP stack on Thread.
-    2. Dashboard HTML + `/wm` poll handler. Confirms the `status` struct feeds real data.
-    3. Console `/cs` short-poll + dedicated log backend. Proves the dual-backend log plumbing (CDC ACM unaffected when web UI is consuming).
+    **Build phasing (revised — `/cs` ahead of `/wm`):**
+    1. **HTTP skeleton.** In-tree `CONFIG_HTTP_SERVER`, listening socket on `[::]:80`, `/` returns a minimal "TinyGS station, version=…, uptime=…" page, `/restart` triggers `sys_reboot`. Validates the Zephyr HTTP server runs over Thread and is reachable from `curl http://[mesh-addr]/` on a same-LAN host. Smallest end-to-end loop.
+    2. **`/cs` console poll + dedicated log-backend ring.** Highest immediate diagnostic value: replaces iot_log multicast as the primary outdoor-soak observability channel. Apple BBR doesn't proxy site-local mc but unicast-over-Thread works fine — `/cs` is reachable wherever ping6 to the mesh-local address is reachable. Proves the dual-backend log plumbing (CDC ACM unaffected when web UI is consuming) and unblocks pulling the iot_log multicast monitor entirely.
+    3. **Dashboard HTML + `/wm` poll.** Adds `radio_mutex` snapshot pattern (see implementation §9). Confirms the `status` struct feeds real data. Visual parity with ESP32 dashboard.
     4. Config form POST handler + NVS writes. Highest-risk step (must not corrupt existing MQTT config path).
-    5. (Optional) mTLS upgrade if threat model changes.
+    5. **`/firmware` trigger** (becomes useful after §3.5 hardware migration). POST kicks off the HTTPS-client manifest poll + image stream into Slot 1; UI shows progress from a status struct. No multipart upload — bytes never traverse the on-device server.
+    6. (Optional) mTLS upgrade if threat model changes or the OTBR firewall is enabled.
+
+    **Why phase 2 is the critical milestone:** end of phase 2, the `/cs` endpoint is the live diagnostic channel for the device. We can pull the receiver-side iot_log multicast monitor and rely entirely on `curl http://[mesh-addr]/cs` from amdnuc on a poll loop. Soak-runs become observable again over a path that doesn't depend on Apple BBR proxy behaviour.
 
 ### Phase 4: Power Optimization & Commissioning
 Requires current measurement equipment and on-site testing.
@@ -532,32 +598,29 @@ Migrated on the `ncs-v3.3-upgrade` branch. Key fixes that landed:
 Verified: TLS handshake to mqtt.tinygs.com:8883 succeeds; SAT positions and
 TLE updates flow end-to-end. Memory: 504KB flash (65%), 195KB RAM (75%).
 
-**Open follow-up: USB-next stack migration for SCSI-eject reboot trigger.**
-The original assumption was that NCS v3.3's USB-next stack would expose SCSI
-events to application code so we could hook `START_STOP_UNIT` (0x1B) and
-trigger config-apply on host eject without requiring a physical unplug. On
-inspection (post-upgrade) USB-next does have the SCSI handler infrastructure
-(`usbd_msc_scsi.c::SCSI_CMD_HANDLER(START_STOP_UNIT)` properly tracks
-`medium_loaded`), but the `usbd_msg` event enum has no `USBD_MSG_MSC_*`
-entries — the new stack handles eject internally and never publishes it
-upward. Two paths forward, both carry fork-Zephyr risk PLAN previously
-warned against:
+**Open follow-up: USB-next stack migration & the SCSI-eject dead-end.**
 
-1. **Migrate to USB-next stack AND publish a new `USBD_MSG_MSC_EJECT`**
-   from the SCSI handler (one-line addition + new enum value upstream).
-   Substantial migration: legacy `usb_*` API → new `usbd_*` API for MSC,
-   CDC ACM, descriptor registration. Worth doing eventually for the
-   improved class-event model, but bigger than a quick hot-fix.
-2. **Patch the legacy stack locally** to add a START_STOP_UNIT handler
-   that calls a weak callback. ~10 lines, but we'd carry the patch as a
-   Zephyr-module overlay or local fork.
+Two separate questions tangled together; this section pulls them apart.
 
-Current behaviour (since v3.3 upgrade): user-facing config-edit flow still
-works correctly — *physical unplug* of USB cable triggers the reboot via
-the existing VBUS-edge path in `usb_vbus_work_handler`. Only the "eject
-from OS without unplug" shortcut is non-functional. Acceptable for soak
-and normal use; prioritise the migration when other Phase 3 work
-(WebUSB / device-side web UI) wants the modern stack anyway.
+**Q1: Does Zephyr publish a SCSI-eject event we can hook?**
+
+No — neither in the legacy stack nor in USB-next. Both implementations handle `START_STOP_UNIT` (0x1B) **internally**: `usbd_msc_scsi.c::SCSI_CMD_HANDLER(START_STOP_UNIT)` updates the `medium_loaded` flag in the class state but does not raise any event upward. The `usbd_msg` event enum has no `USBD_MSG_MSC_*` entries at all. So the originally-hoped-for "OS-eject triggers config-apply on the device" shortcut does not exist as a published event in either stack.
+
+Two ways around this if we need eject-reboot:
+1. **Upstream a new `USBD_MSG_MSC_EJECT` event** in the USB-next stack — one-line addition in the SCSI handler + new enum value. Paired with a migration to USB-next (see Q2). Carries upstream-PR cycle risk.
+2. **Patch the legacy stack locally** to add a `START_STOP_UNIT` handler that calls a weak app callback. ~10 lines, but lives as a Zephyr-module overlay or local fork.
+
+Current behaviour (acceptable as-is): *physical unplug* of the USB cable triggers the reboot via the existing VBUS-edge path in `usb_vbus_work_handler`. Only the "eject from OS without unplug" shortcut is missing. Soak and normal config-edit flow are unaffected.
+
+**Q2: Should we migrate from the legacy `usb_*` to the USB-next `usbd_*` stack anyway?**
+
+The legacy stack is **deprecated** in NCS v3.3 (build emits `Deprecated symbol USB_DEVICE_DRIVER is enabled`) but still functional. USB-next is the long-term API.
+
+Migration scope: 2–3 days, touching CDC ACM init, USB MSC class registration, composite descriptor declaration, and the `usb_enable` → `usbd_init`+`usbd_enable` lifecycle. VBUS-detect via `NRF_POWER->USBREGSTATUS` continues to work. Reference: `ncs_new/zephyr/samples/subsys/usb/usbd/`.
+
+Migration on its own does **not** solve the eject problem (see Q1) — both stacks have the same gap. So the migration should be triggered by *some other feature* wanting USB-next: WebUSB transport, USB-CDC-NCM (Ethernet-over-USB) for an alternative device-management path, or upstream activity that retires the legacy stack outright. Until then, treat the deprecation warning as a noisy log line; do not migrate to silence it.
+
+**Decision (2026-05-04):** keep the legacy stack. SCSI-eject is parked. Re-evaluate when the first feature actually wanting USB-next lands, or when an NCS release bumps the deprecation to a build-failing error.
 
 ### Phase 5: RadioLib ZephyrHal Upstream PR
 The Zephyr HAL is functionally complete and multi-instance safe. To submit as a PR
@@ -613,10 +676,11 @@ example + clean HAL source):
     2.  For runtime config persistence, use NVS (separate partition) and sync to FATFS only on reboot.
     3.  Never write to FATFS while USB MSC is active.
 
-### 6.3 OTA Firmware Updates — DROPPED (USB-only)
-*   **Decision:** OTA over Thread is impractical for a solar-powered device. 440KB over 802.15.4 (~10-20 KB/s best case) requires minutes of continuous radio-on time even at full-rx.
-*   **Approach:** Firmware updates are USB-only via UF2 drag-and-drop. Users with physical access flash new firmware directly. A small MQTT notification can alert users when updates are available.
-*   **Future option:** If OTA is revisited, use CoAP block transfer (not MQTT) over Thread, or require the user to bring the device within USB range.
+### 6.3 OTA Firmware Updates — DEFERRED to Phase 3+ (external SPI flash + MCUboot)
+*   **Phase 1/2:** USB-only via UF2 drag-and-drop. The Adafruit UF2 bootloader has no dual-slot capability and the internal 1 MB flash is too tight for an in-place dual-bank layout once SoftDevice + FATFS are accounted for. No OTA on the deployed firmware.
+*   **Phase 3+:** OTA enabled via the External SPI Flash + MCUboot migration described in §3.5. Delivery is **HTTPS-client over Thread/NAT64** (manifest poll + signed image stream); MQTT is used only for "trigger an immediate poll" notifications, not for the byte stream. The 802.15.4 throughput concern from the original Phase-1 decision still applies to MQTT-delivered firmware — that's why Phase 3 uses HTTPS GET, not MQTT publish.
+*   **OTA-over-Thread payload size:** still 500–700 KB. With NAT64+TLS over a 250 kbps Thread link the realistic transfer time is several minutes of pinned RX, but this is a once-per-update event (not the steady-state) and trades nicely against the alternative of physical USB access for every release.
+*   **Coexistence:** the in-place stream-and-overwrite approach considered earlier (use `__ramfunc` writer + VTOR relocation, no external flash) is **superseded** by §3.5. The external-flash plan trades hardware modification for substantially lower brick risk and standard MCUboot rollback.
 
 ### 6.4 mbedTLS Memory — RESOLVED (was HIGH RISK)
 *   **The Problem:** Static RAM usage was 241KB / 256KB (92%) before any TLS handshake heap allocation.

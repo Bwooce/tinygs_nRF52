@@ -51,6 +51,7 @@
 #include "tinygs_json.h"
 #include "tinygs_config.h"
 #include "bitcode.h"
+#include "web/web_ui.h"
 #if defined(CONFIG_IOT_LOG)
 #include <iot_log_zephyr.h>
 #endif
@@ -3406,6 +3407,10 @@ int main(void)
             neopixel_off(); /* NeoPixels off when stable */
             breathing_led_start(); /* Green LED breathes when connected */
 
+            /* Bring up the device web UI on :80 once Thread+MQTT are up.
+             * web_ui_start is idempotent so reconnect cycles don't double-init. */
+            (void)web_ui_start();
+
             /* Time sync happens pre-connect so welcome carries a valid
              * `time` field (see STATE_DNS_RESOLVE). */
 
@@ -3529,6 +3534,22 @@ int main(void)
 #endif
                     size_t stack_used = stack_size - stack_unused;
 
+                    /* HTTP server thread (defined in http_server_core.c via
+                     * K_THREAD_DEFINE) — separate stack we want to track now
+                     * that the web UI is exercising it. */
+                    size_t http_stack_used = 0;
+                    size_t http_stack_size = CONFIG_HTTP_SERVER_STACK_SIZE;
+#if defined(CONFIG_HTTP_SERVER) && defined(CONFIG_INIT_STACKS) && defined(CONFIG_THREAD_STACK_INFO)
+                    {
+                        extern const k_tid_t http_server_tid;
+                        size_t http_stack_unused = 0;
+                        if (http_server_tid && k_thread_stack_space_get(http_server_tid,
+                                                       &http_stack_unused) == 0) {
+                            http_stack_used = http_stack_size - http_stack_unused;
+                        }
+                    }
+#endif
+
                     /* mbedTLS private heap — TLS handshake is the dominant
                      * consumer (peaks during initial CONNECT, shrinks back
                      * during steady-state). Both queries are O(1). */
@@ -3548,7 +3569,7 @@ int main(void)
                     sys_heap_runtime_stats_get(&_system_heap.heap, &stats);
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
                             "heap=%u/%u(peak=%u) mtls=%u(peak=%u/%u) "
-                            "stack=%u/%u vbat=%dmV sat=%s",
+                            "stack=%u/%u http_stack=%u/%u vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
                             (unsigned)stats.allocated_bytes,
@@ -3557,17 +3578,19 @@ int main(void)
                             (unsigned)mtls_cur, (unsigned)mtls_max,
                             (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
                             (unsigned)stack_used, (unsigned)stack_size,
+                            (unsigned)http_stack_used, (unsigned)http_stack_size,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
 #else
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
                             "mtls=%u(peak=%u/%u) "
-                            "stack=%u/%u vbat=%dmV sat=%s",
+                            "stack=%u/%u http_stack=%u/%u vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
                             (unsigned)mtls_cur, (unsigned)mtls_max,
                             (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
                             (unsigned)stack_used, (unsigned)stack_size,
+                            (unsigned)http_stack_used, (unsigned)http_stack_size,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
 #endif
