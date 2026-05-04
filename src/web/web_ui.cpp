@@ -59,7 +59,10 @@ static int root_handler(struct http_client_ctx *client,
 	ARG_UNUSED(request_ctx);
 	ARG_UNUSED(user_data);
 
-	static char body[1024];
+	/* Sized to fit the full HTML — initial 1024-byte buffer was being
+	 * silently truncated mid-button. snprintf returns the would-be
+	 * length on overflow, which we now check and log. */
+	static char body[1536];
 
 	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
 		return 0;
@@ -74,21 +77,21 @@ static int root_handler(struct http_client_ctx *client,
 		"text-align:center;max-width:480px;margin:0 auto;}"
 		"h1{font-size:1.4em;margin:8px 0;}"
 		"p.sub{color:#666;margin:0 0 20px 0;font-size:0.9em;}"
-		"a.btn,button.btn{display:block;width:100%%;max-width:300px;"
+		"a.btn{display:block;width:100%%;max-width:300px;"
 		"margin:8px auto;padding:14px;font-size:1em;border:1px solid #888;"
 		"border-radius:6px;background:#f4f4f4;color:#222;text-decoration:none;"
 		"box-sizing:border-box;cursor:pointer;}"
-		"a.btn:hover,button.btn:hover{background:#e8e8e8;}"
+		"a.btn:hover{background:#e8e8e8;}"
 		"a.btn.disabled{color:#aaa;background:#f8f8f8;cursor:not-allowed;}"
 		"a.danger{color:#a00;border-color:#a00;}"
 		"</style></head><body>"
 		"<h1>%s</h1>"
 		"<p class='sub'>TinyGS nRF52 v%u &middot; uptime %llds &middot; log_seq %u</p>"
 		"<a class='btn' href='/dashboard'>Dashboard</a>"
-		"<a class='btn disabled' title='Phase 4 — not yet implemented'>Configure</a>"
-		"<a class='btn disabled' title='Phase 5 — needs external SPI flash hardware'>Firmware Update</a>"
+		"<a class='btn disabled' title='Phase 4'>Configure</a>"
+		"<a class='btn disabled' title='Phase 5'>Firmware Update</a>"
 		"<a class='btn danger' href='/restart' "
-		"onclick=\"return confirm('Reboot the station?')\">Restart</a>"
+		"onclick=\"return confirm('Reboot?')\">Restart</a>"
 		"<p class='sub'><a href='/status'>raw status</a></p>"
 		"</body></html>",
 		cfg_station[0] ? cfg_station : "tinygs",
@@ -97,9 +100,10 @@ static int root_handler(struct http_client_ctx *client,
 		web_log_head_seq());
 	if (n < 0) {
 		n = 0;
-	}
-	if (n > (int)sizeof(body)) {
-		n = sizeof(body);
+	} else if (n >= (int)sizeof(body)) {
+		LOG_WRN("/ truncated: needed %d bytes, have %u",
+			n, (unsigned)sizeof(body));
+		n = sizeof(body) - 1;
 	}
 
 	response_ctx->body = (uint8_t *)body;
