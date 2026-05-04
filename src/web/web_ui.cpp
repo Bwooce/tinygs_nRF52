@@ -33,6 +33,7 @@
 #include "tinygs_config.h"     /* cfg_station[], cfg_admin_pw[], etc. */
 #include "dashboard_html_gz.h" /* DASHBOARD_HTML_GZ[] — pre-gzipped */
 #include "favicon_png.h"       /* FAVICON_PNG[] */
+#include "tinygs_display.h"    /* tinygs_display_request_weblogin */
 
 /* MQTT connection state, exposed by main.cpp via a small accessor so we
  * don't need to extern the file-local `enum app_state` (declarations would
@@ -365,6 +366,12 @@ static struct http_resource_detail_dynamic restart_resource_detail = {
  * ring right now). Response: lines newer than seq, separated by '\n', plus
  * a leading "seq: <new-high-watermark>\n" header so the client can update
  * its cursor.
+ *
+ * When `c1=!cmd` is also present the request is treated as a write — Basic
+ * auth is required. Supported commands mirror ESP32's:
+ *   !e — soft reboot (deferred 2s like /restart)
+ *   !w — request weblogin URL from the server
+ *   !p — request a test LoRa TX (gated on cfg_tx_enable; emits log line)
  */
 static int parse_seq_from_query(const char *url_buf, size_t url_len, uint32_t *out)
 {
@@ -385,6 +392,93 @@ static int parse_seq_from_query(const char *url_buf, size_t url_len, uint32_t *o
 		}
 	}
 	return -1;
+}
+
+/* Pull `c1=<value>` from the URL (URL-decoded into `out`). Returns true
+ * when the parameter is present and non-empty. The value is at most 31
+ * chars in the form (we never need more than `!XX` plus padding). */
+static bool parse_cmd_from_query(const char *url_buf, size_t url_len,
+				 char *out, size_t out_cap)
+{
+	if (out_cap == 0) return false;
+	out[0] = '\0';
+	if (!url_buf || url_len == 0) return false;
+	for (size_t i = 0; i + 3 < url_len; i++) {
+		if (url_buf[i] == 'c' && url_buf[i+1] == '1' && url_buf[i+2] == '=') {
+			size_t n = 0, j = i + 3;
+			while (j < url_len && out_cap > 1 && n < out_cap - 1) {
+				char c = url_buf[j];
+				if (c == '&' || c == '\0' || c == ' ') break;
+				if (c == '+') {
+					out[n++] = ' ';
+				} else if (c == '%' && j + 2 < url_len) {
+					int hi = hex_nibble(url_buf[j+1]);
+					int lo = hex_nibble(url_buf[j+2]);
+					if (hi >= 0 && lo >= 0) {
+						out[n++] = (char)((hi << 4) | lo);
+						j += 2;
+					} else {
+						out[n++] = c;
+					}
+				} else {
+					out[n++] = c;
+				}
+				j++;
+			}
+			out[n] = '\0';
+			return n > 0;
+		}
+	}
+	return false;
+}
+
+/* Latches set by /cs for the main loop to act on. Polled from main.cpp
+ * via the public accessors below. */
+static volatile bool web_test_packet_requested = false;
+static volatile bool web_reboot_requested = false;
+
+extern "C" bool web_ui_pop_test_packet_request(void)
+{
+	if (web_test_packet_requested) {
+		web_test_packet_requested = false;
+		return true;
+	}
+	return false;
+}
+
+extern "C" bool web_ui_pop_reboot_request(void)
+{
+	if (web_reboot_requested) {
+		web_reboot_requested = false;
+		return true;
+	}
+	return false;
+}
+
+/* Run a /cs command. Returns a short status string suitable for echo
+ * back to the console. */
+static const char *run_cs_command(const char *cmd)
+{
+	if (strcmp(cmd, "!e") == 0) {
+		web_reboot_requested = true;
+		LOG_WRN("/cs !e: reboot requested via web UI");
+		return "reboot scheduled\n";
+	}
+	if (strcmp(cmd, "!w") == 0) {
+		tinygs_display_request_weblogin();
+		LOG_INF("/cs !w: weblogin requested via web UI");
+		return "weblogin URL requested from server\n";
+	}
+	if (strcmp(cmd, "!p") == 0) {
+		extern int8_t cfg_tx_enable;
+		if (!cfg_tx_enable) {
+			return "tx disabled (cfg_tx_enable=0)\n";
+		}
+		web_test_packet_requested = true;
+		LOG_INF("/cs !p: test packet requested via web UI");
+		return "test packet queued\n";
+	}
+	return "unknown command\n";
 }
 
 static int cs_handler(struct http_client_ctx *client,
@@ -410,6 +504,20 @@ static int cs_handler(struct http_client_ctx *client,
 				   sizeof(client->url_buffer),
 				   &since);
 
+	/* If a c1=<command> is present, this is a write — auth required.
+	 * Run the command, echo a status line into the response so the
+	 * dashboard's textarea reflects what happened. */
+	char cmd[32];
+	const char *cmd_status = NULL;
+	if (parse_cmd_from_query((const char *)client->url_buffer,
+				 sizeof(client->url_buffer), cmd, sizeof(cmd))) {
+		if (!basic_auth_ok(client)) {
+			send_401(response_ctx);
+			return 0;
+		}
+		cmd_status = run_cs_command(cmd);
+	}
+
 	uint32_t high = since;
 
 	/* Reserve a fixed 16-byte prefix for the header. This avoids the
@@ -420,6 +528,15 @@ static int cs_handler(struct http_client_ctx *client,
 				       body + HDR_RESERVE,
 				       (int)sizeof(body) - HDR_RESERVE,
 				       &high);
+
+	/* Append the command status (if any) after the log lines. */
+	if (cmd_status) {
+		size_t status_len = strlen(cmd_status);
+		if (wrote + (int)status_len + HDR_RESERVE < (int)sizeof(body)) {
+			memcpy(body + HDR_RESERVE + wrote, cmd_status, status_len);
+			wrote += (int)status_len;
+		}
+	}
 
 	/* Build the header into a small scratch, then memcpy (no NUL). */
 	char hdr[HDR_RESERVE + 1];

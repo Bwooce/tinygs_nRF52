@@ -48,9 +48,16 @@ void tinygs_display_set_remote_frame(int frame_idx, const char *json, size_t len
 
 /**
  * @brief Check and clear the weblogin request flag.
- * Set by BOOT button press when display is active (or no display).
+ * Set by BOOT button press when display is active (or no display),
+ * or by the web UI's `/cs?c1=!w` command.
  * Rate-limited to once per 10 seconds.
  */
 bool tinygs_display_weblogin_requested(void);
+
+/**
+ * @brief Request a weblogin URL from the server. Public latch for the
+ * web UI; mirrors the BOOT-button path.
+ */
+void tinygs_display_request_weblogin(void);
 
 #endif /* TINYGS_DISPLAY_H */

@@ -91,13 +91,15 @@ DASHBOARD_POST = """\
 <div class='console'>\
 <textarea readonly id='t1' wrap='off'></textarea>\
 <form method='get' onsubmit='return f(1);'>\
-<input id='c1' placeholder='(commands disabled - read-only console)' disabled>\
+<input id='c1' placeholder='Command (auth-gated): !e !w !p'>\
 </form></div>\
 <script>\
 var x=null,lt,sn=0,id=0;\
 function f(p){var c,o='',t;clearTimeout(lt);\
 t=document.getElementById('t1');\
-if(t.scrollTop>=sn){\
+if(p==1){c=document.getElementById('c1');\
+if(c.value){o='&c1='+encodeURIComponent(c.value);c.value='';}}\
+if(t.scrollTop>=sn||p==1){\
 if(x!=null){x.abort();}\
 x=new XMLHttpRequest();\
 x.onreadystatechange=function(){\
@@ -106,8 +108,10 @@ var a=x.responseText;\
 id=a.substr(0,a.indexOf('\\n')).replace(/^seq:\\s*/,'');\
 var z=a.substr(a.indexOf('\\n')+1);\
 if(z.length>0){t.value+=z;}\
-t.scrollTop=99999;sn=t.scrollTop;}};\
-x.open('GET','cs?c2='+id,true);x.send();}\
+t.scrollTop=99999;sn=t.scrollTop;}\
+else if(x.readyState==4&&x.status==401){\
+t.value+='\\n[401: refresh and provide admin password]\\n';t.scrollTop=99999;}};\
+x.open('GET','cs?c2='+id+o,true);x.send();}\
 lt=setTimeout(f,2345);return false;}\
 var wmx=null,wmt;\
 function wmf(){var sp,mc,gs,sd,lp;clearTimeout(wmt);\

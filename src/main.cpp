@@ -234,6 +234,10 @@ static const char *main_phase_name(uint8_t p)
  * the openthread module's internal header which we don't pull in directly). */
 extern "C" struct otInstance *openthread_get_default_instance(void);
 
+/* Latches set by the web UI (/cs commands) — drained from the main loop. */
+extern "C" bool web_ui_pop_test_packet_request(void);
+extern "C" bool web_ui_pop_reboot_request(void);
+
 /* z_arch_esf_t was renamed to arch_esf in Zephyr v3.x. */
 extern "C" void k_sys_fatal_error_handler(unsigned int reason,
                                            const struct arch_esf *esf)
@@ -3538,6 +3542,24 @@ int main(void)
                 main_phase = MAIN_PHASE_WEBLOGIN;
                 if (tinygs_display_weblogin_requested()) {
                     tinygs_send_weblogin_request(&mqtt_client, cfg_mqtt_user, cfg_station);
+                }
+
+                /* Web UI /cs commands (Phase 4). The handlers run on the
+                 * HTTP server thread but must not touch the radio or
+                 * sys_reboot from there — they latch flags here. */
+                {
+                    if (web_ui_pop_reboot_request()) {
+                        LOG_WRN("Web UI reboot — sleeping 1s then sys_reboot");
+                        k_msleep(1000);
+                        sys_reboot(SYS_REBOOT_COLD);
+                    }
+                    if (web_ui_pop_test_packet_request() && radio && cfg_tx_enable) {
+                        const uint8_t test_pkt[] = "TINYGS-TEST";
+                        int rc = radio->transmit((uint8_t *)test_pkt,
+                                                 sizeof(test_pkt) - 1);
+                        LOG_INF("Web UI test TX: rc=%d", rc);
+                        radio->startReceive();
+                    }
                 }
 
                 /* Track main thread stack high-water mark */

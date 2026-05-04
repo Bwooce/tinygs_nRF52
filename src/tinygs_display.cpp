@@ -691,6 +691,11 @@ void tinygs_display_packet_rx(float rssi, float snr)
     last_activity_ms = k_uptime_get_32();
 }
 
+void tinygs_display_request_weblogin(void)
+{
+    weblogin_requested = true;
+}
+
 bool tinygs_display_weblogin_requested(void)
 {
     if (weblogin_requested) {
