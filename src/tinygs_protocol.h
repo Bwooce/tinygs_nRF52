@@ -7,6 +7,7 @@
  * See docs/TINYGS_MQTT_PROTOCOL.md for full specification.
  */
 
+#include <zephyr/kernel.h>
 #include <zephyr/net/mqtt.h>
 #include <zephyr/logging/log.h>
 #include <stdio.h>
@@ -225,10 +226,37 @@ struct tinygs_radio_state {
     float last_snr;
     float last_freq_err;
     bool  last_crc_error;
+    int64_t last_packet_uptime_ms; /* k_uptime_get() at last RX, 0 = none yet */
     float sat_pos_x;       /* Satellite map position from sat_pos_oled (128x64 coords) */
     float sat_pos_y;
+    /* Doppler/propagator output — populated by doppler_update() in main.cpp.
+     * Used by /wm dashboard. lat/lon in degrees, az/el in degrees. NaN/Inf
+     * never written here — bounds-checked at the source. */
+    float sat_lat;
+    float sat_lon;
+    float sat_azimuth;
+    float sat_elevation;
 };
 extern struct tinygs_radio_state tinygs_radio;
+
+/* Cross-thread lock for tinygs_radio. Single writer (main thread) but the
+ * HTTP server thread (web UI) reads the struct asynchronously, and a
+ * naive memcpy can tear across multi-field updates like begine/batch_conf.
+ * Convention: writers acquire the mutex around the multi-field update
+ * burst (NOT around the parse/IO that precedes it); readers acquire it
+ * around a memcpy snapshot, then release before serialising. Lock holds
+ * are microseconds, so K_FOREVER is fine.
+ *
+ * Writers that touch a SINGLE atomic-aligned field don't strictly need
+ * the lock (Cortex-M4 32-bit reads/writes are atomic), but holding it is
+ * cheap and keeps the audit boundary clean. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern struct k_mutex tinygs_radio_mutex;
+#ifdef __cplusplus
+}
+#endif
 
 /*
  * Handle set_pos_prm command from server.

@@ -20,6 +20,7 @@
 #include <zephyr/net/http/service.h>
 #include <zephyr/logging/log.h>
 
+#include <time.h>
 #include <openthread/srp_client.h>
 #include <openthread/thread.h>
 
@@ -27,18 +28,10 @@
 #include "tinygs_protocol.h"   /* TINYGS_VERSION, tinygs_radio */
 #include "tinygs_config.h"     /* cfg_station[] */
 
-/* App state from main.cpp — defined as a file-scope enum there. We
- * forward-declare and extern the variable just to read connection state. */
-enum app_state {
-	STATE_INIT,
-	STATE_USB_INIT,
-	STATE_WAIT_THREAD,
-	STATE_DNS_RESOLVE,
-	STATE_MQTT_CONNECT,
-	STATE_MQTT_CONNECTED,
-	STATE_ERROR,
-};
-extern enum app_state app_state;
+/* MQTT connection state, exposed by main.cpp via a small accessor so we
+ * don't need to extern the file-local `enum app_state` (declarations would
+ * have to match exactly across TUs and would silently break on reordering). */
+extern "C" bool tinygs_mqtt_is_connected(void);
 
 /* Provided by Zephyr OpenThread integration. Forward-declared so we don't
  * have to drag in zephyr/net/openthread.h (deprecated wrappers). */
@@ -243,12 +236,10 @@ static struct http_resource_detail_dynamic cs_resource_detail = {
  *   utc_time,local_time,                      time
  *   last_pkt_time,last_pkt_rssi,last_pkt_snr,last_pkt_ferr,crc_state
  *
- * Read-side note: tinygs_radio has a single writer (main thread). The HTTP
- * server thread reads it via a memcpy snapshot below. Individual 32-bit
- * field reads are atomic on Cortex-M4; multi-field tearing across a single
- * begine update is possible but harmless — next 5 s poll reconciles it.
- * `radio_mutex` is the future hardening per PLAN §21.9 once we observe
- * a real tearing problem.
+ * Read-side concurrency: snapshot under tinygs_radio_mutex so a multi-
+ * field begine/batch_conf update can't tear across our memcpy. Lock is
+ * held for ~50 µs (one cache-line copy); main-thread writers see at
+ * worst a microsecond stall.
  */
 static int wm_handler(struct http_client_ctx *client,
 		      enum http_transaction_status status,
@@ -266,17 +257,17 @@ static int wm_handler(struct http_client_ctx *client,
 		return 0;
 	}
 
-	/* Snapshot the most volatile bits in one shot. */
-	struct tinygs_radio_state snap = tinygs_radio;
-	bool mqtt_up = (app_state == STATE_MQTT_CONNECTED);
+	/* Atomic snapshot under lock — see PLAN.md §21.9. */
+	struct tinygs_radio_state snap;
+	k_mutex_lock(&tinygs_radio_mutex, K_FOREVER);
+	snap = tinygs_radio;
+	k_mutex_unlock(&tinygs_radio_mutex);
+
+	bool mqtt_up = tinygs_mqtt_is_connected();
 
 	/* Sat pixel-coords match ESP32 mapping (offset by 3 for the SVG marker). */
 	int cx = (int)(snap.sat_pos_x * 2.0f + 3.0f);
 	int cy = (int)(snap.sat_pos_y * 2.0f + 3.0f);
-
-	/* UTC time from monotonic + boot epoch isn't tracked here — emit
-	 * a placeholder for now; the ESP32 dashboard tolerates it. */
-	const char *time_placeholder = "-,-,";
 
 	int n = 0;
 	n += snprintf(body + n, sizeof(body) - n, "%d,%d,", cx, cy);
@@ -319,18 +310,49 @@ static int wm_handler(struct http_client_ctx *client,
 		      "<span class='G'>READY</span>,%.0f,",
 		      (double)snap.last_rssi);
 
-	/* Sat name + (placeholder) lat/lon, az/el, doppler — main.cpp doesn't
-	 * cache these globally yet. Phase 3 keeps the schema and emits "-"s
-	 * so the dashboard renders without errors. */
-	n += snprintf(body + n, sizeof(body) - n,
-		      "%s,- / -,- / -,%.0f Hz,",
-		      snap.satellite[0] ? snap.satellite : "-",
+	n += snprintf(body + n, sizeof(body) - n, "%s,",
+		      snap.satellite[0] ? snap.satellite : "-");
+
+	/* Sat lat/lon, az/el — populated by doppler_update() in main.cpp.
+	 * tle_valid is set when we've received a real TLE; before that
+	 * fall back to "-" so the dashboard doesn't show stale zero values. */
+	if (snap.tle_valid) {
+		n += snprintf(body + n, sizeof(body) - n,
+			      "%.2f / %.2f,%.0f / %.1f,",
+			      (double)snap.sat_lat, (double)snap.sat_lon,
+			      (double)snap.sat_azimuth, (double)snap.sat_elevation);
+	} else {
+		n += snprintf(body + n, sizeof(body) - n, "- / -,- / -,");
+	}
+
+	n += snprintf(body + n, sizeof(body) - n, "%.0f Hz,",
 		      (double)snap.freq_doppler);
 
-	n += snprintf(body + n, sizeof(body) - n, "%s", time_placeholder);
+	/* UTC + local time. We treat "local" as UTC because the device
+	 * doesn't carry a TZ — the ESP32 doesn't either in many builds. */
+	time_t now = time(NULL);
+	if (now > 0) {
+		struct tm tm_utc;
+		gmtime_r(&now, &tm_utc);
+		n += snprintf(body + n, sizeof(body) - n,
+			      "%02d:%02d:%02d,%02d:%02d:%02d,",
+			      tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec,
+			      tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+	} else {
+		n += snprintf(body + n, sizeof(body) - n, "-,-,");
+	}
 
-	/* Last packet info. last_packet timestamp not tracked yet — emit "-". */
-	n += snprintf(body + n, sizeof(body) - n, "-,%.0f,%.1f,%.0f,%s\n",
+	/* Last packet timestamp — emit time-since in seconds for readability,
+	 * or "-" if no packet received yet this boot. */
+	if (snap.last_packet_uptime_ms > 0) {
+		int64_t age_s = (k_uptime_get() - snap.last_packet_uptime_ms) / 1000;
+		n += snprintf(body + n, sizeof(body) - n, "%llds ago,",
+			      (long long)age_s);
+	} else {
+		n += snprintf(body + n, sizeof(body) - n, "-,");
+	}
+
+	n += snprintf(body + n, sizeof(body) - n, "%.0f,%.1f,%.0f,%s\n",
 		      (double)snap.last_rssi,
 		      (double)snap.last_snr,
 		      (double)snap.last_freq_err,

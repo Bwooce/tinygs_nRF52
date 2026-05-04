@@ -51,6 +51,10 @@ float tinygs_station_lat = -33.8688f;
 float tinygs_station_lon = 151.2093f;
 float tinygs_station_alt = 50.0f;
 
+/* Cross-thread mutex for tinygs_radio (see tinygs_protocol.h for the
+ * convention). Initialised at compile time by Zephyr's K_MUTEX_DEFINE. */
+K_MUTEX_DEFINE(tinygs_radio_mutex);
+
 /* Radio state — updated by begine/batch_conf, used in send_rx/send_status */
 struct tinygs_radio_state tinygs_radio = {
     .modem_mode = "LoRa",

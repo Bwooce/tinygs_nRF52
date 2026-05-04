@@ -350,6 +350,12 @@ enum app_state {
 enum app_state app_state = STATE_WAIT_THREAD;
 volatile bool thread_attached = false;
 
+/* Accessor for cross-TU consumers (web UI) — avoids leaking the enum. */
+extern "C" bool tinygs_mqtt_is_connected(void)
+{
+    return app_state == STATE_MQTT_CONNECTED;
+}
+
 /* -------------------------------------------------------------------------- */
 /* MQTT Configuration                                                         */
 /* -------------------------------------------------------------------------- */
@@ -1301,6 +1307,16 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                         lora_packet_received = false;
                     }
 
+                    /* Hold tinygs_radio_mutex across the begine update so the
+                     * web UI's /wm reader can't observe a partially-applied
+                     * begine (e.g. new sat name with stale modem config).
+                     * Hold extends through all the field assignments below
+                     * and is released right before the `break` at end of
+                     * begine handling. Hardware reconfig calls (radio->setX)
+                     * are interleaved but each is sub-ms, so the worst-case
+                     * /wm read latency is ~10 ms. */
+                    k_mutex_lock(&tinygs_radio_mutex, K_FOREVER);
+
                     /* Store raw payload as modem_conf before parsing
                      * (json_obj_parse modifies the buffer in-place) */
                     size_t conf_len = strlen((char *)rx_payload);
@@ -1529,6 +1545,8 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                                 tle_tag,
                                 tinygs_radio.filter[0] ? " FLT" : "");
                     }
+                    /* End of begine/batch_conf field-update block. */
+                    k_mutex_unlock(&tinygs_radio_mutex);
                 }
             } else if (strcmp(cmnd, "begin_lora") == 0) {
                 /* Legacy array format: [freq,bw,sf,cr,sw,pwr,climit,pl,gain] */
@@ -2711,8 +2729,14 @@ static void doppler_update(void)
      * bounded value, so the bad-lat/lon branch catches them. */
     if (sat_lat >= -90.0 && sat_lat <= 90.0 &&
         sat_lon >= -180.0 && sat_lon <= 180.0) {
+        k_mutex_lock(&tinygs_radio_mutex, K_FOREVER);
         tinygs_radio.sat_pos_x = (float)((180.0 + sat_lon) / 360.0 * 128.0);
         tinygs_radio.sat_pos_y = (float)((90.0 - sat_lat) / 180.0 * 64.0);
+        tinygs_radio.sat_lat = (float)sat_lat;
+        tinygs_radio.sat_lon = (float)sat_lon;
+        tinygs_radio.sat_azimuth = (float)azimuth;
+        tinygs_radio.sat_elevation = (float)elevation;
+        k_mutex_unlock(&tinygs_radio_mutex);
         /* Suppress sub-pixel updates — the display only redraws on
          * integer-pixel transitions, so anything finer is log noise.
          * 240×135 display, 128×64 grid → ~1.875 px-per-grid-x,
@@ -2759,9 +2783,11 @@ static void doppler_update(void)
             return;
         }
 
+        k_mutex_lock(&tinygs_radio_mutex, K_FOREVER);
         tinygs_radio.freq_doppler = new_doppler;
         float effective_freq = tinygs_radio.frequency +
                               (tinygs_radio.freq_offset + tinygs_radio.freq_doppler) / 1e6f;
+        k_mutex_unlock(&tinygs_radio_mutex);
         radio->setFrequency(effective_freq);
         radio->startReceive();
         LOG_INF("Doppler: %.0f Hz → %.6f MHz (el=%.1f°)",
@@ -2938,11 +2964,15 @@ static bool lora_check_rx(void)
     float snr = radio->getSNR();
     float freq_err = radio->getFrequencyError();
 
-    /* Store last-packet metrics for status payload */
+    /* Store last-packet metrics for status payload — locked so /wm
+     * can't observe a half-updated last_* tuple. */
+    k_mutex_lock(&tinygs_radio_mutex, K_FOREVER);
     tinygs_radio.last_rssi = rssi;
     tinygs_radio.last_snr = snr;
     tinygs_radio.last_freq_err = freq_err;
     tinygs_radio.last_crc_error = (state == RADIOLIB_ERR_CRC_MISMATCH);
+    tinygs_radio.last_packet_uptime_ms = k_uptime_get();
+    k_mutex_unlock(&tinygs_radio_mutex);
 
     if (state == RADIOLIB_ERR_NONE) {
         lora_rx_count++;
