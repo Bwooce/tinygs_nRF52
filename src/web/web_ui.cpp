@@ -24,8 +24,21 @@
 #include <openthread/thread.h>
 
 #include "web_ui.h"
-#include "tinygs_protocol.h"   /* TINYGS_VERSION */
+#include "tinygs_protocol.h"   /* TINYGS_VERSION, tinygs_radio */
 #include "tinygs_config.h"     /* cfg_station[] */
+
+/* App state from main.cpp — defined as a file-scope enum there. We
+ * forward-declare and extern the variable just to read connection state. */
+enum app_state {
+	STATE_INIT,
+	STATE_USB_INIT,
+	STATE_WAIT_THREAD,
+	STATE_DNS_RESOLVE,
+	STATE_MQTT_CONNECT,
+	STATE_MQTT_CONNECTED,
+	STATE_ERROR,
+};
+extern enum app_state app_state;
 
 /* Provided by Zephyr OpenThread integration. Forward-declared so we don't
  * have to drag in zephyr/net/openthread.h (deprecated wrappers). */
@@ -215,6 +228,133 @@ static struct http_resource_detail_dynamic cs_resource_detail = {
 	.user_data = NULL,
 };
 
+/* ===== /wm handler — worldmap + status CSV =====
+ *
+ * Same field order as the ESP32 dashboard's /wm endpoint so the JS that
+ * already exists could parse our response without modification:
+ *
+ *   cx,cy,                                    sat pixel position
+ *   modem_mode,frequency,freq_offset,         modem
+ *   sf|bitrate,cr|freq_dev,bw,
+ *   station_name,version,                     ground station
+ *   mqtt_status,parent_rssi,radio_status,last_rssi,
+ *   satellite,                                 sat info
+ *   sat_lat/lon,sat_az/el,doppler_freq,
+ *   utc_time,local_time,                      time
+ *   last_pkt_time,last_pkt_rssi,last_pkt_snr,last_pkt_ferr,crc_state
+ *
+ * Read-side note: tinygs_radio has a single writer (main thread). The HTTP
+ * server thread reads it via a memcpy snapshot below. Individual 32-bit
+ * field reads are atomic on Cortex-M4; multi-field tearing across a single
+ * begine update is possible but harmless — next 5 s poll reconciles it.
+ * `radio_mutex` is the future hardening per PLAN §21.9 once we observe
+ * a real tearing problem.
+ */
+static int wm_handler(struct http_client_ctx *client,
+		      enum http_transaction_status status,
+		      const struct http_request_ctx *request_ctx,
+		      struct http_response_ctx *response_ctx,
+		      void *user_data)
+{
+	ARG_UNUSED(client);
+	ARG_UNUSED(request_ctx);
+	ARG_UNUSED(user_data);
+
+	static char body[800];
+
+	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
+		return 0;
+	}
+
+	/* Snapshot the most volatile bits in one shot. */
+	struct tinygs_radio_state snap = tinygs_radio;
+	bool mqtt_up = (app_state == STATE_MQTT_CONNECTED);
+
+	/* Sat pixel-coords match ESP32 mapping (offset by 3 for the SVG marker). */
+	int cx = (int)(snap.sat_pos_x * 2.0f + 3.0f);
+	int cy = (int)(snap.sat_pos_y * 2.0f + 3.0f);
+
+	/* UTC time from monotonic + boot epoch isn't tracked here — emit
+	 * a placeholder for now; the ESP32 dashboard tolerates it. */
+	const char *time_placeholder = "-,-,";
+
+	int n = 0;
+	n += snprintf(body + n, sizeof(body) - n, "%d,%d,", cx, cy);
+
+	n += snprintf(body + n, sizeof(body) - n, "%s,%.4f,%.0f,",
+		      snap.modem_mode[0] ? snap.modem_mode : "-",
+		      (double)snap.frequency,
+		      (double)snap.freq_offset);
+
+	if (strcmp(snap.modem_mode, "LoRa") == 0) {
+		n += snprintf(body + n, sizeof(body) - n, "%d,%d,",
+			      snap.sf, snap.cr);
+	} else {
+		n += snprintf(body + n, sizeof(body) - n, "%.1f,%.0f,",
+			      (double)snap.bitrate, (double)snap.freq_dev);
+	}
+	n += snprintf(body + n, sizeof(body) - n, "%.1f,",
+		      (double)snap.bw);
+
+	n += snprintf(body + n, sizeof(body) - n, "%s,%u,",
+		      cfg_station[0] ? cfg_station : "tinygs",
+		      (unsigned)TINYGS_VERSION);
+
+	n += snprintf(body + n, sizeof(body) - n, "%s,",
+		      mqtt_up ? "<span class='G'>CONNECTED</span>"
+			      : "<span class='R'>NOT CONNECTED</span>");
+
+	/* Parent RSSI on Thread (mesh-side proxy for the WiFi RSSI in ESP32). */
+	int parent_rssi = 0;
+	{
+		int8_t rssi = 0;
+		otInstance *inst = openthread_get_default_instance();
+		if (inst && otThreadGetParentAverageRssi(inst, &rssi) == OT_ERROR_NONE) {
+			parent_rssi = rssi;
+		}
+	}
+	n += snprintf(body + n, sizeof(body) - n, "%d,", parent_rssi);
+
+	n += snprintf(body + n, sizeof(body) - n,
+		      "<span class='G'>READY</span>,%.0f,",
+		      (double)snap.last_rssi);
+
+	/* Sat name + (placeholder) lat/lon, az/el, doppler — main.cpp doesn't
+	 * cache these globally yet. Phase 3 keeps the schema and emits "-"s
+	 * so the dashboard renders without errors. */
+	n += snprintf(body + n, sizeof(body) - n,
+		      "%s,- / -,- / -,%.0f Hz,",
+		      snap.satellite[0] ? snap.satellite : "-",
+		      (double)snap.freq_doppler);
+
+	n += snprintf(body + n, sizeof(body) - n, "%s", time_placeholder);
+
+	/* Last packet info. last_packet timestamp not tracked yet — emit "-". */
+	n += snprintf(body + n, sizeof(body) - n, "-,%.0f,%.1f,%.0f,%s\n",
+		      (double)snap.last_rssi,
+		      (double)snap.last_snr,
+		      (double)snap.last_freq_err,
+		      snap.last_crc_error ? "CRC ERROR!" : "");
+
+	if (n < 0) n = 0;
+	if (n > (int)sizeof(body)) n = sizeof(body);
+
+	response_ctx->body = (uint8_t *)body;
+	response_ctx->body_len = (size_t)n;
+	response_ctx->final_chunk = true;
+	return 0;
+}
+
+static struct http_resource_detail_dynamic wm_resource_detail = {
+	.common = {
+		.bitmask_of_supported_http_methods = BIT(HTTP_GET),
+		.type = HTTP_RESOURCE_TYPE_DYNAMIC,
+		.content_type = "text/plain",
+	},
+	.cb = wm_handler,
+	.user_data = NULL,
+};
+
 /* ===== Service + resource registration =====
  *
  * Service definitions live at file scope so the linker iterable-section
@@ -227,6 +367,7 @@ HTTP_SERVICE_DEFINE(tinygs_web, NULL, &web_service_port,
 HTTP_RESOURCE_DEFINE(tinygs_root, tinygs_web, "/", &root_resource_detail);
 HTTP_RESOURCE_DEFINE(tinygs_restart, tinygs_web, "/restart", &restart_resource_detail);
 HTTP_RESOURCE_DEFINE(tinygs_cs, tinygs_web, "/cs", &cs_resource_detail);
+HTTP_RESOURCE_DEFINE(tinygs_wm, tinygs_web, "/wm", &wm_resource_detail);
 
 /* ===== SRP service registration =====
  *
@@ -262,6 +403,35 @@ static void srp_autostart_callback(const otSockAddr *aServerSockAddr, void *)
 	}
 }
 
+/* Sanitize a station name to a DNS-label (RFC 1035): lowercase letters,
+ * digits, and `-`; max 63 chars; can't start or end with `-`. ESP32 TinyGS
+ * uses the station name verbatim — we apply the same rule, but defensively
+ * because cfg_station is user-editable and may have spaces or unicode. */
+static void sanitize_dns_label(const char *src, char *dst, size_t cap)
+{
+	if (cap == 0) {
+		return;
+	}
+	size_t out = 0;
+	bool last_dash = true; /* prevents leading dash */
+	for (size_t i = 0; src && src[i] && out < cap - 1; i++) {
+		unsigned char c = (unsigned char)src[i];
+		if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+		bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+		if (ok) {
+			dst[out++] = (char)c;
+			last_dash = false;
+		} else if (!last_dash) {
+			dst[out++] = '-';
+			last_dash = true;
+		}
+	}
+	while (out > 0 && dst[out - 1] == '-') {
+		out--;  /* strip trailing dashes */
+	}
+	dst[out] = '\0';
+}
+
 static int srp_register(void)
 {
 	if (srp_registered) {
@@ -272,13 +442,21 @@ static int srp_register(void)
 		return -ENODEV;
 	}
 
-	/* Compose a stable name from the lower 24 bits of the EUI-64. The full
-	 * EUI is 8 bytes but for a human-readable mDNS label the last 3 give
-	 * enough collision-resistance for one home network. */
-	otExtAddress eui;
-	otLinkGetFactoryAssignedIeeeEui64(inst, &eui);
-	snprintf(srp_host_name, sizeof(srp_host_name), "tinygs-%02X%02X%02X",
-		 eui.m8[5], eui.m8[6], eui.m8[7]);
+	/* Prefer the configured station name (matches ESP32 TinyGS behaviour).
+	 * Fall back to a stable EUI-derived suffix when the user hasn't set
+	 * one. The station name is sanitised to a DNS label since cfg_station
+	 * is user-editable and could contain spaces or other invalid bytes. */
+	char sanitized[24];
+	sanitize_dns_label(cfg_station, sanitized, sizeof(sanitized));
+
+	if (sanitized[0] != '\0') {
+		snprintf(srp_host_name, sizeof(srp_host_name), "%s", sanitized);
+	} else {
+		otExtAddress eui;
+		otLinkGetFactoryAssignedIeeeEui64(inst, &eui);
+		snprintf(srp_host_name, sizeof(srp_host_name), "tinygs-%02x%02x%02x",
+			 eui.m8[5], eui.m8[6], eui.m8[7]);
+	}
 	snprintf(srp_instance_name, sizeof(srp_instance_name), "%s", srp_host_name);
 
 	otError err = otSrpClientSetHostName(inst, srp_host_name);
@@ -335,6 +513,6 @@ int web_ui_start(void)
 	}
 	(void)srp_register();
 	started = true;
-	LOG_INF("Web UI on :80 (resources: /, /restart, /cs?c2=<seq>)");
+	LOG_INF("Web UI on :80 (resources: /, /restart, /cs?c2=<seq>, /wm)");
 	return 0;
 }
