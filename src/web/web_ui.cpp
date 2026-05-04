@@ -390,7 +390,13 @@ static struct http_resource_detail_dynamic wm_resource_detail = {
  */
 static struct http_resource_detail_static dashboard_resource_detail = {
 	.common = {
-		.bitmask_of_supported_http_methods = BIT(HTTP_GET),
+		/* HEAD bit is advertised but Zephyr's static-resource handler
+		 * (handle_http1_static_resource) hard-codes GET-only and returns
+		 * 405 for HEAD regardless of this bitmask — see
+		 * subsys/net/lib/http/http_server_http1.c:~144. Browsers always
+		 * GET, so this only affects `curl -I` and a few proxies.
+		 * Upstream-patch territory; not worth a Zephyr fork today. */
+		.bitmask_of_supported_http_methods = BIT(HTTP_GET) | BIT(HTTP_HEAD),
 		.type = HTTP_RESOURCE_TYPE_STATIC,
 		.content_type = "text/html",
 	},

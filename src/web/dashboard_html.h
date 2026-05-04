@@ -43,11 +43,18 @@ static const char DASHBOARD_HTML[] =
 
 "<svg width='480' height='270' viewBox='0 0 240 135' "
 "xmlns='http://www.w3.org/2000/svg'>"
+/* Ocean background. */
 "<rect x='0' y='0' width='240' height='135' fill='#0a1830' stroke='#444' stroke-width='1'/>"
-/* Equator + prime meridian guides — placeholder for proper world map. */
+/* Equator + prime meridian guides. */
 "<line x1='0' y1='67.5' x2='240' y2='67.5' stroke='#234' stroke-width='0.5'/>"
 "<line x1='120' y1='0' x2='120' y2='135' stroke='#234' stroke-width='0.5'/>"
-"<text x='4' y='12' fill='#456' font-size='6'>worldmap TBD</text>"
+/* Land — generated from src/worldmap.h by scripts/gen_worldmap_svg.py.
+ * The included file is a sequence of adjacent C string literals, which
+ * the compiler concatenates into the surrounding string. Re-run the
+ * generator if worldmap.h ever changes. */
+"<g fill='#3d6' stroke='none'>"
+#include "worldmap_svg.h"
+"</g>"
 "<circle id='wmsatpos' cx='120' cy='67' r='3' stroke='red' fill='none' stroke-width='1.5'>"
 "<animate attributeName='r' values='2;5;2' dur='1.5s' repeatCount='indefinite'/>"
 "</circle></svg>"
