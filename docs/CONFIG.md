@@ -84,3 +84,28 @@ These live in firmware defaults or the MQTT protocol layer:
 
 If you want to reset a field to defaults: delete its line and reboot; the
 firmware will write back the default value.
+
+## Web UI access
+
+Once the device is on Thread and SRP-published its hostname (~15 s after
+boot, look for `web_ui: SRP: published <name>._http._tcp port 80` in
+the serial log), the admin web UI is reachable at:
+
+- `http://<station-name-sanitized>.local/` from any host that does mDNS
+  (macOS / iOS / Linux with `mdns_minimal` in `/etc/nsswitch.conf`)
+- `http://[<thread-mesh-local-ipv6>]/` as a fallback when mDNS isn't wired
+
+Pages: `/dashboard` (live status + console), `/config` (form-edit station/
+MQTT/admin settings), `/restart`, `/cs?c2=N` (console JSON poll), `/wm`
+(worldmap CSV).
+
+**Default Basic-auth credentials: `admin` / `tinygs`.** Required for
+`/config` (read or write), `/restart`, and any `/cs?c1=...` command;
+read-only paths (`/`, `/dashboard`, `/cs?c2=N`, `/wm`) are open within
+the Thread mesh. Change the password via the **Admin password** field
+on `/config` — leave that field blank to keep the current value.
+
+The Thread network key gates mesh-join already, so the LAN side is
+trusted by construction. We deliberately ship a known default rather
+than the ESP32 IoTWebConf-style "blank password forces first-run setup"
+flow because the Thread join is already a credential gate.
