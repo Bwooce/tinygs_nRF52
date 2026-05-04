@@ -3,8 +3,10 @@
 #include <stdarg.h>  /* va_list for early_log_appendf */
 #include <zephyr/net/openthread.h>
 #include <zephyr/net/mqtt.h>
+#include <zephyr/net/net_pkt.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/net/tls_credentials.h>
+#include <zephyr/net_buf.h>
 #include <openthread/thread.h>
 #include <openthread/error.h>
 #include <openthread/netdata.h>
@@ -3602,6 +3604,27 @@ int main(void)
                     }
 #endif
 
+                    /* net_buf RX/TX data-pool peaks. Tracked since boot via
+                     * CONFIG_NET_BUF_POOL_USAGE=y. The 117-byte allocation
+                     * failures on every boot's MQTT-publish ramp live here —
+                     * a `peak == buf_count` says we hit the wall, ` <` says
+                     * we have headroom. */
+                    uint16_t nb_rx_peak = 0, nb_rx_total = 0;
+                    uint16_t nb_tx_peak = 0, nb_tx_total = 0;
+                    uint32_t pkt_rx_peak = 0, pkt_rx_total = 0;
+                    uint32_t pkt_tx_peak = 0, pkt_tx_total = 0;
+#if defined(CONFIG_NET_BUF_POOL_USAGE)
+                    {
+                        struct k_mem_slab *pkt_rx, *pkt_tx;
+                        struct net_buf_pool *buf_rx, *buf_tx;
+                        net_pkt_get_info(&pkt_rx, &pkt_tx, &buf_rx, &buf_tx);
+                        if (buf_rx) { nb_rx_peak = buf_rx->max_used; nb_rx_total = buf_rx->buf_count; }
+                        if (buf_tx) { nb_tx_peak = buf_tx->max_used; nb_tx_total = buf_tx->buf_count; }
+                        if (pkt_rx) { pkt_rx_peak = k_mem_slab_max_used_get(pkt_rx); pkt_rx_total = pkt_rx->info.num_blocks; }
+                        if (pkt_tx) { pkt_tx_peak = k_mem_slab_max_used_get(pkt_tx); pkt_tx_total = pkt_tx->info.num_blocks; }
+                    }
+#endif
+
                     /* mbedTLS private heap — TLS handshake is the dominant
                      * consumer (peaks during initial CONNECT, shrinks back
                      * during steady-state). Both queries are O(1). */
@@ -3621,7 +3644,9 @@ int main(void)
                     sys_heap_runtime_stats_get(&_system_heap.heap, &stats);
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
                             "heap=%u/%u(peak=%u) mtls=%u(peak=%u/%u) "
-                            "stack=%u/%u http_stack=%u/%u vbat=%dmV sat=%s",
+                            "stack=%u/%u http_stack=%u/%u "
+                            "nbuf=rx%u/%u,tx%u/%u pkt=rx%u/%u,tx%u/%u "
+                            "vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
                             (unsigned)stats.allocated_bytes,
@@ -3631,18 +3656,28 @@ int main(void)
                             (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
                             (unsigned)stack_used, (unsigned)stack_size,
                             (unsigned)http_stack_used, (unsigned)http_stack_size,
+                            (unsigned)nb_rx_peak, (unsigned)nb_rx_total,
+                            (unsigned)nb_tx_peak, (unsigned)nb_tx_total,
+                            (unsigned)pkt_rx_peak, (unsigned)pkt_rx_total,
+                            (unsigned)pkt_tx_peak, (unsigned)pkt_tx_total,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
 #else
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
                             "mtls=%u(peak=%u/%u) "
-                            "stack=%u/%u http_stack=%u/%u vbat=%dmV sat=%s",
+                            "stack=%u/%u http_stack=%u/%u "
+                            "nbuf=rx%u/%u,tx%u/%u pkt=rx%u/%u,tx%u/%u "
+                            "vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
                             (unsigned)mtls_cur, (unsigned)mtls_max,
                             (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
                             (unsigned)stack_used, (unsigned)stack_size,
                             (unsigned)http_stack_used, (unsigned)http_stack_size,
+                            (unsigned)nb_rx_peak, (unsigned)nb_rx_total,
+                            (unsigned)nb_tx_peak, (unsigned)nb_tx_total,
+                            (unsigned)pkt_rx_peak, (unsigned)pkt_rx_total,
+                            (unsigned)pkt_tx_peak, (unsigned)pkt_tx_total,
                             read_vbat_mv(),
                             tinygs_radio.satellite);
 #endif
