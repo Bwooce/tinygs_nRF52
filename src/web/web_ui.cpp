@@ -40,12 +40,94 @@ extern "C" struct otInstance *openthread_get_default_instance(void);
 
 LOG_MODULE_REGISTER(web_ui, LOG_LEVEL_INF);
 
-/* ===== / handler — minimal status ===== */
+/* ===== / handler — IoTWebConf-style home page =====
+ *
+ * Matches the ESP32 TinyGS root page shape: brief station header +
+ * navigation buttons to dashboard / config / firmware / restart.
+ * Endpoints we don't implement yet (config, firmware) render as
+ * disabled buttons so the page still looks complete.
+ *
+ * For programmatic clients (curl, monitoring scripts, Phase 4 health
+ * checks), keep the plain-text view available at /status. */
 static int root_handler(struct http_client_ctx *client,
 			enum http_transaction_status status,
 			const struct http_request_ctx *request_ctx,
 			struct http_response_ctx *response_ctx,
 			void *user_data)
+{
+	ARG_UNUSED(client);
+	ARG_UNUSED(request_ctx);
+	ARG_UNUSED(user_data);
+
+	static char body[1024];
+
+	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
+		return 0;
+	}
+
+	int n = snprintf(body, sizeof(body),
+		"<!doctype html><html><head><meta charset='utf-8'>"
+		"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+		"<title>TinyGS nRF52</title>"
+		"<style>"
+		"body{font-family:Arial,sans-serif;margin:0;padding:20px;"
+		"text-align:center;max-width:480px;margin:0 auto;}"
+		"h1{font-size:1.4em;margin:8px 0;}"
+		"p.sub{color:#666;margin:0 0 20px 0;font-size:0.9em;}"
+		"a.btn,button.btn{display:block;width:100%%;max-width:300px;"
+		"margin:8px auto;padding:14px;font-size:1em;border:1px solid #888;"
+		"border-radius:6px;background:#f4f4f4;color:#222;text-decoration:none;"
+		"box-sizing:border-box;cursor:pointer;}"
+		"a.btn:hover,button.btn:hover{background:#e8e8e8;}"
+		"a.btn.disabled{color:#aaa;background:#f8f8f8;cursor:not-allowed;}"
+		"a.danger{color:#a00;border-color:#a00;}"
+		"</style></head><body>"
+		"<h1>%s</h1>"
+		"<p class='sub'>TinyGS nRF52 v%u &middot; uptime %llds &middot; log_seq %u</p>"
+		"<a class='btn' href='/dashboard'>Dashboard</a>"
+		"<a class='btn disabled' title='Phase 4 — not yet implemented'>Configure</a>"
+		"<a class='btn disabled' title='Phase 5 — needs external SPI flash hardware'>Firmware Update</a>"
+		"<a class='btn danger' href='/restart' "
+		"onclick=\"return confirm('Reboot the station?')\">Restart</a>"
+		"<p class='sub'><a href='/status'>raw status</a></p>"
+		"</body></html>",
+		cfg_station[0] ? cfg_station : "tinygs",
+		(unsigned)TINYGS_VERSION,
+		(long long)(k_uptime_get() / 1000),
+		web_log_head_seq());
+	if (n < 0) {
+		n = 0;
+	}
+	if (n > (int)sizeof(body)) {
+		n = sizeof(body);
+	}
+
+	response_ctx->body = (uint8_t *)body;
+	response_ctx->body_len = (size_t)n;
+	response_ctx->final_chunk = true;
+	return 0;
+}
+
+static struct http_resource_detail_dynamic root_resource_detail = {
+	.common = {
+		.bitmask_of_supported_http_methods = BIT(HTTP_GET),
+		.type = HTTP_RESOURCE_TYPE_DYNAMIC,
+		.content_type = "text/html",
+	},
+	.cb = root_handler,
+	.user_data = NULL,
+};
+
+/* ===== /status handler — original plain-text status =====
+ *
+ * What `/` used to be. Kept as a separate endpoint so monitoring
+ * scripts / health checks have a stable text response that's easy to
+ * grep, while the browser-facing root serves HTML. */
+static int status_handler(struct http_client_ctx *client,
+			  enum http_transaction_status status,
+			  const struct http_request_ctx *request_ctx,
+			  struct http_response_ctx *response_ctx,
+			  void *user_data)
 {
 	ARG_UNUSED(client);
 	ARG_UNUSED(request_ctx);
@@ -80,13 +162,13 @@ static int root_handler(struct http_client_ctx *client,
 	return 0;
 }
 
-static struct http_resource_detail_dynamic root_resource_detail = {
+static struct http_resource_detail_dynamic status_resource_detail = {
 	.common = {
-		.bitmask_of_supported_http_methods = BIT(HTTP_GET),
+		.bitmask_of_supported_http_methods = BIT(HTTP_GET) | BIT(HTTP_HEAD),
 		.type = HTTP_RESOURCE_TYPE_DYNAMIC,
 		.content_type = "text/plain",
 	},
-	.cb = root_handler,
+	.cb = status_handler,
 	.user_data = NULL,
 };
 
@@ -414,6 +496,7 @@ HTTP_SERVICE_DEFINE(tinygs_web, NULL, &web_service_port,
 		    CONFIG_HTTP_SERVER_MAX_CLIENTS, 4, NULL, NULL, NULL);
 
 HTTP_RESOURCE_DEFINE(tinygs_root, tinygs_web, "/", &root_resource_detail);
+HTTP_RESOURCE_DEFINE(tinygs_status, tinygs_web, "/status", &status_resource_detail);
 HTTP_RESOURCE_DEFINE(tinygs_restart, tinygs_web, "/restart", &restart_resource_detail);
 HTTP_RESOURCE_DEFINE(tinygs_cs, tinygs_web, "/cs", &cs_resource_detail);
 HTTP_RESOURCE_DEFINE(tinygs_wm, tinygs_web, "/wm", &wm_resource_detail);
@@ -564,6 +647,6 @@ int web_ui_start(void)
 	}
 	(void)srp_register();
 	started = true;
-	LOG_INF("Web UI on :80 (resources: /, /dashboard, /restart, /cs?c2=<seq>, /wm)");
+	LOG_INF("Web UI on :80 (/, /dashboard, /status, /restart, /cs?c2=<seq>, /wm)");
 	return 0;
 }
