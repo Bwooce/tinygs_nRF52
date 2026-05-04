@@ -187,3 +187,20 @@ All radio parameters are fully dynamic, set by the server via begine/batch_conf 
 |------|--------|-----------------|-------|
 | Thread dataset | **[auto]** | NVS (0xF2000) | Obtained via Joiner commissioning |
 | Joiner PSKd | **[build]** | prj.conf OPENTHREAD_JOINER_PSKD | "TNYGS2026NRF" |
+
+## 10. Known Network Bugs
+
+### Intel Wi-Fi IPv6 Multicast UDP Checksum Bug (AX210 / iwlwifi)
+- **Symptom:** UDP multicast packets (like `ff05::e510` used by `iot_log`) are silently dropped by the receiving device (e.g., OpenThread Border Router or nRF52) because the UDP checksum is mathematically invalid. `tcpdump` on the sender shows `[bad udp cksum]`, and the receiver's `Udp6InCsumErrors` counter (`/proc/net/snmp6`) increments.
+- **Root Cause:** A hardware offload math bug in Intel Wi-Fi adapters (AX200/AX210/AX211 via `iwlwifi`). The hardware silicon miscalculates the IPv6 pseudo-header for multicast addresses when generating the hardware UDP checksum.
+- **Fix:** Disable IPv6 TX checksum offloading for the interface so the Linux kernel calculates the checksum correctly in software.
+  - **Temporary:** `sudo ethtool -K wlp3s0 tx-checksum-ipv6 off`
+  - **Permanent (NetworkManager):** `nmcli connection modify "YourWiFiName" 802-11-wireless.mtu 1500 +ethtool.feature-tx-checksum-ipv6 off`
+
+## 11. IoT Log Architectural Decisions
+
+### Multicast Mandate
+The `iot_log` system is strictly based on **Multicast UDP**. This decision is foundational and should not be circumvented with unicast workarounds.
+- **Zero Configuration:** Devices should not require a destination IP; they simply join the `ff05::e510` group.
+- **Efficiency:** Allows multiple LAN recipients to monitor logs simultaneously without additional device load.
+- **Action:** If logging fails, diagnose the network plumbing (MLD reports, BBR status, hardware offload bugs) rather than suggesting a switch to unicast.

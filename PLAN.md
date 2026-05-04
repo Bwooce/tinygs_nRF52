@@ -19,6 +19,22 @@ The goal is to port the TinyGS firmware to the Heltec Mesh Node T114 (nRF52840 +
 ### 3.1 Networking: Direct MQTT-TLS via Thread NAT64
 Unlike the ESP32 which uses WiFi, this node will act as a true standalone Thread end-device. It will connect to a standard Thread Border Router (e.g., Apple TV, HomePod) and use the Border Router's NAT64 capabilities to open a direct, persistent TLS connection (mbedTLS) to the IPv4 `mqtt.tinygs.com` server.
 
+**Border Router Capability Matrix (For TinyGS Traffic):**
+Using OpenThread's built-in local DNS64 synthesis (querying 1.1.1.1 via the Border Router's NAT64 prefix), here is how the device's traffic routes across major ecosystems today:
+
+| Feature / Traffic Type | Home Assistant OTBR | Apple (HomePod / Apple TV) | Google (Nest Hub / Max) | Notes & Future Outlook |
+| :--- | :--- | :--- | :--- | :--- |
+| **Native Thread Joining** | ✅ Supported | ❌ Fails (Matter Only) | ❌ Fails (Matter Only) | Home Assistant is the only platform that exposes the underlying OpenThread Commissioner. It allows you to run `ot-ctl commissioner joiner add '*' TNYGS2026NRF`, which opens the mesh to any device that knows the password, completely bypassing Matter. This means Home Assistant is required at least to join the network. |
+| **Local IPv6 Mesh Routing** | ✅ Supported | ✅ Supported | ✅ Supported | All BRs route local packets perfectly. |
+| **DNS64 (Translation)** | ✅ Supported | ❌ Not Supported | ❌ Not Supported | We bypass this using local OpenThread synthesis and Cloudflare (1.1.1.1). |
+| **NAT64 (Transit)** | ✅ Supported | ✅ Supported | ❌ Not Supported* | **This is the IPv4 internet bridge.** Google historically drops this traffic. |
+| **DNS Queries** (UDP 53) | ✅ Transits | ✅ Transits | ❌ Fails | Requires NAT64. |
+| **MQTT** (TCP 8883) | ✅ Transits | ✅ Transits | ❌ Fails | Requires NAT64. |
+| **SNTP** (UDP 123) | ✅ Transits | ✅ Transits | ❌ Fails | Requires NAT64 (because we resolve `pool.ntp.org` via DNS). |
+| **Multicast UDP** (`ff05::`) | ✅ Transits | ✅ Transits (If Checksum OK) | ✅ Transits (If Checksum OK) | Apple and Google strictly enforce MLDv2. (Requires PC Wi-Fi fix). |
+| **mDNS / Bonjour** | ✅ Supported | ✅ Supported | ❌ Limited | Used for local discovery. |
+| ***Future Update*:** | **N/A** (Already unlocked) | **Updating to Thread 1.4** | **Updating to Thread 1.4** | Thread 1.4 mandates NAT64. Once Google's early 2026 rollout completes, they should upgrade from ❌ to ✅ for transit. |
+
 *   **Tradeoff - RAM vs Simplicity:** This architecture requires no local Home Assistant or third-party bridge for the user to configure. However, running a persistent TLS connection on a 256KB RAM device is exceptionally tight. 
 *   **Tradeoff - Power vs Latency:** Because the TinyGS protocol does not support "next pass" ahead-of-time notification via a side channel, the node cannot completely shut down its radio. It must maintain the TCP connection (Option 1: Persistent Connection) to listen for commands and keep the cloud load balancer happy. The node therefore stays a full-rx Thread MTD (not SED — see §20 audit); Thread-level power savings are unavailable as long as MQTT keepalive is pinned, so the primary power lever is SX1262 hardware duty-cycle RX rather than the Thread poll period.
 
@@ -76,33 +92,41 @@ The 0x0-0x26000 region is the MBR + SoftDevice. See AGENTS.md Section 7 for full
 *   **MCUboot is DISABLED** (`CONFIG_BOOTLOADER_MCUBOOT=n`). Enabling it without SWD will brick the device by overwriting the UF2 bootloader.
 *   **Verified:** Layout confirmed via SWD recovery flash log (flash writes at 0x0-0x25DE8 and 0xF4000-0xFD858).
 
-#### Future: MCUboot OTA (Phase 3+)
-When field OTA updates are required, the bootloader must be transitioned to MCUboot. This is a **one-time, irreversible operation** that requires SWD hardware.
+#### Future: MCUboot OTA with External SPI Flash (Phase 3+)
+To achieve safe, power-fail-resilient FOTA updates without bricking the device, the bootloader must be transitioned to MCUboot using an **External SPI Flash** chip for the secondary slot. The internal 1MB flash is too small for a dual-bank layout once the application, SoftDevice, and FATFS drives are accounted for.
 
-**Prerequisites:**
-1.  An SWD debug probe (J-Link EDU Mini ~$20, or any CMSIS-DAP probe)
-2.  SWD access to the T114 board (test pads or header)
+This requires a hardware modification and a **one-time, irreversible software migration** using SWD hardware.
+
+**Hardware Prerequisites:**
+1.  An SWD debug probe (J-Link EDU Mini ~$20, or any CMSIS-DAP probe).
+2.  SWD access to the T114 board (test pads or header).
+    3.  A 4MB to 16MB external SPI flash breakout board (e.g., Winbond W25Q32/W25Q128 or Macronix MX25R32).
+    *   *Warning:* Do **not** populate the empty MX25R16 footprint on the back of the T114 board. Heltec wired those pads in parallel with the SX1262 LoRa radio's SCK/MOSI/MISO, DIO1, and BUSY pins. Using this footprint will cause severe bus contention and crash the radio during flash writes.
+    *   *Solution:* Use the **8-pin 1.25mm GPS connector**. This offboard connector provides 3.3V, GND, and multiple unused GPIOs (normally used for UART/PPS). Use an 8-pin 1.25mm pigtail cable to wire the SPI flash breakout (CS, CLK, MOSI, MISO) directly into this port. Map these pins to the completely unused `SPIM3` peripheral in Zephyr.
 
 **Migration Steps:**
-1.  Connect SWD probe to the T114.
-2.  Erase the full flash: `nrfjprog --eraseall` (destroys UF2 bootloader).
-3.  Flash MCUboot: `west flash --runner jlink` targeting the MCUboot child image.
-4.  Update `prj.conf`: set `CONFIG_BOOTLOADER_MCUBOOT=y`, remove `CONFIG_FLASH_LOAD_OFFSET`/`CONFIG_FLASH_LOAD_SIZE`, re-enable `CONFIG_PM=y`.
-5.  Remap `app.overlay` partitions to MCUboot layout:
-    *   MCUboot: 0x00000 (48KB)
-    *   Slot 0: 0x0C000 (~440KB)
-    *   Slot 1: 0x7C000 (~440KB)
-    *   FATFS: 0xE2000 (64KB)
-    *   Settings: 0xF2000 (8KB)
-    *   (Exact sizes TBD based on firmware size at that point)
-6.  Flash signed application image via `west flash` or `mcumgr` over USB serial.
+1.  Wire the external SPI flash to the GPS port pigtail.
+2.  Update `app.overlay` to define `spi3`, assign the custom pins via `pinctrl`, and declare the external flash node.
+3.  Connect SWD probe to the T114.
+4.  Erase the full internal flash: `nrfjprog --eraseall` (destroys Adafruit UF2 bootloader and SoftDevice).
+5.  Update `prj.conf`: set `CONFIG_BOOTLOADER_MCUBOOT=y`.
+6.  Remap partitions to MCUboot layout:
+    *   **Internal Flash (1 MB):** MCUboot (0x0), Slot 0 / Active App (~800KB), FATFS (64KB), NVS Settings (8KB).
+    *   **External Flash (4 MB+):** Slot 1 / Staging App (~800KB), with the remainder formatted as a `littlefs` volume for long-term logging.
+7.  Ensure power management is explicitly enabled for the SPI flash in `prj.conf` so it hits its 1 µA Deep Power-Down state. Without this, the chip will idle at 10-50 µA:
+    ```kconfig
+    CONFIG_PM_DEVICE=y
+    CONFIG_FLASH=y
+    CONFIG_SPI_NOR=y
+    CONFIG_SPI_NOR_IDLE_IN_DPD=y
+    ```
+8.  Flash MCUboot: `west flash --runner jlink` targeting the MCUboot child image.
+9.  Flash signed application image via `west flash` or `mcumgr` over USB serial.
 
 **After migration:**
-*   Development flashing via `mcumgr` over USB serial (replaces UF2 drag-and-drop).
-*   Production OTA via MQTT: download signed image to Slot 1, MCUboot swaps on reboot.
-*   Rollback capability: MCUboot can revert to previous image if new firmware fails validation.
-
-**Note:** The `adafruit-nrfutil` tool can theoretically update the bootloader over USB DFU, but this path is fragile and has previously caused bricked devices. SWD is the only recommended migration method.
+*   **Safe FOTA:** Production OTA via MQTT streams the new image to External Flash (Slot 1). MCUboot atomically swaps it into internal flash on reboot.
+*   **Automatic Rollback:** If the new firmware fails to boot or fails to confirm network connectivity, MCUboot automatically reverts to the old firmware.
+*   **Development Flashing:** USB drag-and-drop (.uf2) is gone. Local development flashing is now done via `mcumgr` over the USB serial port, which uses the exact same secure staging/swap architecture.
 
 ### 3.5 RadioLib Zephyr Integration
 RadioLib is natively designed for the Arduino ecosystem. To run it on Zephyr RTOS, we will create a custom HAL (Hardware Abstraction Layer) class inheriting from `RadioLibHal`.
@@ -142,7 +166,7 @@ those two items pair naturally when a second chip enters the picture.
 ### Phase 1: High-Risk Prototyping — COMPLETE
 All Phase 1 objectives proven:
 1.  **[DONE] Thread Network:** Joiner commissioning to HA SkyConnect BR. Dataset persisted in NVS.
-2.  **[DONE] MQTT-TLS over Thread:** Native TLS handshake via nat64.net public NAT64 + DNS64. Authenticated to mqtt.tinygs.com:8883 with real credentials. TLS session caching enabled.
+2.  **[DONE] MQTT-TLS over Thread:** Native TLS handshake via local NAT64 synthesis. Authenticated to mqtt.tinygs.com:8883 with real credentials. TLS session caching enabled.
 3.  **[DONE] SX1262 LoRa Radio:** RadioLib `begin()` succeeds over SPI. Pin mapping verified against T114 v2 schematic.
 4.  **[DONE] RAM Budget:** FLASH 453KB/752KB (59%), RAM 162KB/256KB (62%). Comfortable. Dedicated 40KB mbedTLS heap + 8KB system heap. LTO saves ~85KB flash.
 5.  **[DONE] USB MSC + CDC ACM:** FATFS at 0xE2000, NVS at 0xF2000. 1200-baud bootloader entry working.
@@ -151,7 +175,7 @@ All Phase 1 objectives proven:
 **Key technical decisions from Phase 1:**
 *   CC310 hardware crypto disabled — PSA RSA verify broken, Oberon software crypto used instead.
 *   `CONFIG_MBEDTLS_USE_PSA_CRYPTO=n` — legacy RSA verify path required for ECDHE-RSA-CHACHA20-POLY1305-SHA256.
-*   nat64.net DNS64 for hostname resolution — returns globally-routable AAAA addresses.
+*   Local DNS64 synthesis via OpenThread `OT_DNS_NAT64_ALLOW` for hostname resolution — queries 1.1.1.1 and returns locally-synthesized NAT64-routable AAAA addresses.
 *   BR requires: `firewall: false`, `br routeprf high`, ip6tables MASQUERADE for Thread ULA→public IPv6.
 *   UF2 file size limit ~1MB — build/flash scripts check and refuse oversized firmware.
 
@@ -569,7 +593,7 @@ example + clean HAL source):
 ### 6.1 Persistent TLS keepalive over Thread — MEDIUM RISK (downgraded)
 *   **The Problem:** Maintaining a persistent TCP/TLS connection for MQTT over Thread to a NAT64-translated IPv4 broker.
 *   **Measured Results (2026-04-11):**
-    - **300s keepalive: WORKS** — confirmed with 2+ consecutive PINGRESPs via nat64.net NAT64
+    - **300s keepalive: WORKS** — confirmed with 2+ consecutive PINGRESPs via NAT64
     - **600s keepalive: WORKS** — confirmed with PINGRESP at 600s connected
     - NAT64 conntrack timeout is > 600s for established TCP connections
     - TinyGS broker does not drop idle connections at 600s
