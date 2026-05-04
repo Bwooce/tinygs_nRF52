@@ -27,7 +27,7 @@
 #include "web_ui.h"
 #include "tinygs_protocol.h"   /* TINYGS_VERSION, tinygs_radio */
 #include "tinygs_config.h"     /* cfg_station[] */
-#include "dashboard_html.h"    /* DASHBOARD_HTML[] */
+#include "dashboard_html_gz.h" /* DASHBOARD_HTML_GZ[] — pre-gzipped */
 
 /* MQTT connection state, exposed by main.cpp via a small accessor so we
  * don't need to extern the file-local `enum app_state` (declarations would
@@ -484,10 +484,14 @@ static struct http_resource_detail_static dashboard_resource_detail = {
 		 * Upstream-patch territory; not worth a Zephyr fork today. */
 		.bitmask_of_supported_http_methods = BIT(HTTP_GET) | BIT(HTTP_HEAD),
 		.type = HTTP_RESOURCE_TYPE_STATIC,
+		/* Pre-gzipped at build time. Cuts /dashboard transfer from
+		 * ~24 KB / 3.4 s to ~3.9 KB / 0.6 s over Thread MTD. Browser
+		 * sees `Content-Encoding: gzip` and decompresses transparently. */
+		.content_encoding = "gzip",
 		.content_type = "text/html",
 	},
-	.static_data = (uint8_t *)DASHBOARD_HTML,
-	.static_data_len = sizeof(DASHBOARD_HTML) - 1, /* exclude trailing NUL */
+	.static_data = (uint8_t *)DASHBOARD_HTML_GZ,
+	.static_data_len = sizeof(DASHBOARD_HTML_GZ),
 };
 
 /* ===== Service + resource registration =====
