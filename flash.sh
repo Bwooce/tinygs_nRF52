@@ -73,12 +73,23 @@ if [ -n "$LOGGER_PID" ]; then
     sleep 0.5
 fi
 
-TTY_PORT=$(ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null | head -n 1)
+# Identify the T114 specifically by USB VID — app firmware is 2fe3:0001
+# (TinyGS Configurator), bootloader is 239a:0071 (HT-n5262). Anything else
+# on the bus (e.g. a LilyGO T-Beam on /dev/ttyACM0) gets skipped.
+TTY_PORT=""
+for dev in /dev/ttyACM* /dev/ttyUSB*; do
+    [ -e "$dev" ] || continue
+    vid=$(udevadm info -q property "$dev" 2>/dev/null | sed -n 's/^ID_VENDOR_ID=//p')
+    if [ "$vid" = "2fe3" ] || [ "$vid" = "239a" ]; then
+        TTY_PORT="$dev"
+        break
+    fi
+done
 if [ -n "$TTY_PORT" ]; then
     echo "Triggering 1200-baud reset on $TTY_PORT..."
     stty -F "$TTY_PORT" 1200 2>/dev/null || true
 else
-    echo "No serial port found. Assuming device is already in bootloader mode."
+    echo "No T114 serial port found (looked for VID 2fe3 / 239a). Assuming device is already in bootloader mode."
 fi
 
 echo "Waiting for UF2 bootloader drive..."
@@ -114,6 +125,19 @@ echo "Flashing complete! Device will reboot."
 
 if [ -f "$SERIAL_SCRIPT" ]; then
     sleep 2
-    nohup python3 "$SERIAL_SCRIPT" /dev/ttyACM0 115200 "$SERIAL_LOG" > /dev/null 2>&1 &
-    echo "Serial logger restarted (PID $!)"
+    # Re-find the T114's port — it just rebooted into the new firmware
+    # and may have re-enumerated to a different /dev/ttyACMn (especially
+    # if other USB-serial devices like a T-Beam are attached).
+    LOG_PORT=""
+    for dev in /dev/ttyACM* /dev/ttyUSB*; do
+        [ -e "$dev" ] || continue
+        vid=$(udevadm info -q property "$dev" 2>/dev/null | sed -n 's/^ID_VENDOR_ID=//p')
+        if [ "$vid" = "2fe3" ]; then
+            LOG_PORT="$dev"
+            break
+        fi
+    done
+    LOG_PORT="${LOG_PORT:-/dev/ttyACM0}"
+    nohup python3 "$SERIAL_SCRIPT" "$LOG_PORT" 115200 "$SERIAL_LOG" > /dev/null 2>&1 &
+    echo "Serial logger restarted (PID $!) on $LOG_PORT"
 fi
