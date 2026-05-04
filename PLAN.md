@@ -420,14 +420,21 @@ All Phase 1 objectives proven:
     - **Cross-thread torn reads:** introducing the HTTP thread breaks the current "main() is the only mutator" invariant. Without mitigation, the `/wm` poll can observe `tinygs_radio` mid-update and render inconsistent values. Mitigated by `radio_mutex` snapshot pattern (see implementation §9). Audit any new shared state before exposing it via HTTP.
 
     **Build phasing (revised — `/cs` ahead of `/wm`):**
-    1. **HTTP skeleton.** In-tree `CONFIG_HTTP_SERVER`, listening socket on `[::]:80`, `/` returns a minimal "TinyGS station, version=…, uptime=…" page, `/restart` triggers `sys_reboot`. Validates the Zephyr HTTP server runs over Thread and is reachable from `curl http://[mesh-addr]/` on a same-LAN host. Smallest end-to-end loop.
-    2. **`/cs` console poll + dedicated log-backend ring.** Highest immediate diagnostic value: replaces iot_log multicast as the primary outdoor-soak observability channel. Apple BBR doesn't proxy site-local mc but unicast-over-Thread works fine — `/cs` is reachable wherever ping6 to the mesh-local address is reachable. Proves the dual-backend log plumbing (CDC ACM unaffected when web UI is consuming) and unblocks pulling the iot_log multicast monitor entirely.
-    3. **Dashboard HTML + `/wm` poll.** Adds `radio_mutex` snapshot pattern (see implementation §9). Confirms the `status` struct feeds real data. Visual parity with ESP32 dashboard.
-    4. Config form POST handler + NVS writes. Highest-risk step (must not corrupt existing MQTT config path).
-    5. **`/firmware` trigger** (becomes useful after §3.5 hardware migration). POST kicks off the HTTPS-client manifest poll + image stream into Slot 1; UI shows progress from a status struct. No multipart upload — bytes never traverse the on-device server.
-    6. (Optional) mTLS upgrade if threat model changes or the OTBR firewall is enabled.
+    1. **[DONE 2026-05-04]** HTTP skeleton. In-tree `CONFIG_HTTP_SERVER`, listening socket on `[::]:80`. Live: `/`, `/dashboard`, `/status`, `/restart`. Reachable as `http://tinygs-<station>.local/` via SRP-published mDNS, plus IPv6-literal fallback.
+    2. **[DONE 2026-05-04]** `/cs` console short-poll + dedicated 4 KB log-backend ring. Wall-clock-prefixed lines (`HH:MM:SS `) once SNTP has synced; `??:??:?? ` placeholder before. Bypasses the broken Apple-BBR multicast path entirely.
+    3. **[DONE 2026-05-04]** Dashboard HTML + `/wm` CSV poll. 459-rect SVG worldmap (gzipped → 4 KB on the wire), four status cards, animated red sat dot. `radio_mutex` (in `tinygs_protocol.cpp`) wraps the begine/batch_conf field-update block, doppler_update, and lora_check_rx writers; `/wm` snapshot reads under the same lock.
+    4. **[DONE 2026-05-04]** `/config` GET form + POST → NVS. HTTP Basic auth (`admin / cfg_admin_pw`, default `tinygs`) gates `/config`, `/restart`, and any `/cs?c1=<cmd>` write. Read-only paths stay open. Auth-gated commands implemented: `!e` reboot, `!w` weblogin request, `!p` test TX (cfg_tx_enable-gated). `/favicon.ico` and `/logo.png` ripped from the ESP32 build for visual parity.
+    5. **`/firmware` trigger** — *blocked on §3.5 hardware* (external SPI flash + MCUboot migration). POST will kick off the HTTPS-client manifest poll + image stream into Slot 1; UI will show progress from a status struct. No multipart upload — bytes never traverse the on-device server.
+    6. (Optional) mTLS upgrade if threat model changes or the OTBR firewall is enabled. Not started; not blocked.
 
-    **Why phase 2 is the critical milestone:** end of phase 2, the `/cs` endpoint is the live diagnostic channel for the device. We can pull the receiver-side iot_log multicast monitor and rely entirely on `curl http://[mesh-addr]/cs` from amdnuc on a poll loop. Soak-runs become observable again over a path that doesn't depend on Apple BBR proxy behaviour.
+    **End-of-phase-4 footprint:** FLASH 579 KB / 752 KB (77 %), RAM 244 KB / 256 KB (95 %). RAM tight; the bumped `NET_BUF_*_COUNT` pools (32 → 64 each) and `OPENTHREAD_PKT_LIST_SIZE` 10 → 24 absorbed boot-time `net_pkt: Data buffer allocation failed` and TLS-handshake `Packet list is full` events. STATUS line gained `nbuf=rx<peak>/<total>,tx<peak>/<total>` and `pkt=rx,tx` so future pool sizing is data-driven. iot_log status counter renamed `drop` to aggregate `send + inactive + nofmt + zlen + rfull` rather than just send-layer failures.
+
+    **Remaining ESP32 IoTWebConf gaps (all unblocked, all optional):**
+    *   `/config` form is missing `boardTemplate`, `modemStartup`, `adv_prm` (ESP32 has them with a tabular dict-table JSON editor). The values are still settable via MQTT — just no form field. Add cost: ~3 KB raw / ~1 KB gzipped for the editor JS, plus form-field rows.
+    *   Local timezone — currently UTC for both UTC and "local" times. Olson DB add: 1–5 KB depending on tzdata depth. Store the TZ string in NVS, apply via `setenv("TZ",...)` + `tzset()`.
+    *   First-run forced-password setup. Explicit divergence from ESP32 (Thread join already gates LAN trust); not coming.
+    *   `HEAD /dashboard` returns 405. Zephyr static-resource handler is hard-coded GET-only at `subsys/net/lib/http/http_server_http1.c:144`. Browsers always GET, so this only affects `curl -I` / proxy probes. Upstream-patch territory.
+    *   Concurrency wall: 4-thread × 24 KB simultaneous burst still saturates net_buf TX pool. Real browser usage doesn't trigger it; documented limit.
 
 ### Phase 4: Power Optimization & Commissioning
 Requires current measurement equipment and on-site testing.
