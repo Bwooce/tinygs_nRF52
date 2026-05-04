@@ -27,6 +27,7 @@
 #include "web_ui.h"
 #include "tinygs_protocol.h"   /* TINYGS_VERSION, tinygs_radio */
 #include "tinygs_config.h"     /* cfg_station[] */
+#include "dashboard_html.h"    /* DASHBOARD_HTML[] */
 
 /* MQTT connection state, exposed by main.cpp via a small accessor so we
  * don't need to extern the file-local `enum app_state` (declarations would
@@ -265,9 +266,13 @@ static int wm_handler(struct http_client_ctx *client,
 
 	bool mqtt_up = tinygs_mqtt_is_connected();
 
-	/* Sat pixel-coords match ESP32 mapping (offset by 3 for the SVG marker). */
-	int cx = (int)(snap.sat_pos_x * 2.0f + 3.0f);
-	int cy = (int)(snap.sat_pos_y * 2.0f + 3.0f);
+	/* Sat pixel-coords mapped to our dashboard's 240×135 SVG viewBox.
+	 * sat_pos_x/y are stored in ESP32-legacy 128×64 grid coords (kept
+	 * for compatibility with the on-device ST7789V renderer); scale to
+	 * the dashboard's coordinate system here so a single /wm output
+	 * works for both consumers. */
+	int cx = (int)(snap.sat_pos_x * 240.0f / 128.0f);
+	int cy = (int)(snap.sat_pos_y * 135.0f / 64.0f);
 
 	int n = 0;
 	n += snprintf(body + n, sizeof(body) - n, "%d,%d,", cx, cy);
@@ -377,6 +382,22 @@ static struct http_resource_detail_dynamic wm_resource_detail = {
 	.user_data = NULL,
 };
 
+/* ===== /dashboard handler — static HTML page =====
+ *
+ * Served as a static resource (no per-request work). The page polls
+ * /cs and /wm via XHR every few seconds to populate live data; we
+ * don't render any state into the HTML itself.
+ */
+static struct http_resource_detail_static dashboard_resource_detail = {
+	.common = {
+		.bitmask_of_supported_http_methods = BIT(HTTP_GET),
+		.type = HTTP_RESOURCE_TYPE_STATIC,
+		.content_type = "text/html",
+	},
+	.static_data = (uint8_t *)DASHBOARD_HTML,
+	.static_data_len = sizeof(DASHBOARD_HTML) - 1, /* exclude trailing NUL */
+};
+
 /* ===== Service + resource registration =====
  *
  * Service definitions live at file scope so the linker iterable-section
@@ -390,6 +411,8 @@ HTTP_RESOURCE_DEFINE(tinygs_root, tinygs_web, "/", &root_resource_detail);
 HTTP_RESOURCE_DEFINE(tinygs_restart, tinygs_web, "/restart", &restart_resource_detail);
 HTTP_RESOURCE_DEFINE(tinygs_cs, tinygs_web, "/cs", &cs_resource_detail);
 HTTP_RESOURCE_DEFINE(tinygs_wm, tinygs_web, "/wm", &wm_resource_detail);
+HTTP_RESOURCE_DEFINE(tinygs_dashboard, tinygs_web, "/dashboard",
+		     &dashboard_resource_detail);
 
 /* ===== SRP service registration =====
  *
@@ -535,6 +558,6 @@ int web_ui_start(void)
 	}
 	(void)srp_register();
 	started = true;
-	LOG_INF("Web UI on :80 (resources: /, /restart, /cs?c2=<seq>, /wm)");
+	LOG_INF("Web UI on :80 (resources: /, /dashboard, /restart, /cs?c2=<seq>, /wm)");
 	return 0;
 }
