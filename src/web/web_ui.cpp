@@ -206,7 +206,7 @@ static int root_handler(struct http_client_ctx *client,
 	}
 
 	int n = snprintf(body, sizeof(body),
-		"<!doctype html><html><head><meta charset='utf-8'>"
+		"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
 		"<meta name='viewport' content='width=device-width,initial-scale=1'>"
 		"<title>TinyGS nRF52</title>"
 		"<style>"
@@ -581,7 +581,7 @@ static int render_config_form(char *out, int cap)
 	extern int8_t cfg_tx_enable;
 
 	int n = snprintf(out, (size_t)cap,
-		"<!doctype html><html><head><meta charset='utf-8'>"
+		"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
 		"<meta name='viewport' content='width=device-width,initial-scale=1'>"
 		"<title>TinyGS Config</title><style>"
 		"body{font-family:Arial;margin:0;padding:14px;max-width:520px;margin:0 auto;}"
@@ -765,7 +765,7 @@ static int config_handler(struct http_client_ctx *client,
 			? "<p style='color:#a40'>Saved. Restart to apply MQTT/station changes.</p>"
 			: "<p style='color:#080'>Saved.</p>";
 		int n = snprintf(body, sizeof(body),
-			"<!doctype html><html><head><meta charset='utf-8'>"
+			"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
 			"<meta http-equiv='refresh' content='2;url=/config'>"
 			"<title>Saved</title></head><body>"
 			"<p>%s</p>"

@@ -24,7 +24,7 @@ WM_H = ROOT / "src" / "worldmap.h"
 OUT = ROOT / "src" / "web" / "dashboard_html_gz.h"
 
 DASHBOARD_PRE = """\
-<!doctype html><html><head><meta charset='utf-8'>\
+<!doctype html><html lang='en'><head><meta charset='utf-8'>\
 <meta name='viewport' content='width=device-width,initial-scale=1'>\
 <title>TinyGS nRF52</title>\
 <style>\
