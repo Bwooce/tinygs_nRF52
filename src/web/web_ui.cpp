@@ -33,6 +33,7 @@
 #include "tinygs_config.h"     /* cfg_station[], cfg_admin_pw[], etc. */
 #include "dashboard_html_gz.h" /* DASHBOARD_HTML_GZ[] — pre-gzipped */
 #include "favicon_png.h"       /* FAVICON_PNG[] */
+#include "logo_png.h"          /* LOGO_PNG[] — 310x149 TinyGS banner */
 #include "tinygs_display.h"    /* tinygs_display_request_weblogin */
 
 /* MQTT connection state, exposed by main.cpp via a small accessor so we
@@ -220,7 +221,9 @@ static int root_handler(struct http_client_ctx *client,
 		"a.btn:hover{background:#e8e8e8;}"
 		"a.btn.disabled{color:#aaa;background:#f8f8f8;cursor:not-allowed;}"
 		"a.danger{color:#a00;border-color:#a00;}"
+		"img.logo{max-width:100%%;height:auto;display:block;margin:0 auto 10px;}"
 		"</style></head><body>"
+		"<img class='logo' src='/logo.png' alt='TinyGS'>"
 		"<h1>%s</h1>"
 		"<p class='sub'>TinyGS nRF52 v%u &middot; uptime %llds &middot; log_seq %u</p>"
 		"<a class='btn' href='/dashboard'>Dashboard</a>"
@@ -804,6 +807,17 @@ static struct http_resource_detail_static favicon_resource_detail = {
 	.static_data_len = sizeof(FAVICON_PNG),
 };
 
+/* ===== /logo.png — 310x149 dashboard banner ======================= */
+static struct http_resource_detail_static logo_resource_detail = {
+	.common = {
+		.bitmask_of_supported_http_methods = BIT(HTTP_GET) | BIT(HTTP_HEAD),
+		.type = HTTP_RESOURCE_TYPE_STATIC,
+		.content_type = "image/png",
+	},
+	.static_data = (uint8_t *)LOGO_PNG,
+	.static_data_len = sizeof(LOGO_PNG),
+};
+
 /* ===== /wm handler — worldmap + status CSV =====
  *
  * Same field order as the ESP32 dashboard's /wm endpoint so the JS that
@@ -1010,6 +1024,8 @@ HTTP_RESOURCE_DEFINE(tinygs_config, tinygs_web, "/config",
 		     &config_resource_detail);
 HTTP_RESOURCE_DEFINE(tinygs_favicon, tinygs_web, "/favicon.ico",
 		     &favicon_resource_detail);
+HTTP_RESOURCE_DEFINE(tinygs_logo, tinygs_web, "/logo.png",
+		     &logo_resource_detail);
 
 /* ===== SRP service registration =====
  *

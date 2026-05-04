@@ -41,8 +41,10 @@ overflow:auto;font-family:monospace;font-size:0.85em;}\
 .console{display:inline-block;text-align:center;margin:10px 0;width:98%;max-width:1080px;}\
 .G{color:green;}.R{color:red;}\
 svg{display:block;margin:0 auto 10px;border:1px solid #aaa;}\
+img.logo{display:block;margin:0 auto 6px;max-width:320px;height:auto;}\
 </style></head><body>\
-<h1>TinyGS nRF52 - <a href='/'>home</a> &middot; <a href='/restart' \
+<img class='logo' src='/logo.png' alt='TinyGS'>\
+<h1>TinyGS nRF52 - <a href='/'>home</a> &middot; <a href='/config'>config</a> &middot; <a href='/restart' \
 onclick=\"return confirm('Reboot the station?')\">restart</a></h1>\
 <svg width='480' height='270' viewBox='0 0 240 135' \
 xmlns='http://www.w3.org/2000/svg'>\
