@@ -39,6 +39,13 @@ extern char cfg_mqtt_user[64];
 extern char cfg_mqtt_pass[64];
 extern char cfg_adv_prm[256];  /* Opaque advanced-params blob from set_adv_prm */
 
+/* Web UI admin password (Phase 4). Used for HTTP Basic auth on /config,
+ * /restart, and /cs command writes. Default "tinygs" at first boot —
+ * user is expected to change it via /config. The default is documented
+ * to the user via the form's placeholder text; we don't enforce a
+ * change, since out-of-the-box flow on Thread is already LAN-trusted. */
+extern char cfg_admin_pw[32];
+
 /* TX enable. Default 0 (RX-only). When 0, the station advertises tx:false in
  * welcome + RX payloads (server then never schedules tx commands) and the
  * device-side tx command handler short-circuits. Set via config.json

@@ -21,18 +21,153 @@
 #include <zephyr/logging/log.h>
 
 #include <time.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <strings.h>           /* strcasecmp / strncasecmp */
+#include <zephyr/sys/base64.h>
 #include <openthread/srp_client.h>
 #include <openthread/thread.h>
 
 #include "web_ui.h"
 #include "tinygs_protocol.h"   /* TINYGS_VERSION, tinygs_radio */
-#include "tinygs_config.h"     /* cfg_station[] */
+#include "tinygs_config.h"     /* cfg_station[], cfg_admin_pw[], etc. */
 #include "dashboard_html_gz.h" /* DASHBOARD_HTML_GZ[] — pre-gzipped */
+#include "favicon_png.h"       /* FAVICON_PNG[] */
 
 /* MQTT connection state, exposed by main.cpp via a small accessor so we
  * don't need to extern the file-local `enum app_state` (declarations would
  * have to match exactly across TUs and would silently break on reordering). */
 extern "C" bool tinygs_mqtt_is_connected(void);
+
+/* Capture the Authorization header on every request so the auth helper
+ * below can inspect it. The capture infrastructure is on a per-server
+ * basis, so registering once here covers all our resources. */
+HTTP_SERVER_REGISTER_HEADER_CAPTURE(authz_capture, "Authorization");
+
+/* ===== HTTP Basic auth ============================================= */
+
+/* Compare against cfg_admin_pw with a fixed `admin` username. Returns
+ * true when the request header matches; returns false (and the caller
+ * should send 401) otherwise.
+ *
+ * Decoded base64 may contain NULs or non-printables — we treat the
+ * whole thing as opaque bytes and compare. */
+static bool basic_auth_ok(struct http_client_ctx *client)
+{
+	const struct http_header_capture_ctx *hc = &client->header_capture_ctx;
+	const char *value = NULL;
+	for (size_t i = 0; i < hc->count; i++) {
+		if (strcasecmp(hc->headers[i].name, "Authorization") == 0) {
+			value = hc->headers[i].value;
+			break;
+		}
+	}
+	if (!value) {
+		return false;
+	}
+	/* Expect "Basic <b64>" */
+	while (*value == ' ') value++;
+	if (strncasecmp(value, "Basic ", 6) != 0) {
+		return false;
+	}
+	const char *b64 = value + 6;
+	while (*b64 == ' ') b64++;
+
+	uint8_t decoded[96];
+	size_t decoded_len = 0;
+	if (base64_decode(decoded, sizeof(decoded) - 1, &decoded_len,
+			  (const uint8_t *)b64, strlen(b64)) != 0) {
+		return false;
+	}
+	decoded[decoded_len] = '\0';
+	const char *colon = (const char *)memchr(decoded, ':', decoded_len);
+	if (!colon) {
+		return false;
+	}
+	size_t user_len = (size_t)(colon - (char *)decoded);
+	const char *pw = colon + 1;
+	size_t pw_len = decoded_len - user_len - 1;
+
+	if (user_len != 5 || memcmp(decoded, "admin", 5) != 0) {
+		return false;
+	}
+	size_t expect_len = strlen(cfg_admin_pw);
+	if (pw_len != expect_len) {
+		return false;
+	}
+	return memcmp(pw, cfg_admin_pw, pw_len) == 0;
+}
+
+/* Send a 401 with WWW-Authenticate so the browser prompts for a password.
+ * Caller must return immediately after this. */
+static void send_401(struct http_response_ctx *response_ctx)
+{
+	static const struct http_header www_auth_headers[] = {
+		{ .name = "WWW-Authenticate",
+		  .value = "Basic realm=\"TinyGS\"" },
+	};
+	static const char body[] = "Unauthorized\n";
+	response_ctx->status = HTTP_401_UNAUTHORIZED;
+	response_ctx->headers = www_auth_headers;
+	response_ctx->header_count = ARRAY_SIZE(www_auth_headers);
+	response_ctx->body = (const uint8_t *)body;
+	response_ctx->body_len = sizeof(body) - 1;
+	response_ctx->final_chunk = true;
+}
+
+/* ===== form-urlencoded parser =====================================
+ * Extract a single field by name from a body of `key=val&key=val&...`.
+ * URL-decodes the value into `out` (NUL-terminated). Returns true on hit. */
+static int hex_nibble(char c)
+{
+	if (c >= '0' && c <= '9') return c - '0';
+	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+	return -1;
+}
+
+static bool form_get(const char *body, size_t body_len,
+		     const char *key, char *out, size_t out_cap)
+{
+	if (out_cap == 0) return false;
+	out[0] = '\0';
+	size_t key_len = strlen(key);
+	const char *p = body;
+	const char *end = body + body_len;
+	while (p < end) {
+		const char *eq = (const char *)memchr(p, '=', end - p);
+		if (!eq) break;
+		size_t this_key = eq - p;
+		const char *amp = (const char *)memchr(eq, '&', end - eq);
+		if (!amp) amp = end;
+
+		if (this_key == key_len && memcmp(p, key, key_len) == 0) {
+			size_t n = 0;
+			const char *v = eq + 1;
+			while (v < amp && n < out_cap - 1) {
+				char c = *v++;
+				if (c == '+') {
+					out[n++] = ' ';
+				} else if (c == '%' && v + 1 < amp) {
+					int hi = hex_nibble(v[0]);
+					int lo = hex_nibble(v[1]);
+					if (hi >= 0 && lo >= 0) {
+						out[n++] = (char)((hi << 4) | lo);
+						v += 2;
+					} else {
+						out[n++] = c;
+					}
+				} else {
+					out[n++] = c;
+				}
+			}
+			out[n] = '\0';
+			return true;
+		}
+		p = amp + 1;
+	}
+	return false;
+}
 
 /* Provided by Zephyr OpenThread integration. Forward-declared so we don't
  * have to drag in zephyr/net/openthread.h (deprecated wrappers). */
@@ -88,7 +223,7 @@ static int root_handler(struct http_client_ctx *client,
 		"<h1>%s</h1>"
 		"<p class='sub'>TinyGS nRF52 v%u &middot; uptime %llds &middot; log_seq %u</p>"
 		"<a class='btn' href='/dashboard'>Dashboard</a>"
-		"<a class='btn disabled' title='Phase 4'>Configure</a>"
+		"<a class='btn' href='/config'>Configure</a>"
 		"<a class='btn disabled' title='Phase 5'>Firmware Update</a>"
 		"<a class='btn danger' href='/restart' "
 		"onclick=\"return confirm('Reboot?')\">Restart</a>"
@@ -191,13 +326,17 @@ static int restart_handler(struct http_client_ctx *client,
 			   struct http_response_ctx *response_ctx,
 			   void *user_data)
 {
-	ARG_UNUSED(client);
 	ARG_UNUSED(request_ctx);
 	ARG_UNUSED(user_data);
 
 	static const char body[] = "Rebooting in 2 seconds.\n";
 
 	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
+		return 0;
+	}
+
+	if (!basic_auth_ok(client)) {
+		send_401(response_ctx);
 		return 0;
 	}
 
@@ -306,6 +445,246 @@ static struct http_resource_detail_dynamic cs_resource_detail = {
 	},
 	.cb = cs_handler,
 	.user_data = NULL,
+};
+
+/* ===== /config handler — GET form, POST save ===================== */
+
+/* Render the config form into `out`. Pulls current values from NVS-
+ * backed globals so the form is always populated with what's live.
+ *
+ * Returns bytes written. The form fits comfortably in 2 KB. */
+static int render_config_form(char *out, int cap)
+{
+	extern float tinygs_station_lat;
+	extern float tinygs_station_lon;
+	extern float tinygs_station_alt;
+	extern int8_t cfg_tx_enable;
+
+	int n = snprintf(out, (size_t)cap,
+		"<!doctype html><html><head><meta charset='utf-8'>"
+		"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+		"<title>TinyGS Config</title><style>"
+		"body{font-family:Arial;margin:0;padding:14px;max-width:520px;margin:0 auto;}"
+		"h1{font-size:1.2em;margin:0 0 10px 0;text-align:center;}"
+		"label{display:block;margin:10px 0 2px 0;font-size:0.9em;color:#444;}"
+		"input[type=text],input[type=number],input[type=password]{"
+		"width:100%%;padding:8px;font-size:1em;border:1px solid #888;"
+		"border-radius:4px;box-sizing:border-box;}"
+		"input[type=submit]{margin-top:14px;padding:12px;width:100%%;"
+		"background:#3a6;color:#fff;border:none;border-radius:6px;"
+		"font-size:1em;cursor:pointer;}"
+		"input[type=submit]:hover{background:#285;}"
+		".note{color:#888;font-size:0.8em;margin:4px 0 0 0;}"
+		".row{display:flex;gap:10px;}.row>div{flex:1;}"
+		"</style></head><body>"
+		"<h1>TinyGS Configuration</h1>"
+		"<form method='POST' action='/config'>"
+		"<label>Station name<input type='text' name='station' value='%s' maxlength='31'></label>"
+		"<div class='row'>"
+		"<div><label>Latitude<input type='number' step='0.0001' name='lat' value='%.4f'></label></div>"
+		"<div><label>Longitude<input type='number' step='0.0001' name='lon' value='%.4f'></label></div>"
+		"<div><label>Altitude (m)<input type='number' step='1' name='alt' value='%.0f'></label></div>"
+		"</div>"
+		"<label>MQTT username<input type='text' name='mqtt_user' value='%s' maxlength='63'></label>"
+		"<label>MQTT password<input type='password' name='mqtt_pass' placeholder='unchanged' maxlength='63'></label>"
+		"<p class='note'>Leave blank to keep current MQTT password.</p>"
+		"<label>Admin password (web UI)<input type='password' name='admin_pw' placeholder='unchanged' maxlength='31'></label>"
+		"<p class='note'>Used for /config and /restart. Default is &quot;tinygs&quot;.</p>"
+		"<label><input type='checkbox' name='tx' value='1'%s> Allow TX (RF transmit). Operator responsible for licensing.</label>"
+		"<input type='submit' value='Save (reboot to apply MQTT changes)'>"
+		"</form>"
+		"<p class='note'><a href='/'>back to home</a></p>"
+		"</body></html>",
+		cfg_station,
+		(double)tinygs_station_lat,
+		(double)tinygs_station_lon,
+		(double)tinygs_station_alt,
+		cfg_mqtt_user,
+		cfg_tx_enable ? " checked" : "");
+	return (n < 0) ? 0 : (n > cap ? cap : n);
+}
+
+static int config_handler(struct http_client_ctx *client,
+			  enum http_transaction_status status,
+			  const struct http_request_ctx *request_ctx,
+			  struct http_response_ctx *response_ctx,
+			  void *user_data)
+{
+	ARG_UNUSED(user_data);
+
+	/* Auth check on the very first chunk so we can 401 immediately. */
+	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
+		/* Body chunks may arrive before we get the final flag; we
+		 * accumulate POST data here. */
+		if (client->method == HTTP_POST) {
+			static uint8_t post_buf[1024];
+			static size_t post_len;
+			if (request_ctx && request_ctx->data_len > 0 &&
+			    post_len + request_ctx->data_len <= sizeof(post_buf)) {
+				memcpy(post_buf + post_len, request_ctx->data,
+				       request_ctx->data_len);
+				post_len += request_ctx->data_len;
+			}
+			/* Stash so the FINAL pass can read it; abuse user_data
+			 * via static scope. Cleared at FINAL. */
+		}
+		return 0;
+	}
+
+	if (!basic_auth_ok(client)) {
+		send_401(response_ctx);
+		return 0;
+	}
+
+	static char body[3072];
+
+	if (client->method == HTTP_POST) {
+		/* The static buffers from the chunk path are reused here. */
+		extern float tinygs_station_lat;
+		extern float tinygs_station_lon;
+		extern float tinygs_station_alt;
+		extern int8_t cfg_tx_enable;
+		static uint8_t post_buf[1024];
+		static size_t post_len;
+		/* Append any FINAL-chunk data still being delivered. */
+		if (request_ctx && request_ctx->data_len > 0 &&
+		    post_len + request_ctx->data_len <= sizeof(post_buf)) {
+			memcpy(post_buf + post_len, request_ctx->data,
+			       request_ctx->data_len);
+			post_len += request_ctx->data_len;
+		}
+
+		char field[256];
+		bool changes = false;
+		bool mqtt_changed = false;
+
+		if (form_get((const char *)post_buf, post_len, "station", field, sizeof(field))
+		    && field[0]) {
+			if (strncmp(cfg_station, field, sizeof(cfg_station)) != 0) {
+				strncpy(cfg_station, field, sizeof(cfg_station) - 1);
+				cfg_station[sizeof(cfg_station) - 1] = '\0';
+				tinygs_config_save_station(cfg_station);
+				changes = true;
+				mqtt_changed = true;
+				LOG_INF("/config: station -> %s", cfg_station);
+			}
+		}
+		if (form_get((const char *)post_buf, post_len, "lat", field, sizeof(field))
+		    && field[0]) {
+			float v = strtof(field, NULL);
+			if (v != tinygs_station_lat) {
+				tinygs_station_lat = v;
+				changes = true;
+			}
+		}
+		if (form_get((const char *)post_buf, post_len, "lon", field, sizeof(field))
+		    && field[0]) {
+			float v = strtof(field, NULL);
+			if (v != tinygs_station_lon) {
+				tinygs_station_lon = v;
+				changes = true;
+			}
+		}
+		if (form_get((const char *)post_buf, post_len, "alt", field, sizeof(field))
+		    && field[0]) {
+			float v = strtof(field, NULL);
+			if (v != tinygs_station_alt) {
+				tinygs_station_alt = v;
+				changes = true;
+			}
+		}
+		if (changes) {
+			tinygs_config_save_location(tinygs_station_lat,
+						    tinygs_station_lon,
+						    tinygs_station_alt);
+		}
+
+		if (form_get((const char *)post_buf, post_len, "mqtt_user", field, sizeof(field))
+		    && field[0]) {
+			if (strncmp(cfg_mqtt_user, field, sizeof(cfg_mqtt_user)) != 0) {
+				strncpy(cfg_mqtt_user, field, sizeof(cfg_mqtt_user) - 1);
+				cfg_mqtt_user[sizeof(cfg_mqtt_user) - 1] = '\0';
+				tinygs_config_save("user", cfg_mqtt_user, strlen(cfg_mqtt_user));
+				mqtt_changed = true;
+				LOG_INF("/config: mqtt_user -> (set, %zu chars)",
+					strlen(cfg_mqtt_user));
+			}
+		}
+		if (form_get((const char *)post_buf, post_len, "mqtt_pass", field, sizeof(field))
+		    && field[0]) {
+			strncpy(cfg_mqtt_pass, field, sizeof(cfg_mqtt_pass) - 1);
+			cfg_mqtt_pass[sizeof(cfg_mqtt_pass) - 1] = '\0';
+			tinygs_config_save("pass", cfg_mqtt_pass, strlen(cfg_mqtt_pass));
+			mqtt_changed = true;
+			LOG_INF("/config: mqtt_pass -> (changed, %zu chars)",
+				strlen(cfg_mqtt_pass));
+		}
+
+		if (form_get((const char *)post_buf, post_len, "admin_pw", field, sizeof(field))
+		    && field[0]) {
+			strncpy(cfg_admin_pw, field, sizeof(cfg_admin_pw) - 1);
+			cfg_admin_pw[sizeof(cfg_admin_pw) - 1] = '\0';
+			tinygs_config_save("adm", cfg_admin_pw, strlen(cfg_admin_pw));
+			LOG_INF("/config: admin_pw changed");
+		}
+
+		int8_t tx_new = 0;
+		if (form_get((const char *)post_buf, post_len, "tx", field, sizeof(field))
+		    && field[0]) {
+			tx_new = (field[0] == '1') ? 1 : 0;
+		}
+		if (tx_new != cfg_tx_enable) {
+			cfg_tx_enable = tx_new;
+			tinygs_config_save("tx", &cfg_tx_enable, sizeof(cfg_tx_enable));
+			LOG_INF("/config: tx_enable -> %d", cfg_tx_enable);
+		}
+
+		post_len = 0; /* reset for next request */
+
+		const char *banner = mqtt_changed
+			? "<p style='color:#a40'>Saved. Restart to apply MQTT/station changes.</p>"
+			: "<p style='color:#080'>Saved.</p>";
+		int n = snprintf(body, sizeof(body),
+			"<!doctype html><html><head><meta charset='utf-8'>"
+			"<meta http-equiv='refresh' content='2;url=/config'>"
+			"<title>Saved</title></head><body>"
+			"<p>%s</p>"
+			"<p><a href='/config'>back to config</a> &middot; "
+			"<a href='/'>home</a></p>"
+			"</body></html>", banner);
+		response_ctx->body = (const uint8_t *)body;
+		response_ctx->body_len = (size_t)((n < 0) ? 0 : n);
+		response_ctx->final_chunk = true;
+		return 0;
+	}
+
+	/* GET — render the form. */
+	int n = render_config_form(body, sizeof(body));
+	response_ctx->body = (const uint8_t *)body;
+	response_ctx->body_len = (size_t)n;
+	response_ctx->final_chunk = true;
+	return 0;
+}
+
+static struct http_resource_detail_dynamic config_resource_detail = {
+	.common = {
+		.bitmask_of_supported_http_methods = BIT(HTTP_GET) | BIT(HTTP_POST),
+		.type = HTTP_RESOURCE_TYPE_DYNAMIC,
+		.content_type = "text/html",
+	},
+	.cb = config_handler,
+	.user_data = NULL,
+};
+
+/* ===== /favicon.ico — static PNG ================================== */
+static struct http_resource_detail_static favicon_resource_detail = {
+	.common = {
+		.bitmask_of_supported_http_methods = BIT(HTTP_GET) | BIT(HTTP_HEAD),
+		.type = HTTP_RESOURCE_TYPE_STATIC,
+		.content_type = "image/png",
+	},
+	.static_data = (uint8_t *)FAVICON_PNG,
+	.static_data_len = sizeof(FAVICON_PNG),
 };
 
 /* ===== /wm handler — worldmap + status CSV =====
@@ -510,6 +889,10 @@ HTTP_RESOURCE_DEFINE(tinygs_cs, tinygs_web, "/cs", &cs_resource_detail);
 HTTP_RESOURCE_DEFINE(tinygs_wm, tinygs_web, "/wm", &wm_resource_detail);
 HTTP_RESOURCE_DEFINE(tinygs_dashboard, tinygs_web, "/dashboard",
 		     &dashboard_resource_detail);
+HTTP_RESOURCE_DEFINE(tinygs_config, tinygs_web, "/config",
+		     &config_resource_detail);
+HTTP_RESOURCE_DEFINE(tinygs_favicon, tinygs_web, "/favicon.ico",
+		     &favicon_resource_detail);
 
 /* ===== SRP service registration =====
  *
@@ -655,6 +1038,6 @@ int web_ui_start(void)
 	}
 	(void)srp_register();
 	started = true;
-	LOG_INF("Web UI on :80 (/, /dashboard, /status, /restart, /cs?c2=<seq>, /wm)");
+	LOG_INF("Web UI on :80 (/, /dashboard, /config, /status, /restart, /cs?c2=<seq>, /wm, /favicon.ico)");
 	return 0;
 }

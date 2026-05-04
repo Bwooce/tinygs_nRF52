@@ -14,6 +14,7 @@ char cfg_station[32] = "tinygs_nrf52_poc";
 char cfg_mqtt_user[64] = MQTT_USERNAME;
 char cfg_mqtt_pass[64] = MQTT_PASSWORD;
 char cfg_adv_prm[256] = "";  /* set_adv_prm stores last server-pushed JSON here */
+char cfg_admin_pw[32] = "tinygs";  /* Web UI Basic auth password — change via /config */
 int8_t cfg_tx_enable = 0;    /* Default: RX-only. See tinygs_config.h for semantics. */
 char cfg_last_snapshot[TINYGS_CONFIG_SNAPSHOT_MAX] = "";  /* last config.json we wrote */
 /* tinygs_station_lat/lon/alt and tinygs_radio are in tinygs_protocol.cpp */
@@ -101,6 +102,11 @@ static int tgs_settings_set(const char *name, size_t len,
         int8_t val;
         if (len == sizeof(val) && read_cb(cb_arg, &val, sizeof(val)) == sizeof(val)) {
             cfg_tx_enable = val ? 1 : 0;
+        }
+    } else if (!strcmp(name, "adm")) {
+        if (len > 0 && len < sizeof(cfg_admin_pw)) {
+            read_cb(cb_arg, cfg_admin_pw, len);
+            cfg_admin_pw[len] = '\0';
         }
     } else if (!strcmp(name, "snap")) {
         if (len < sizeof(cfg_last_snapshot)) {
