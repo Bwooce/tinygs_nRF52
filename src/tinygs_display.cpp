@@ -109,7 +109,7 @@ static uint32_t display_timeout_ms = DISPLAY_TIMEOUT_DEFAULT_MS;
 #define COL_OCEAN   0x3B7F  /* Blue ocean for map */
 #define COL_LAND    0x2E05  /* Dark green land for map */
 
-extern int read_vbat_mv(void);
+extern "C" int read_vbat_mv(void);
 extern char cfg_station[32];
 extern volatile bool thread_attached;
 

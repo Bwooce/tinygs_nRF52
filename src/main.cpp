@@ -362,6 +362,10 @@ extern "C" bool tinygs_mqtt_is_connected(void)
     return app_state == STATE_MQTT_CONNECTED;
 }
 
+/* Public wrapper around the static-inline usb_vbus_present() so the
+ * web UI's /wm handler can render USB-vs-battery in the Power row. */
+extern "C" bool tinygs_usb_vbus_present(void);
+
 /* -------------------------------------------------------------------------- */
 /* MQTT Configuration                                                         */
 /* -------------------------------------------------------------------------- */
@@ -715,7 +719,7 @@ static void neopixel_off(void)
  * Voltage divider 100k:390k → multiplier ~4.9 */
 static const struct gpio_dt_spec adc_ctrl = GPIO_DT_SPEC_GET(DT_ALIAS(adc_ctrl), gpios);
 
-int read_vbat_mv(void)
+extern "C" int read_vbat_mv(void)
 {
     const struct device *adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc));
     if (!device_is_ready(adc_dev)) {
@@ -2147,6 +2151,12 @@ static uint32_t vbus_change_ms = 0;
 static inline bool usb_vbus_present(void)
 {
     return (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
+}
+
+/* Public wrapper, declared earlier near tinygs_mqtt_is_connected. */
+extern "C" bool tinygs_usb_vbus_present(void)
+{
+    return usb_vbus_present();
 }
 
 /* Forward declare — defined later, after the FATFS mount struct exists. */

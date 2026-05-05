@@ -65,12 +65,14 @@ DASHBOARD_POST = """\
 <tr><td>MQTT</td><td></td></tr>\
 <tr><td>Parent RSSI</td><td></td></tr>\
 <tr><td>Radio</td><td></td></tr>\
-<tr><td>Last RSSI</td><td></td></tr>\
+<tr><td>GNSS</td><td></td></tr>\
+<tr><td>Power</td><td></td></tr>\
 </table></div>\
 <div class='card'><h3>Modem</h3><table id='modemconfig'>\
 <tr><td>Modulation</td><td></td></tr>\
 <tr><td>Frequency</td><td></td></tr>\
 <tr><td>Freq. Offset</td><td></td></tr>\
+<tr><td>Noise Floor</td><td></td></tr>\
 <tr><td>Spreading Factor</td><td></td></tr>\
 <tr><td>Coding Rate</td><td></td></tr>\
 <tr><td>Bandwidth</td><td></td></tr>\
@@ -124,18 +126,18 @@ var wmp=wmx.responseText.split(',');\
 sp=document.getElementById('wmsatpos');\
 sp.setAttribute('cx',wmp[0]);sp.setAttribute('cy',wmp[1]);\
 mc=document.getElementById('modemconfig');\
-for(let r=0;r<6;r++)mc.rows[r].cells[1].innerHTML=wmp[r+2];\
-if(wmp[2]=='LoRa'){mc.rows[3].cells[0].innerHTML='Spreading Factor';\
-mc.rows[4].cells[0].innerHTML='Coding Rate';}\
-else{mc.rows[3].cells[0].innerHTML='Bitrate';\
-mc.rows[4].cells[0].innerHTML='Frequency dev';}\
+for(let r=0;r<7;r++)mc.rows[r].cells[1].innerHTML=wmp[r+2];\
+if(wmp[2]=='LoRa'){mc.rows[4].cells[0].innerHTML='Spreading Factor';\
+mc.rows[5].cells[0].innerHTML='Coding Rate';}\
+else{mc.rows[4].cells[0].innerHTML='Bitrate';\
+mc.rows[5].cells[0].innerHTML='Frequency dev';}\
 gs=document.getElementById('gsstatus');\
-for(let r=0;r<6;r++)gs.rows[r].cells[1].innerHTML=wmp[r+8];\
+for(let r=0;r<7;r++)gs.rows[r].cells[1].innerHTML=wmp[r+9];\
 sd=document.getElementById('satdata');\
-for(let r=0;r<6;r++)sd.rows[r].cells[1].innerHTML=wmp[r+14];\
+for(let r=0;r<6;r++)sd.rows[r].cells[1].innerHTML=wmp[r+16];\
 lp=document.getElementById('lastpacket');\
-for(let r=0;r<4;r++)lp.rows[r].cells[1].innerHTML=wmp[r+20];\
-lp.rows[4].cells[0].innerHTML=wmp[24];}};\
+for(let r=0;r<4;r++)lp.rows[r].cells[1].innerHTML=wmp[r+22];\
+lp.rows[4].cells[0].innerHTML=wmp[26];}};\
 wmx.open('GET','wm',true);wmx.send();\
 wmt=setTimeout(wmf,5000);return false;}\
 window.addEventListener('load',function(){f();wmf();});\

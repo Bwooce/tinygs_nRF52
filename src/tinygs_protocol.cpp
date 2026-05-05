@@ -9,7 +9,7 @@
 #include "tinygs_config.h"
 #include <zephyr/sys/heap_listener.h>
 
-extern int read_vbat_mv(void);
+extern "C" int read_vbat_mv(void);
 extern "C" int64_t get_utc_epoch(void);
 extern int64_t get_utc_epoch_us(void);
 /* Radio pointer type must match main.cpp's DTS-selected type */

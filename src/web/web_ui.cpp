@@ -41,6 +41,13 @@
  * have to match exactly across TUs and would silently break on reordering). */
 extern "C" bool tinygs_mqtt_is_connected(void);
 
+/* Battery + USB-detect, defined in main.cpp. read_vbat_mv() returns
+ * battery voltage in millivolts via the on-board ADC + divider;
+ * usb_vbus_present() polls NRF_POWER->USBREGSTATUS. Both used in the
+ * /wm Power row. */
+extern "C" int read_vbat_mv(void);
+extern "C" bool tinygs_usb_vbus_present(void);
+
 /* Capture the Authorization header on every request so the auth helper
  * below can inspect it. The capture infrastructure is on a per-server
  * basis, so registering once here covers all our resources. */
@@ -820,18 +827,19 @@ static struct http_resource_detail_static logo_resource_detail = {
 
 /* ===== /wm handler — worldmap + status CSV =====
  *
- * Same field order as the ESP32 dashboard's /wm endpoint so the JS that
- * already exists could parse our response without modification:
+ * Field layout matches the ESP32 fork's revised dashboard (commit
+ * 91123a5 "fix(dashboard): align /wm data layout, add GNSS row,
+ * Power: label" + e2accc6 JS offset alignment), so the same browser
+ * JS works against both:
  *
- *   cx,cy,                                    sat pixel position
- *   modem_mode,frequency,freq_offset,         modem
- *   sf|bitrate,cr|freq_dev,bw,
- *   station_name,version,                     ground station
- *   mqtt_status,parent_rssi,radio_status,last_rssi,
- *   satellite,                                 sat info
- *   sat_lat/lon,sat_az/el,doppler_freq,
- *   utc_time,local_time,                      time
- *   last_pkt_time,last_pkt_rssi,last_pkt_snr,last_pkt_ferr,crc_state
+ *   wmp[0..1]   cx, cy                         sat pixel position
+ *   wmp[2..8]   modem (7 items):
+ *               mode, freq, foff, noise_floor, sf|br, cr|fdev, bw
+ *   wmp[9..15]  gsstatus (7 items):
+ *               name, version, mqtt, parent_rssi, radio, GNSS, Power
+ *   wmp[16..21] satdata (6): sat_name, lat/lon, az/el, doppler, utc, local
+ *   wmp[22..25] lastpacket (4): time, rssi, snr, freq_err
+ *   wmp[26]     crc_state ('' = OK, 'CRC ERROR!' otherwise)
  *
  * Read-side concurrency: snapshot under tinygs_radio_mutex so a multi-
  * field begine/batch_conf update can't tear across our memcpy. Lock is
@@ -873,10 +881,19 @@ static int wm_handler(struct http_client_ctx *client,
 	int n = 0;
 	n += snprintf(body + n, sizeof(body) - n, "%d,%d,", cx, cy);
 
+	/* === modemconfig: 7 items (mode, freq, foff, noise, sf|br, cr|fdev, bw) === */
 	n += snprintf(body + n, sizeof(body) - n, "%s,%.4f,%.0f,",
 		      snap.modem_mode[0] ? snap.modem_mode : "-",
 		      (double)snap.frequency,
 		      (double)snap.freq_offset);
+
+	/* Noise floor — last_rssi when no recent packet, else last packet's
+	 * RSSI is the closest proxy we have (an SX1262 idle-channel RSSI
+	 * read is possible but would need to be plumbed through a non-
+	 * blocking accessor; for now this matches the ESP32 fork's reading
+	 * which is "last observed RSSI"). */
+	n += snprintf(body + n, sizeof(body) - n, "%.0f,",
+		      (double)snap.last_rssi);
 
 	if (strcmp(snap.modem_mode, "LoRa") == 0) {
 		n += snprintf(body + n, sizeof(body) - n, "%d,%d,",
@@ -888,6 +905,7 @@ static int wm_handler(struct http_client_ctx *client,
 	n += snprintf(body + n, sizeof(body) - n, "%.1f,",
 		      (double)snap.bw);
 
+	/* === gsstatus: 7 items (name, ver, mqtt, parent_rssi, radio, GNSS, Power) === */
 	n += snprintf(body + n, sizeof(body) - n, "%s,%u,",
 		      cfg_station[0] ? cfg_station : "tinygs",
 		      (unsigned)TINYGS_VERSION);
@@ -896,7 +914,8 @@ static int wm_handler(struct http_client_ctx *client,
 		      mqtt_up ? "<span class='G'>CONNECTED</span>"
 			      : "<span class='R'>NOT CONNECTED</span>");
 
-	/* Parent RSSI on Thread (mesh-side proxy for the WiFi RSSI in ESP32). */
+	/* Parent RSSI on Thread (mesh-side proxy for the WiFi RSSI in ESP32).
+	 * Render with units like the fork does. */
 	int parent_rssi = 0;
 	{
 		int8_t rssi = 0;
@@ -905,12 +924,30 @@ static int wm_handler(struct http_client_ctx *client,
 			parent_rssi = rssi;
 		}
 	}
-	n += snprintf(body + n, sizeof(body) - n, "%d,", parent_rssi);
+	n += snprintf(body + n, sizeof(body) - n, "%d dBm,", parent_rssi);
 
 	n += snprintf(body + n, sizeof(body) - n,
-		      "<span class='G'>READY</span>,%.0f,",
-		      (double)snap.last_rssi);
+		      "<span class='G'>READY</span>,");
 
+	/* GNSS — no module on the T114; placeholder. */
+	n += snprintf(body + n, sizeof(body) - n, "-,");
+
+	/* Power: USB/Sol|BAT V.VV V (P%). No charge-current sensor on the
+	 * T114, so we don't render mA. Battery percentage is a crude
+	 * linear estimate (LiPo: 4.20 V → 100 %, 3.30 V → 0 %; clamped). */
+	{
+		int vbat_mv = read_vbat_mv();
+		bool vbus = tinygs_usb_vbus_present();
+		int pct = ((vbat_mv - 3300) * 100) / (4200 - 3300);
+		if (pct < 0) pct = 0;
+		if (pct > 100) pct = 100;
+		n += snprintf(body + n, sizeof(body) - n,
+			      "%s %.2fV %d%%,",
+			      vbus ? "USB" : "BAT",
+			      (double)vbat_mv / 1000.0, pct);
+	}
+
+	/* === satdata: 6 items === */
 	n += snprintf(body + n, sizeof(body) - n, "%s,",
 		      snap.satellite[0] ? snap.satellite : "-");
 
