@@ -186,12 +186,13 @@ static volatile uint8_t  __noinit main_phase;
 static volatile uint32_t __noinit main_alive_uptime_ms;
 
 /* MQTT-alive watchdog — separate from the hardware WDT. Tracks the most recent
- * MQTT round-trip (CONNACK / PINGRESP / any incoming PUBLISH). Main loop checks
- * the gap each iteration while in STATE_MQTT_CONNECTED; if it exceeds the
+ * MQTT round-trip (CONNACK / PINGRESP / any incoming PUBLISH). Checked at the
+ * top of the outer state-machine loop in any state; if the gap exceeds the
  * threshold below, force a sys_reboot so the boot diagnostic can record the
  * cause. Catches Thread-stack/network-stack wedges that leave main looping
  * happily but cut us off from the broker — modes the old MQTT-fed WDT used to
- * catch implicitly via missed PINGRESPs. The __noinit silence_uptime_ms
+ * catch implicitly via missed PINGRESPs. Also catches boot-loop scenarios
+ * where reconnect never reaches CONNECTED. The __noinit silence_uptime_ms
  * captures the last_activity at trigger time so we know how long the gap was. */
 /* Reconnect tier (primary): forced PINGREQ every MQTT_FORCE_PING_INTERVAL_MS,
  * then existing TINYGS_MQTT_UNACKED_PING_MAX (=2) check fires a clean
@@ -516,6 +517,33 @@ static void watchdog_feed(void)
         }
         wdt_last_feeder_name[sizeof(wdt_last_feeder_name) - 1] = '\0';
     }
+}
+
+/* WDT feeder runs on the system workqueue every WDT_FEED_INTERVAL_MS so the
+ * dog stays fed in any state — STATE_ERROR's k_msleep(30000), the DNS resolve
+ * blocking call, and the TLS handshake all used to drop us out of the (only)
+ * feed point inside STATE_MQTT_CONNECTED, blowing the 180 s window. The feed
+ * is gated on main_alive_uptime_ms freshness: if main hasn't bumped in
+ * WDT_MAIN_FRESHNESS_MS (longer than any legitimate single sleep), the feeder
+ * withholds and the WDT fires — preserving CPU-wedge detection. MQTT-level
+ * liveness is enforced separately by the MQTT_SILENCE_TIMEOUT_MS check at the
+ * top of the outer state-machine loop (any state, not just CONNECTED). */
+#define WDT_FEED_INTERVAL_MS    60000   /* 60 s — well below 180 s budget */
+#define WDT_MAIN_FRESHNESS_MS   90000   /* covers STATE_ERROR's 30 s sleep + slop */
+
+static void wdt_feeder_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(wdt_feeder_work, wdt_feeder_work_handler);
+
+static void wdt_feeder_work_handler(struct k_work *work)
+{
+    uint32_t now = k_uptime_get_32();
+    uint32_t age = now - main_alive_uptime_ms;
+    if (age <= WDT_MAIN_FRESHNESS_MS) {
+        watchdog_feed();
+    }
+    /* else: main is wedged — let the WDT fire (180 s budget). Don't LOG_WRN
+     * here: if main really is hung, the log path may also be wedged. */
+    k_work_reschedule(&wdt_feeder_work, K_MSEC(WDT_FEED_INTERVAL_MS));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -3363,11 +3391,41 @@ int main(void)
     init_radio();
     apply_saved_modem_conf();
 
+    /* Initialize liveness markers and start the WDT feeder work BEFORE the
+     * state machine starts. main_alive_uptime_ms must be fresh so the very
+     * first feeder tick (60 s in) finds main alive. mqtt_last_activity_ms
+     * gets a one-window grace so the silence reboot can't fire before we've
+     * had a chance to connect. */
+    main_alive_uptime_ms = k_uptime_get_32();
+    mqtt_last_activity_ms = main_alive_uptime_ms;
+    k_work_reschedule(&wdt_feeder_work, K_MSEC(WDT_FEED_INTERVAL_MS));
+
     int retry_count = 0;
     int mqtt_poll_fd_count = 0;
     struct zsock_pollfd mqtt_poll_fd;
 
     while (1) {
+        /* Outer-loop liveness — bumped every state iteration so the WDT
+         * feeder workqueue can prove main isn't wedged regardless of which
+         * state we're in. */
+        main_alive_uptime_ms = k_uptime_get_32();
+
+        /* Catastrophic-only fallback: if MQTT inbound traffic stops for too
+         * long in ANY state (including a never-reached-CONNECTED boot loop),
+         * sys_reboot. The unacked-ping reconnect path inside CONNECTED
+         * normally catches broker silence in ~120 s; this 10-min check is
+         * the last resort for cases where reconnect itself can't make
+         * progress (NAT64 broken, broker down, mutex deadlock in TX). */
+        if ((main_alive_uptime_ms - mqtt_last_activity_ms) > MQTT_SILENCE_TIMEOUT_MS) {
+            crash_reason = MQTT_SILENCE_MAGIC;
+            mqtt_silence_uptime_ms = mqtt_last_activity_ms;
+            LOG_ERR("MQTT silent for %u ms (state=%d) — forcing reboot (last resort)",
+                    (unsigned)(main_alive_uptime_ms - mqtt_last_activity_ms),
+                    (int)app_state);
+            k_msleep(100);  /* let LOG_ERR flush before reset */
+            sys_reboot(SYS_REBOOT_COLD);
+        }
+
         switch (app_state) {
 
         case STATE_WAIT_THREAD:
@@ -3467,28 +3525,11 @@ int main(void)
             #define STATUS_LOG_INTERVAL_MS 300000 /* 5 minutes */
 
             while (app_state == STATE_MQTT_CONNECTED) {
-                /* Liveness for the WDT pre-fire diagnostic. main_alive shows
-                 * "main was here this recently" and main_phase narrows it to
-                 * which step inside the iteration. Watchdog itself is fed at
-                 * the top of every iteration: a WDT fire now means the CPU
-                 * is genuinely wedged, not just MQTT going silent. */
+                /* Liveness bump moved to top of outer loop so it covers all
+                 * states. WDT feed now happens on the system workqueue gated
+                 * on main_alive_uptime_ms freshness. MQTT silence reboot
+                 * also moved to outer loop top so it fires from any state. */
                 main_alive_uptime_ms = k_uptime_get_32();
-                watchdog_feed();
-
-                /* Catastrophic-only fallback: if even mqtt_ping can't push
-                 * (TX path wedged) the unacked-ping check below never
-                 * climbs and we'd loop forever. Reboot after 10 min of
-                 * total inbound silence covers that case. Normal failures
-                 * (broker silent but TX works) are caught much faster by
-                 * the forced-PINGREQ → unacked_ping reconnect path. */
-                if ((main_alive_uptime_ms - mqtt_last_activity_ms) > MQTT_SILENCE_TIMEOUT_MS) {
-                    crash_reason = MQTT_SILENCE_MAGIC;
-                    mqtt_silence_uptime_ms = mqtt_last_activity_ms;
-                    LOG_ERR("MQTT silent for %u ms — forcing reboot (last resort)",
-                            (unsigned)(main_alive_uptime_ms - mqtt_last_activity_ms));
-                    k_msleep(100);  /* let LOG_ERR flush before reset */
-                    sys_reboot(SYS_REBOOT_COLD);
-                }
 
                 main_phase = MAIN_PHASE_POLL;
                 int rc = zsock_poll(&mqtt_poll_fd, mqtt_poll_fd_count, 100);
