@@ -53,6 +53,12 @@ extern char cfg_admin_pw[32];
  * regulatory compliance before enabling. */
 extern int8_t cfg_tx_enable;
 
+/* Timezone index into tinygs_tz_values[] (0..tinygs_tz_count-1). Default 456
+ * = Etc/UTC. Applied via tinygs_tz_apply() after NVS load and any /config
+ * POST; localtime_r() then formats web-UI / log timestamps in the user's
+ * zone with DST handled by the embedded POSIX TZ string. */
+extern uint16_t cfg_tz_idx;
+
 int tinygs_config_init(void);
 
 /**

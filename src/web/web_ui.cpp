@@ -33,6 +33,11 @@
 #include "tinygs_config.h"     /* cfg_station[], cfg_admin_pw[], etc. */
 #include "dashboard_html_gz.h" /* DASHBOARD_HTML_GZ[] — pre-gzipped */
 #include "favicon_png.h"       /* FAVICON_PNG[] */
+
+/* picolibc <time.h> only exposes localtime_r under POSIX feature macros that
+ * Zephyr doesn't enable globally. Declare it ourselves; the linker pulls in
+ * the picolibc symbol directly. */
+extern "C" struct tm *localtime_r(const time_t *, struct tm *);
 #include "logo_png.h"          /* LOGO_PNG[] — 310x149 TinyGS banner */
 #include "tinygs_display.h"    /* tinygs_display_request_weblogin */
 
@@ -966,15 +971,16 @@ static int wm_handler(struct http_client_ctx *client,
 	n += snprintf(body + n, sizeof(body) - n, "%.0f Hz,",
 		      (double)snap.freq_doppler);
 
-	/* UTC + local time. We treat "local" as UTC because the device
-	 * doesn't carry a TZ — the ESP32 doesn't either in many builds. */
+	/* Local + UTC time. cfg_tz_idx (POSIX TZ rule applied via tinygs_tz_apply
+	 * at boot / on /config save) drives localtime_r; gmtime_r is always UTC. */
 	time_t now = time(NULL);
 	if (now > 0) {
-		struct tm tm_utc;
+		struct tm tm_local, tm_utc;
+		localtime_r(&now, &tm_local);
 		gmtime_r(&now, &tm_utc);
 		n += snprintf(body + n, sizeof(body) - n,
 			      "%02d:%02d:%02d,%02d:%02d:%02d,",
-			      tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec,
+			      tm_local.tm_hour, tm_local.tm_min, tm_local.tm_sec,
 			      tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
 	} else {
 		n += snprintf(body + n, sizeof(body) - n, "-,-,");

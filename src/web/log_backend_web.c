@@ -254,11 +254,11 @@ int web_log_read_since(uint32_t since_seq, char *out, int cap, uint32_t *out_seq
 			char ts[WEB_LOG_TS_PREFIX_LEN + 1];
 			if (epoch > 0) {
 				time_t t = (time_t)epoch;
-				struct tm tm_utc;
-				gmtime_r(&t, &tm_utc);
+				struct tm tm_local;
+				localtime_r(&t, &tm_local);
 				snprintf(ts, sizeof(ts), WEB_LOG_TS_PREFIX_FMT,
-					 tm_utc.tm_hour, tm_utc.tm_min,
-					 tm_utc.tm_sec);
+					 tm_local.tm_hour, tm_local.tm_min,
+					 tm_local.tm_sec);
 			} else {
 				memcpy(ts, WEB_LOG_TS_PREFIX_UNKNOWN,
 				       WEB_LOG_TS_PREFIX_LEN);

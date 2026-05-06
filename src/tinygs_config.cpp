@@ -1,5 +1,6 @@
 #include "tinygs_config.h"
 #include "tinygs_protocol.h"
+#include "tinygs_tz.h"
 #include "mqtt_credentials.h"
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -16,6 +17,7 @@ char cfg_mqtt_pass[64] = MQTT_PASSWORD;
 char cfg_adv_prm[256] = "";  /* set_adv_prm stores last server-pushed JSON here */
 char cfg_admin_pw[32] = "tinygs";  /* Web UI Basic auth password — change via /config */
 int8_t cfg_tx_enable = 0;    /* Default: RX-only. See tinygs_config.h for semantics. */
+uint16_t cfg_tz_idx = 456;   /* Default: Etc/UTC. tinygs_tz_apply() at boot wires picolibc tzset. */
 char cfg_last_snapshot[TINYGS_CONFIG_SNAPSHOT_MAX] = "";  /* last config.json we wrote */
 /* tinygs_station_lat/lon/alt and tinygs_radio are in tinygs_protocol.cpp */
 
@@ -108,6 +110,11 @@ static int tgs_settings_set(const char *name, size_t len,
             read_cb(cb_arg, cfg_admin_pw, len);
             cfg_admin_pw[len] = '\0';
         }
+    } else if (!strcmp(name, "tz")) {
+        uint16_t val;
+        if (len == sizeof(val) && read_cb(cb_arg, &val, sizeof(val)) == sizeof(val)) {
+            cfg_tz_idx = val;
+        }
     } else if (!strcmp(name, "snap")) {
         if (len < sizeof(cfg_last_snapshot)) {
             read_cb(cb_arg, cfg_last_snapshot, len);
@@ -162,6 +169,9 @@ int tinygs_config_init(void)
             (double)tinygs_station_lat,
             (double)tinygs_station_lon,
             (double)tinygs_station_alt);
+
+    /* Apply the loaded TZ rule so subsequent localtime_r() calls reflect it. */
+    tinygs_tz_apply(cfg_tz_idx);
 
     return 0;
 }

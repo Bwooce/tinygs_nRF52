@@ -431,7 +431,7 @@ All Phase 1 objectives proven:
 
     **Remaining ESP32 IoTWebConf gaps (all unblocked, all optional):**
     *   `/config` form is missing `boardTemplate`, `modemStartup`, `adv_prm` (ESP32 has them with a tabular dict-table JSON editor). The values are still settable via MQTT — just no form field. Add cost: ~3 KB raw / ~1 KB gzipped for the editor JS, plus form-field rows.
-    *   Local timezone — currently UTC for both UTC and "local" times. Olson DB add: 1–5 KB depending on tzdata depth. Store the TZ string in NVS, apply via `setenv("TZ",...)` + `tzset()`.
+    *   Local timezone — **DONE**. Ported the ESP32 fork's 460-entry POSIX TZ table verbatim (`src/tinygs_tz.{h,cpp}`). NVS key `tz` stores the index; `tinygs_tz_apply()` runs `setenv("TZ",...)` + `tzset()` on boot and on `/config` save; `localtime_r()` formats web-UI and /cs timestamps. Cost: 42 KB flash (36 KB tables + 5.5 KB picolibc tzset/localtime_r), 124 B BSS. UI dropdown wiring (`/config` form field) still pending.
     *   First-run forced-password setup. Explicit divergence from ESP32 (Thread join already gates LAN trust); not coming.
     *   `HEAD /dashboard` returns 405. Zephyr static-resource handler is hard-coded GET-only at `subsys/net/lib/http/http_server_http1.c:144`. Browsers always GET, so this only affects `curl -I` / proxy probes. Upstream-patch territory.
     *   Concurrency wall: 4-thread × 24 KB simultaneous burst still saturates net_buf TX pool. Real browser usage doesn't trigger it; documented limit.
