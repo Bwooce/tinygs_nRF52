@@ -7,7 +7,7 @@ set -e
 
 WORKSPACE_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 SDK_DIR="${ZEPHYR_SDK_DIR:-$HOME/zephyr-sdk-0.17.4}"
-NCS_DIR="${WORKSPACE_DIR}/ncs_new"
+NCS_DIR="${WORKSPACE_DIR}/ncs"
 
 source "${WORKSPACE_DIR}/.venv/bin/activate"
 source "${NCS_DIR}/zephyr/zephyr-env.sh"

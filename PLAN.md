@@ -630,7 +630,8 @@ Migrated on the `ncs-v3.3-upgrade` branch. Key fixes that landed:
   jumped to ~6KB measured during MQTT-TLS handshake.
 - **Build/flash scripts:** `build_v33.sh`/`flash_v33.sh` renamed to
   `build.sh`/`flash.sh` after stable validation. Old v2.6 NCS workspace
-  preserved at `./ncs/` for archival.
+  removed 2026-05-07 (kept for ~11 days post-merge as rollback insurance;
+  `./ncs_new` renamed to `./ncs`).
 
 Verified: TLS handshake to mqtt.tinygs.com:8883 succeeds; SAT positions and
 TLE updates flow end-to-end. Memory: 504KB flash (65%), 195KB RAM (75%).
@@ -653,7 +654,7 @@ Current behaviour (acceptable as-is): *physical unplug* of the USB cable trigger
 
 The legacy stack is **deprecated** in NCS v3.3 (build emits `Deprecated symbol USB_DEVICE_DRIVER is enabled`) but still functional. USB-next is the long-term API.
 
-Migration scope: 2–3 days, touching CDC ACM init, USB MSC class registration, composite descriptor declaration, and the `usb_enable` → `usbd_init`+`usbd_enable` lifecycle. VBUS-detect via `NRF_POWER->USBREGSTATUS` continues to work. Reference: `ncs_new/zephyr/samples/subsys/usb/usbd/`.
+Migration scope: 2–3 days, touching CDC ACM init, USB MSC class registration, composite descriptor declaration, and the `usb_enable` → `usbd_init`+`usbd_enable` lifecycle. VBUS-detect via `NRF_POWER->USBREGSTATUS` continues to work. Reference: `ncs/zephyr/samples/subsys/usb/usbd/`.
 
 Migration on its own does **not** solve the eject problem (see Q1) — both stacks have the same gap. So the migration should be triggered by *some other feature* wanting USB-next: WebUSB transport, USB-CDC-NCM (Ethernet-over-USB) for an alternative device-management path, or upstream activity that retires the legacy stack outright. Until then, treat the deprecation warning as a noisy log line; do not migrate to silence it.
 
