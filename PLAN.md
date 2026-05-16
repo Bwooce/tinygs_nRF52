@@ -119,26 +119,56 @@ This requires a hardware modification and a **one-time, irreversible software mi
 
 All four signal pins are on the P1 GPIO port and are otherwise idle in the TinyGS firmware (the GPS module is not used; UART1 is unbound in our overlay), so no pinmux conflicts. SPIM3 supports any pinctrl mapping on the nRF52840 — there is no peripheral-pin restriction here.
 
-*SPIM3 caveat:* SPIM3 is the high-speed peripheral and draws ~1 mA more than SPIM0/1/2 when active. PM_DEVICE will gate it idle (handled by `CONFIG_SPI_NOR_IDLE_IN_DPD` below); active use during OTA streaming is short, so the extra current is paid only during updates.
+*SPIM3 caveat:* SPIM3 is the high-speed peripheral and draws ~1 mA more than SPIM0/1/2 when active. PM_DEVICE_RUNTIME + `SPI_NOR_ACTIVE_DWELL_MS` gates the chip idle (the chip itself enters DPD, ~1 µA, after the dwell timeout); active use during OTA streaming is short, so the SPIM3 extra current is paid only during updates.
+
+**Actual board (2026-05-07): Winbond W25Q128JVSQ on a 6-pin breakout** (VCC/CS/DO/GND/CLK/DI exposed; /WP and /HOLD pulled high on-board through R1=2 kΩ array; LED draws ~1.5 mA continuously from Vext — desolder if soak-power-critical). 16 MB capacity, JEDEC ID `ef 40 18`, 104 MHz max SPI. Wired per the table above.
 
 **Migration Steps:**
-1.  Wire the external SPI flash to the GPS port pigtail.
-2.  Update `app.overlay` to define `spi3`, assign the custom pins via `pinctrl`, and declare the external flash node.
+1.  **[DONE 2026-05-07]** Wire the external SPI flash to the GPS port pigtail.
+2.  **[DONE 2026-05-07]** Update `app.overlay` to define `spi3` (pinctrl: P1.04/05/07, CS on P1.02) and declare `ext_flash: w25q128@0` with `compatible = "jedec,spi-nor"`, JEDEC ID `[ef 40 18]`, 16 MB size, DPD timings. Boot probe (`ext_flash_probe()` in main.cpp) is fail-safe: if the breakout isn't wired, the driver fails JEDEC verification, `device_is_ready()` returns false, and the app logs the absence and continues. `/status` exposes `ext_flash: 0/1`.
 3.  Connect SWD probe to the T114.
 4.  Erase the full internal flash: `nrfjprog --eraseall` (destroys Adafruit UF2 bootloader and SoftDevice).
 5.  Update `prj.conf`: set `CONFIG_BOOTLOADER_MCUBOOT=y`.
-6.  Remap partitions to MCUboot layout:
-    *   **Internal Flash (1 MB):** MCUboot (0x0), Slot 0 / Active App (~800KB), FATFS (64KB), NVS Settings (8KB).
-    *   **External Flash (4 MB+):** Slot 1 / Staging App (~800KB), with the remainder formatted as a `littlefs` volume for long-term logging.
-7.  Ensure power management is explicitly enabled for the SPI flash in `prj.conf` so it hits its 1 µA Deep Power-Down state. Without this, the chip will idle at 10-50 µA:
+6.  Remap partitions to MCUboot + golden + log-volume layout (16 MB external = plenty of room for a permanent factory-recovery image alongside Slot 1):
+
+    | Partition | Where | Size | Purpose |
+    |---|---|---|---|
+    | MCUboot | internal @ 0x00000 | ~32 KB | bootloader |
+    | Slot 0 (active app) | internal @ 0x08000 | ~800 KB | runtime image |
+    | FATFS (USB config drive) | internal | 64 KB | config.json over USB MSC |
+    | NVS settings | internal | 8 KB | lat/lon/MQTT/TZ/etc. |
+    | Slot 1 (OTA staging) | external @ 0x000000 | ~800 KB | OTA upload target |
+    | **Golden image** | external @ 0x100000 | ~800 KB | factory-known-good, never overwritten by OTA |
+    | LittleFS log volume | external @ 0x200000 | ~14 MB | logs, capture rings, debug snapshots |
+
+    LittleFS has native dynamic wear-leveling; with W25Q128JV's 100k erase cycles per 4 KB sector × ~3500 free sectors, total useful sector erases ≈ 3.5 × 10⁸ — the chip will outlive anything we throw at it. Configure via `CONFIG_FILE_SYSTEM_LITTLEFS=y` + a `zephyr,fstab` DTS node mounted on the log partition.
+
+7.  Ensure power management is on so the SPI flash hits 1 µA DPD when idle. Without this, the chip idles at 10–50 µA:
     ```kconfig
     CONFIG_PM_DEVICE=y
+    CONFIG_PM_DEVICE_RUNTIME=y
     CONFIG_FLASH=y
     CONFIG_SPI_NOR=y
-    CONFIG_SPI_NOR_IDLE_IN_DPD=y
+    CONFIG_SPI_NOR_ACTIVE_DWELL_MS=100   # NCS v3.3+ replacement for the old SPI_NOR_IDLE_IN_DPD
     ```
 8.  Flash MCUboot: `west flash --runner jlink` targeting the MCUboot child image.
 9.  Flash signed application image via `west flash` or `mcumgr` over USB serial.
+
+**Golden-image restore (implemented at application layer, no MCUboot patches):**
+
+The application reserves an 800 KB "Golden" partition in external flash and never writes to it during OTA. Restore is triggered by one of:
+- `/restore` POST on the web UI (Basic-auth gated, requires admin password)
+- A user-button hold at boot (only viable once we add a button or repurpose RST timing)
+- An NVS magic flag (`tgs/restore`) set via the config-form or by a one-shot MQTT command
+
+On any of these triggers, the app:
+1. Streams the Golden partition into Slot 1 (`flash_copy(golden, slot1, 800 KB)`)
+2. Calls `boot_request_upgrade(BOOT_UPGRADE_TEST)` to set MCUboot's swap-pending flag
+3. `sys_reboot(SYS_REBOOT_COLD)`
+
+MCUboot then performs its normal Slot 0 ↔ Slot 1 swap on next boot, the app boots from Golden, and the user can re-OTA from there. Escape hatch (Slot 0 too broken to even run the restore): SWD reflash, same as today's UF2 brick recovery.
+
+To populate Golden the first time: build the signed image as usual, then `west flash --runner jlink` it to the Golden partition address (not Slot 0) before deploying. Subsequent OTAs leave Golden untouched.
 
 **Image signing & key management:**
 

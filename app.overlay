@@ -34,3 +34,53 @@
 		compatible = "zephyr,cdc-acm-uart";
 	};
 };
+
+/*
+ * External SPI NOR flash on the GPS port — Winbond W25Q128JVSQ (16 MB).
+ * Pin map (PLAN.md §3.5): GPS_STANDBY=P1.02 (CS), GPS_PPS=P1.04 (SCK),
+ *                         GPS_RX=P1.05 (MOSI), GPS_TX=P1.07 (MISO).
+ * Power: Vext (P0.21) gates the 3V3 rail to the breakout. Vext is held
+ * HIGH from boot, so probing during init works.
+ *
+ * Fail-safe: if no breakout is wired, the SPI NOR driver's JEDEC-ID
+ * probe at boot fails and device_is_ready() returns false. Application
+ * code gates all ext-flash use on that check and logs the absence.
+ */
+&pinctrl {
+	spi3_default: spi3_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  1, 4)>,
+				<NRF_PSEL(SPIM_MOSI, 1, 5)>,
+				<NRF_PSEL(SPIM_MISO, 1, 7)>;
+		};
+	};
+
+	spi3_sleep: spi3_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  1, 4)>,
+				<NRF_PSEL(SPIM_MOSI, 1, 5)>,
+				<NRF_PSEL(SPIM_MISO, 1, 7)>;
+			low-power-enable;
+		};
+	};
+};
+
+&spi3 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	cs-gpios = <&gpio1 2 GPIO_ACTIVE_LOW>;
+	pinctrl-0 = <&spi3_default>;
+	pinctrl-1 = <&spi3_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	ext_flash: w25q128@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <8000000>; /* 8 MHz — conservative; W25Q128JV good to 104 MHz */
+		size = <DT_SIZE_M(128)>;       /* 128 Mbit = 16 MB */
+		has-dpd;
+		t-enter-dpd = <3000>;          /* ns; tDP per W25Q128JV datasheet */
+		t-exit-dpd  = <3000>;          /* ns; tRES1 */
+		jedec-id = [ ef 40 18 ];       /* W25Q128JVSQ */
+	};
+};

@@ -38,6 +38,9 @@
  * Zephyr doesn't enable globally. Declare it ourselves; the linker pulls in
  * the picolibc symbol directly. */
 extern "C" struct tm *localtime_r(const time_t *, struct tm *);
+
+/* Probe result from main.cpp — gates ext-flash use throughout the app. */
+extern "C" bool tinygs_ext_flash_present(void);
 #include "logo_png.h"          /* LOGO_PNG[] — 310x149 TinyGS banner */
 #include "tinygs_display.h"    /* tinygs_display_request_weblogin */
 
@@ -299,11 +302,13 @@ static int status_handler(struct http_client_ctx *client,
 			 "station: %s\n"
 			 "version: %u\n"
 			 "uptime_ms: %lld\n"
-			 "log_seq: %u\n",
+			 "log_seq: %u\n"
+			 "ext_flash: %d\n",
 			 cfg_station[0] ? cfg_station : "tinygs",
 			 (unsigned)TINYGS_VERSION,
 			 (long long)k_uptime_get(),
-			 web_log_head_seq());
+			 web_log_head_seq(),
+			 tinygs_ext_flash_present() ? 1 : 0);
 	if (n < 0) {
 		n = 0;
 	}

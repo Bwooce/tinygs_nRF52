@@ -547,6 +547,41 @@ static void wdt_feeder_work_handler(struct k_work *work)
 }
 
 /* -------------------------------------------------------------------------- */
+/* External SPI NOR (Winbond W25Q128JV on the GPS-port pigtail)                 */
+/* -------------------------------------------------------------------------- */
+/* Fail-safe probe: the Zephyr spi_nor driver verifies the JEDEC ID against
+ * the DTS-declared bytes on its own init. If the breakout isn't wired (or
+ * the chip mis-IDs), device_is_ready() returns false and we just log the
+ * absence. All future use (MCUboot Slot 1, golden-image, littlefs log
+ * volume — see PLAN.md §3.5) is gated on ext_flash_present. */
+#if DT_NODE_EXISTS(DT_NODELABEL(ext_flash))
+static const struct device *ext_flash_dev = DEVICE_DT_GET(DT_NODELABEL(ext_flash));
+#else
+static const struct device *ext_flash_dev = NULL;
+#endif
+static bool ext_flash_present = false;
+
+static void ext_flash_probe(void)
+{
+    if (!ext_flash_dev) {
+        LOG_WRN("ext_flash: DTS node missing — skipping probe");
+        return;
+    }
+    if (!device_is_ready(ext_flash_dev)) {
+        LOG_WRN("ext_flash: not detected on GPS-port SPI3 — FOTA/log-volume unavailable, continuing");
+        return;
+    }
+    ext_flash_present = true;
+    LOG_INF("ext_flash: %s ready (16 MB, jedec-id ef 40 18 — W25Q128JV)",
+            ext_flash_dev->name);
+}
+
+extern "C" bool tinygs_ext_flash_present(void)
+{
+    return ext_flash_present;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Status LED (green, P1.03, active low)                                       */
 /* -------------------------------------------------------------------------- */
 
@@ -3386,6 +3421,7 @@ int main(void)
      * so config.json sync uses authoritative NVS state. Don't double-init. */
     tinygs_display_init();
     watchdog_init();
+    ext_flash_probe();
     led_init();
     breathing_led_init();
     init_radio();
