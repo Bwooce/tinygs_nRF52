@@ -31,6 +31,7 @@
 #include "web_ui.h"
 #include "tinygs_protocol.h"   /* TINYGS_VERSION, tinygs_radio */
 #include "tinygs_config.h"     /* cfg_station[], cfg_admin_pw[], etc. */
+#include "tinygs_tz.h"         /* TZ table for the /config dropdown */
 #include "dashboard_html_gz.h" /* DASHBOARD_HTML_GZ[] — pre-gzipped */
 #include "favicon_png.h"       /* FAVICON_PNG[] */
 
@@ -586,16 +587,19 @@ static struct http_resource_detail_dynamic cs_resource_detail = {
 
 /* ===== /config handler — GET form, POST save ===================== */
 
-/* Render the config form into `out`. Pulls current values from NVS-
- * backed globals so the form is always populated with what's live.
- *
- * Returns bytes written. The form fits comfortably in 2 KB. */
-static int render_config_form(char *out, int cap)
+/* The /config form is rendered as a multi-chunk HTTP response so the 460
+ * timezone <option> rows fit without bloating body[]: the handler is called
+ * repeatedly (Zephyr's dynamic-resource pattern, see http_server_http1.c
+ * around line 500), each call returns the next chunk with final_chunk=false
+ * until the very last one. State lives in config_get_chunk_state below. */
+#define TZ_OPTIONS_PER_CHUNK 30  /* ~30 * 50 B = 1.5 KB per chunk, fits in body[3072] */
+
+/* Header chunk: everything up to <select name='tz'>. */
+static int render_config_form_header(char *out, int cap)
 {
 	extern float tinygs_station_lat;
 	extern float tinygs_station_lon;
 	extern float tinygs_station_alt;
-	extern int8_t cfg_tx_enable;
 
 	int n = snprintf(out, (size_t)cap,
 		"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
@@ -604,7 +608,7 @@ static int render_config_form(char *out, int cap)
 		"body{font-family:Arial;margin:0;padding:14px;max-width:520px;margin:0 auto;}"
 		"h1{font-size:1.2em;margin:0 0 10px 0;text-align:center;}"
 		"label{display:block;margin:10px 0 2px 0;font-size:0.9em;color:#444;}"
-		"input[type=text],input[type=number],input[type=password]{"
+		"input[type=text],input[type=number],input[type=password],select{"
 		"width:100%%;padding:8px;font-size:1em;border:1px solid #888;"
 		"border-radius:4px;box-sizing:border-box;}"
 		"input[type=submit]{margin-top:14px;padding:12px;width:100%%;"
@@ -627,16 +631,50 @@ static int render_config_form(char *out, int cap)
 		"<p class='note'>Leave blank to keep current MQTT password.</p>"
 		"<label>Admin password (web UI)<input type='password' name='admin_pw' placeholder='unchanged' maxlength='31'></label>"
 		"<p class='note'>Used for /config and /restart. Default is &quot;tinygs&quot;.</p>"
+		"<label>Timezone<select name='tz'>",
+		cfg_station,
+		(double)tinygs_station_lat,
+		(double)tinygs_station_lon,
+		(double)tinygs_station_alt,
+		cfg_mqtt_user);
+	return (n < 0) ? 0 : (n > cap ? cap : n);
+}
+
+/* Render one batch of <option> rows starting at start_idx, up to
+ * TZ_OPTIONS_PER_CHUNK or until the array ends. Marks the current
+ * cfg_tz_idx with 'selected'. */
+static int render_config_form_tz_options(char *out, int cap, size_t start_idx)
+{
+	size_t end = start_idx + TZ_OPTIONS_PER_CHUNK;
+	if (end > tinygs_tz_count) end = tinygs_tz_count;
+
+	int pos = 0;
+	for (size_t i = start_idx; i < end; i++) {
+		const char *name = tinygs_tz_get_name((uint16_t)i);
+		int wrote = snprintf(out + pos, cap - pos,
+			"<option value=%u%s>%s",
+			(unsigned)i,
+			i == cfg_tz_idx ? " selected" : "",
+			name);
+		if (wrote < 0 || pos + wrote >= cap) {
+			break;
+		}
+		pos += wrote;
+	}
+	return pos;
+}
+
+/* Footer chunk: close the select + remaining form fields. */
+static int render_config_form_footer(char *out, int cap)
+{
+	extern int8_t cfg_tx_enable;
+	int n = snprintf(out, (size_t)cap,
+		"</select></label>"
 		"<label><input type='checkbox' name='tx' value='1'%s> Allow TX (RF transmit). Operator responsible for licensing.</label>"
 		"<input type='submit' value='Save (reboot to apply MQTT changes)'>"
 		"</form>"
 		"<p class='note'><a href='/'>back to home</a></p>"
 		"</body></html>",
-		cfg_station,
-		(double)tinygs_station_lat,
-		(double)tinygs_station_lon,
-		(double)tinygs_station_alt,
-		cfg_mqtt_user,
 		cfg_tx_enable ? " checked" : "");
 	return (n < 0) ? 0 : (n > cap ? cap : n);
 }
@@ -765,6 +803,19 @@ static int config_handler(struct http_client_ctx *client,
 			LOG_INF("/config: admin_pw changed");
 		}
 
+		if (form_get((const char *)post_buf, post_len, "tz", field, sizeof(field))
+		    && field[0]) {
+			char *end_p = NULL;
+			unsigned long v = strtoul(field, &end_p, 10);
+			if (end_p != field && v < tinygs_tz_count && (uint16_t)v != cfg_tz_idx) {
+				cfg_tz_idx = (uint16_t)v;
+				tinygs_config_save("tz", &cfg_tz_idx, sizeof(cfg_tz_idx));
+				tinygs_tz_apply(cfg_tz_idx);
+				LOG_INF("/config: tz -> %u (%s)", (unsigned)cfg_tz_idx,
+					tinygs_tz_get_name(cfg_tz_idx));
+			}
+		}
+
 		int8_t tx_new = 0;
 		if (form_get((const char *)post_buf, post_len, "tx", field, sizeof(field))
 		    && field[0]) {
@@ -795,11 +846,35 @@ static int config_handler(struct http_client_ctx *client,
 		return 0;
 	}
 
-	/* GET — render the form. */
-	int n = render_config_form(body, sizeof(body));
-	response_ctx->body = (const uint8_t *)body;
-	response_ctx->body_len = (size_t)n;
-	response_ctx->final_chunk = true;
+	/* GET — chunked render. The HTTP server calls this back repeatedly
+	 * while final_chunk stays false. State below tracks our position
+	 * through the form: 0 = emit header; 1..tinygs_tz_count = emit a
+	 * batch of <option> rows starting at (state-1); > tinygs_tz_count
+	 * = emit footer and reset. Static (not per-request) but the rest
+	 * of the handler already shares mutable state via static body[]
+	 * and post_buf[], so the contract is "one /config request at a
+	 * time" — fine for an admin-only endpoint. */
+	static size_t config_get_chunk_state;
+	if (config_get_chunk_state == 0) {
+		int n = render_config_form_header(body, sizeof(body));
+		response_ctx->body = (const uint8_t *)body;
+		response_ctx->body_len = (size_t)n;
+		response_ctx->final_chunk = false;
+		config_get_chunk_state = 1;
+	} else if (config_get_chunk_state <= tinygs_tz_count) {
+		size_t start_idx = config_get_chunk_state - 1;
+		int n = render_config_form_tz_options(body, sizeof(body), start_idx);
+		response_ctx->body = (const uint8_t *)body;
+		response_ctx->body_len = (size_t)n;
+		response_ctx->final_chunk = false;
+		config_get_chunk_state += TZ_OPTIONS_PER_CHUNK;
+	} else {
+		int n = render_config_form_footer(body, sizeof(body));
+		response_ctx->body = (const uint8_t *)body;
+		response_ctx->body_len = (size_t)n;
+		response_ctx->final_chunk = true;
+		config_get_chunk_state = 0; /* reset for next request */
+	}
 	return 0;
 }
 
