@@ -108,7 +108,7 @@ This requires a hardware modification and a **one-time, irreversible software mi
 
 | GPS port pin | nRF52840 pin | Original GPS function | Repurposed for SPI flash |
 |---|---|---|---|
-| 3V3 | (Vext rail, gated by P0.21) | GPS_EN — module power | Flash VCC; raise P0.21 HIGH for flash access, LOW when idle |
+| 3V3 | (Vext rail, gated by P0.21) | GPS_EN — module power | Flash VCC. **Vext must stay HIGH for the entire application runtime** (continuous littlefs writes, MCUboot slot access, OTA staging). Phase 4 "Vext-low-when-idle" cancelled (see §22) — the flash being on this rail removes the freedom. |
 | GND | — | GND | Flash GND |
 | GPS_TX | P1.07 | UART1 RX (CPU-side) | **SPIM3 MISO** |
 | GPS_RX | P1.05 | UART1 TX (CPU-side) | **SPIM3 MOSI** |
@@ -524,20 +524,20 @@ because MQTT keepalive must stay pinned; the Thread radio isn't where the power 
       ~12 call sites, soak-test against an active sat, instrument with a current probe
       to confirm the ~4 mA saving. ~1 day with hardware.
 3.  **Peripheral power gating:**
-    - **Vext (P0.21) LOW when not needed (saves ~3 mA).** Audit:
-      Vext is currently held HIGH from `enable_peripherals()` and never
-      released. The only consumer on the T114 is the on-board NeoPixel
-      strip (SK6812 × 2, fed by SPI2 P0.14, supply line gated by
-      Vext per app.overlay line 38). Everything else has its own
-      enable: green LED is direct PWM0 (independent rail), TFT
-      logic+backlight are on TFT_EN/backlight, ADC bias has its own
-      ADC_CTRL pin (P0.06), no GPS module is fitted. Safe to default
-      Vext OFF at boot, raise only during commissioning (visual
-      feedback during Thread join / DTLS) and on packet RX flashes,
-      lower again when idle. Single owner is enough — no refcount
-      needed yet. Soak-test items: confirm SK6812 accepts new SPI
-      frames after a Vext-off→Vext-on cycle, and that the Adafruit
-      bootloader doesn't assume Vext=HIGH for its DFU LED indication.
+    - **~~Vext (P0.21) LOW when not needed~~** — **CANCELLED 2026-05-07.**
+      Originally aimed at ~1.4 mA NeoPixel-quiescent recovery (the
+      original "~3 mA" claim conflated quiescent with run current).
+      With the W25Q128JV breakout now powered off the same Vext rail
+      (PLAN §3.5), Vext must stay HIGH during application runtime —
+      every littlefs log write, MCUboot slot verification, OTA stage,
+      and golden-restore needs the chip energised. Refcount-gated
+      Vext was considered (option 3 in the 2026-05-07 decision) but
+      our MTD-with-pinned-MQTT architecture never idles, so the
+      refcount never reaches 0 and the saving never materialises;
+      meanwhile any bug in the lifecycle = lost-power-mid-write =
+      corrupted flash. Net Phase 4 power target drops by ~1.4 mA
+      and gains ~1.5 mA from the breakout's power LED (mitigated by
+      desoldering it after smoke tests).
     - **[BLOCKED on bench measurement] TFT_EN (P0.03) LOW when display
       blanked.** Originally estimated ~1.5 mA. Reality is more nuanced:
       `display_blanking_on()` already issues SLPIN to the ST7789V,
@@ -566,13 +566,18 @@ because MQTT keepalive must stay pinned; the Thread radio isn't where the power 
 4.  **Current measurement:** Baseline each state with a power profiler
     (PPK2 or INA219 rig — see methodology block below).
     - Thread joining, MQTT connected idle, LoRa RX, individual peripherals
-    - **Realistic floor target: ~8–9 mA average.** Vbat-drift method on the
-      April 2026 run measured ~17–18 mA average. Confirmed-doable items
-      address ~8.6 mA: SX1262 DC RX (~4), Vext gating (~3), USB disable
-      (~1, [DONE]), CONFIG_RAM_POWER_DOWN (~0.3), PWM uninit when idle
-      (~0.3). TFT_EN (~1.5 estimated) is parked pending a measurement —
-      see §3 above; if the bench shows >0.5 mA delta it goes back into
-      the budget and floor drops to ~7 mA. Remaining ~7 mA is Thread MTD
+    - **Realistic floor target: ~10–11 mA average** (revised 2026-05-07
+      after Vext gating was cancelled — see §3 above). Vbat-drift method
+      on the April 2026 run measured ~17–18 mA average. Confirmed-doable
+      items now address ~5.6 mA: SX1262 DC RX (~4), USB disable (~1,
+      [DONE]), CONFIG_RAM_POWER_DOWN (~0.3), PWM uninit when idle (~0.3).
+      Vext gating (~1.4 actual, not the original ~3) is **cancelled** —
+      the W25Q128JV breakout sits on Vext and the flash must be powered
+      whenever the application runs. The breakout's power LED adds
+      ~1.5 mA on the same rail until desoldered post-smoke-test, after
+      which it returns to baseline. TFT_EN (~1.5 estimated) is parked
+      pending a measurement — see §3 above; if the bench shows >0.5 mA
+      delta it goes back into the budget. Remaining ~7 mA is Thread MTD
       radio rx-on-when-idle (~5–6 mA, pinned by MQTT keepalive — can't
       drop without going SED, which is rejected per §20) plus nRF52840
       active-core overhead (~1 mA). Sub-1 mA is not reachable on this
