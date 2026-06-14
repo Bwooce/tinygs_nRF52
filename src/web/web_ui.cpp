@@ -594,12 +594,54 @@ static struct http_resource_detail_dynamic cs_resource_detail = {
  * until the very last one. State lives in config_get_chunk_state below. */
 #define TZ_OPTIONS_PER_CHUNK 30  /* ~30 * 50 B = 1.5 KB per chunk, fits in body[3072] */
 
+/* Escape src for embedding inside a single-quote-delimited HTML attribute.
+ * Replaces ', &, <, > with their named entities; everything else passes
+ * through. Always NUL-terminates if dstlen >= 1. dst may be NULL to just
+ * measure the needed size (return value). */
+static size_t html_attr_escape(char *dst, size_t dstlen, const char *src)
+{
+	size_t n = 0;
+	const char *ent;
+	while (*src) {
+		switch (*src) {
+		case '&':  ent = "&amp;";  break;
+		case '\'': ent = "&#39;";  break;
+		case '<':  ent = "&lt;";   break;
+		case '>':  ent = "&gt;";   break;
+		default:   ent = NULL;     break;
+		}
+		if (ent) {
+			size_t elen = strlen(ent);
+			if (dst && n + elen < dstlen) {
+				memcpy(dst + n, ent, elen);
+			}
+			n += elen;
+		} else {
+			if (dst && n + 1 < dstlen) { dst[n] = *src; }
+			n += 1;
+		}
+		src++;
+	}
+	if (dst && dstlen > 0) {
+		dst[(n < dstlen) ? n : dstlen - 1] = '\0';
+	}
+	return n;
+}
+
 /* Header chunk: everything up to <select name='tz'>. */
 static int render_config_form_header(char *out, int cap)
 {
 	extern float tinygs_station_lat;
 	extern float tinygs_station_lon;
 	extern float tinygs_station_alt;
+
+	/* Worst case: every char of cfg_station[32] / cfg_mqtt_user[64] becomes
+	 * a 5-char entity (&#39;/&amp;), so 5x + NUL. Stack-resident, scoped
+	 * to this single render call. */
+	char esc_station[5 * sizeof(cfg_station) + 1];
+	char esc_mqtt_user[5 * sizeof(cfg_mqtt_user) + 1];
+	html_attr_escape(esc_station, sizeof(esc_station), cfg_station);
+	html_attr_escape(esc_mqtt_user, sizeof(esc_mqtt_user), cfg_mqtt_user);
 
 	int n = snprintf(out, (size_t)cap,
 		"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
@@ -632,11 +674,11 @@ static int render_config_form_header(char *out, int cap)
 		"<label>Admin password (web UI)<input type='password' name='admin_pw' placeholder='unchanged' maxlength='31'></label>"
 		"<p class='note'>Used for /config and /restart. Default is &quot;tinygs&quot;.</p>"
 		"<label>Timezone<select name='tz'>",
-		cfg_station,
+		esc_station,
 		(double)tinygs_station_lat,
 		(double)tinygs_station_lon,
 		(double)tinygs_station_alt,
-		cfg_mqtt_user);
+		esc_mqtt_user);
 	return (n < 0) ? 0 : (n > cap ? cap : n);
 }
 
