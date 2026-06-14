@@ -42,9 +42,38 @@
  * Power: Vext (P0.21) gates the 3V3 rail to the breakout. Vext is held
  * HIGH from boot, so probing during init works.
  *
- * Fail-safe: if no breakout is wired, the SPI NOR driver's JEDEC-ID
- * probe at boot fails and device_is_ready() returns false. Application
- * code gates all ext-flash use on that check and logs the absence.
+ * --- Currently DISABLED — chip not yet physically wired ---
+ *
+ * The original `status = "okay"` claim of "fail-safe if absent" was wrong:
+ * Zephyr's SPI NOR driver runs `spi_nor_configure()` during SYS_INIT (via
+ * PM_DEVICE_RUNTIME's TURN_ON action), and its `spi_nor_wait_until_ready()`
+ * spin loop has no iteration cap or timeout. With no chip wired, MISO
+ * floats → status register reads 0xFF → WIP bit appears stuck → CPU
+ * spins forever inside SYS_INIT, before main() ever runs. No boot
+ * banner, no USB CDC enumeration past the brief stack init, no watchdog
+ * (WDT isn't armed until watchdog_init() inside main). Confirmed in
+ * bisect cycle 4 of e230dcc → main: device hangs identically every time.
+ *
+ * To re-enable when the breakout is physically wired:
+ *   1. Verify the four-pin wiring matches the pinctrl block below
+ *      (P1.02 CS, P1.04 SCK, P1.05 MOSI, P1.07 MISO).
+ *   2. Confirm Vext is on at boot (enable_peripherals() in main.cpp).
+ *      A multimeter on the breakout's VCC should read ~3.3 V.
+ *   3. Edit BOTH lines below:
+ *        - `ext_flash:` node:  status = "disabled"  →  status = "okay"
+ *      The `&spi3` controller node already stays `status = "okay"`.
+ *   4. Rebuild and flash. On boot you should see one of:
+ *        <inf> tinygs_nrf52: ext_flash: spi3@... ready (16 MB, jedec-id ...)
+ *      (success — proceed) or:
+ *        <wrn> tinygs_nrf52: ext_flash: not detected ... continuing
+ *      (driver bound but chip didn't respond — re-check wiring).
+ *      If the device hangs at boot again, the wiring is wrong and the
+ *      driver's spin loop is back — disable the node and check pins.
+ *
+ * TODO: a robust upstream fix would patch spi_nor_wait_until_ready() to
+ * cap iterations and return -ENODEV on suspected absence — then we could
+ * leave the node `okay` permanently and let the runtime probe decide.
+ * Until then, the DTS gates physical presence honestly.
  */
 &pinctrl {
 	spi3_default: spi3_default {
@@ -75,6 +104,10 @@
 
 	ext_flash: w25q128@0 {
 		compatible = "jedec,spi-nor";
+		/* status: flip to "okay" once the W25Q128JV breakout is wired —
+		 * see the multi-line comment above &pinctrl for the full procedure
+		 * and the reason this stays disabled until then. */
+		status = "disabled";
 		reg = <0>;
 		spi-max-frequency = <8000000>; /* 8 MHz — conservative; W25Q128JV good to 104 MHz */
 		size = <DT_SIZE_M(128)>;       /* 128 Mbit = 16 MB */
