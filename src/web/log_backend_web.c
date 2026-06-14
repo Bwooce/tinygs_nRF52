@@ -44,8 +44,11 @@ extern int64_t get_utc_epoch(void);
 
 /* Ring buffer size — sized for ~10 typical log lines plus the
  * 10-byte per-line header. Lost lines are silently overwritten
- * (head-overwrites-tail) when the buffer fills. */
-#define WEB_LOG_RING_SIZE 4096
+ * (head-overwrites-tail) when the buffer fills.
+ * Trimmed 4096→2048 to reclaim 2 KB RAM; only reduces web-console
+ * scroll-back depth (the /cs short-poll fetches incrementally by seq,
+ * so a deeper client cursor than the ring holds just sees a gap). */
+#define WEB_LOG_RING_SIZE 2048
 
 /* Per-line header layout (little-endian everywhere):
  *   bytes 0..3   uint32_t seq      monotonic, never wraps in practice
