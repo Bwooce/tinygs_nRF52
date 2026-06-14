@@ -128,6 +128,12 @@ int tinygs_build_welcome(char *buf, size_t buflen,
     static char escaped_template[256];
     tinygs_json_escape(escaped_template, sizeof(escaped_template), board_template);
 
+    /* satellite[32] worst-case escape = 64+1. Static so we can pass it as a
+     * %s arg without stack pressure; this builder is only called from the
+     * MQTT main-loop thread. */
+    static char escaped_sat[80];
+    tinygs_json_escape(escaped_sat, sizeof(escaped_sat), tinygs_radio.satellite);
+
     return snprintf(buf, buflen,
         "{"
         "\"station_location\":[%.4f,%.4f],"
@@ -161,7 +167,7 @@ int tinygs_build_welcome(char *buf, size_t buflen,
         (unsigned)uptime_s,
         vbat_mv,
         cfg_tx_enable ? "true" : "false",
-        tinygs_radio.satellite,
+        escaped_sat,
         ip_str,
         (unsigned)utc_epoch_s,
         escaped_conf
@@ -332,6 +338,11 @@ int tinygs_send_rx(struct mqtt_client *client,
     bool is_fsk = (strcmp(tinygs_radio.modem_mode, "FSK") == 0);
     int len;
 
+    /* satellite[32] worst-case escape = 64+1. Static buffer; this builder is
+     * only called from the MQTT main-loop thread. */
+    static char escaped_sat[80];
+    tinygs_json_escape(escaped_sat, sizeof(escaped_sat), tinygs_radio.satellite);
+
     if (!is_fsk) {
         len = snprintf(payload_buf, sizeof(payload_buf),
             "{"
@@ -355,7 +366,7 @@ int tinygs_send_rx(struct mqtt_client *client,
             "\"iIQ\":%s",
             (double)tinygs_station_lat, (double)tinygs_station_lon,
             (double)tinygs_radio.frequency, (double)tinygs_radio.freq_offset,
-            tinygs_radio.satellite,
+            escaped_sat,
             tinygs_radio.sf, tinygs_radio.cr, (double)tinygs_radio.bw,
             (double)rssi, (double)snr, (double)freq_err,
             (unsigned)epoch,
@@ -399,7 +410,7 @@ int tinygs_send_rx(struct mqtt_client *client,
             "}",
             (double)tinygs_station_lat, (double)tinygs_station_lon,
             (double)tinygs_radio.frequency, (double)tinygs_radio.freq_offset,
-            tinygs_radio.satellite,
+            escaped_sat,
             (double)tinygs_radio.bitrate, (double)tinygs_radio.freq_dev,
             (double)tinygs_radio.bw,
             (double)rssi, (double)snr, (double)freq_err,
@@ -442,6 +453,11 @@ int tinygs_send_status(struct mqtt_client *client,
     bool is_fsk = (strcmp(tinygs_radio.modem_mode, "FSK") == 0);
     int len;
 
+    /* satellite[32] worst-case escape = 64+1. Static; MQTT main-loop thread
+     * only. */
+    static char escaped_sat[80];
+    tinygs_json_escape(escaped_sat, sizeof(escaped_sat), tinygs_radio.satellite);
+
     if (!is_fsk) {
         len = snprintf(payload_buf, sizeof(payload_buf),
             "{"
@@ -470,7 +486,7 @@ int tinygs_send_status(struct mqtt_client *client,
             (unsigned)TINYGS_VERSION, TINYGS_BOARD,
             cfg_tx_enable ? "true" : "false",
             (double)tinygs_radio.frequency, (double)tinygs_radio.freq_offset,
-            tinygs_radio.satellite,
+            escaped_sat,
             tinygs_radio.sf, tinygs_radio.cr, (double)tinygs_radio.bw,
             tinygs_radio.pl,
             tinygs_radio.crc_on ? "true" : "false",
@@ -508,7 +524,7 @@ int tinygs_send_status(struct mqtt_client *client,
             (unsigned)TINYGS_VERSION, TINYGS_BOARD,
             cfg_tx_enable ? "true" : "false",
             (double)tinygs_radio.frequency, (double)tinygs_radio.freq_offset,
-            tinygs_radio.satellite,
+            escaped_sat,
             (double)tinygs_radio.bitrate, (double)tinygs_radio.freq_dev,
             (double)tinygs_radio.bw,
             tinygs_radio.ook,
