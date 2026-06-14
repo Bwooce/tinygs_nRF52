@@ -2010,7 +2010,15 @@ static int mqtt_tls_connect(void)
     mqtt_client.transport.type = MQTT_TRANSPORT_SECURE;
 
     struct mqtt_sec_config *tls_cfg = &mqtt_client.transport.tls.config;
-    tls_cfg->peer_verify = TLS_PEER_VERIFY_NONE;
+    /* Verify the broker cert against the bundled CA chain + SNI hostname.
+     * STATE_DNS_RESOLVE runs sntp_sync() before we ever land here, so the
+     * mbedTLS validity-window check has a usable wall clock. On cold boot
+     * with SNTP still failing, the handshake will fail; STATE_ERROR sleeps
+     * 30 s and retries DNS_RESOLVE, which retries SNTP (sntp_done_this_boot
+     * is only set on success). Eventually time syncs and TLS verifies.
+     * Trading reconnect cycles for never-silently-MITM-able is the right
+     * call here; broker-pushed commands include reset/update/retune. */
+    tls_cfg->peer_verify = TLS_PEER_VERIFY_REQUIRED;
     tls_cfg->cipher_list = NULL;
     tls_cfg->sec_tag_list = sec_tag_list;
     tls_cfg->sec_tag_count = ARRAY_SIZE(sec_tag_list);
