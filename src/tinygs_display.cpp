@@ -22,6 +22,7 @@
 #include "font8x16.h"
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/pm/device_runtime.h>
 #include <zephyr/drivers/display.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
@@ -481,6 +482,18 @@ bool tinygs_display_init(void)
         disp_dev = NULL;
         return false;
     }
+
+    /* Pin the display device active for the lifetime of the app. With
+     * CONFIG_PM_DEVICE_RUNTIME=y (added in e230dcc for the SPI NOR DPD path),
+     * Zephyr's pm subsystem can suspend devices — the st7789v PM handler
+     * sends SLEEP_IN on suspend, leaving the panel asleep and the screen
+     * dark even though our backlight GPIO is high. Taking a runtime get
+     * here increments the usage refcount so the panel never auto-suspends.
+     * Without PM_DEVICE_RUNTIME the call inlines to a no-op (return 0), so
+     * this is safe in both configurations and survives any future toggle
+     * of the Kconfig. The matching _put() is intentionally never called —
+     * the display is always-on at the app level. */
+    (void)pm_device_runtime_get(disp_dev);
 
     /* Enable TFT power (P0.03) — must be driven before display will work */
     static const struct gpio_dt_spec tft_en = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(tft_en), gpios, {0});
