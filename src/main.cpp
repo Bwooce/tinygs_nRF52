@@ -554,7 +554,11 @@ static void wdt_feeder_work_handler(struct k_work *work)
  * the chip mis-IDs), device_is_ready() returns false and we just log the
  * absence. All future use (MCUboot Slot 1, golden-image, littlefs log
  * volume — see PLAN.md §3.5) is gated on ext_flash_present. */
-#if DT_NODE_EXISTS(DT_NODELABEL(ext_flash))
+/* Bind only when the DTS node is enabled. With status="disabled" (chip not
+ * physically wired — see app.overlay), DEVICE_DT_GET would reference a
+ * `__device_dts_ord_*` symbol the build system never emits → link error.
+ * DT_NODE_HAS_STATUS gates on the actual binding. */
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(ext_flash), okay)
 static const struct device *ext_flash_dev = DEVICE_DT_GET(DT_NODELABEL(ext_flash));
 #else
 static const struct device *ext_flash_dev = NULL;
