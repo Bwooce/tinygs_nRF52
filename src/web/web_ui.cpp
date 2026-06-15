@@ -721,6 +721,26 @@ static int render_config_form_footer(char *out, int cap)
 	return (n < 0) ? 0 : (n > cap ? cap : n);
 }
 
+/* /config handler state — chunked GET emits 460 TZ <option> rows across
+ * many callbacks while the POST path accumulates form-data into post_buf.
+ * Both pieces of state live as statics inside this handler. The Zephyr
+ * dynamic-resource contract calls us back with:
+ *   DATA_MORE        — partial request data (POST body still arriving)
+ *   DATA_FINAL       — request complete, called repeatedly while we
+ *                      stream response chunks until final_chunk = true
+ *   TRANSACTION_COMPLETE  — response has been sent in full (one-shot)
+ *   TRANSACTION_ABORTED   — client disconnected mid-stream (one-shot)
+ *
+ * We MUST reset both static state vars on COMPLETE and ABORTED — without
+ * that, an interrupted /config GET leaves config_get_chunk_state poisoned
+ * and the next /config request renders <option> rows without a preceding
+ * HTML preamble (corrupt page) until the state machine self-heals at the
+ * footer. The state lives at file scope so the terminal-event branch can
+ * see it without re-declaring. */
+static size_t config_get_chunk_state;
+static uint8_t config_post_buf[1024];
+static size_t config_post_len;
+
 static int config_handler(struct http_client_ctx *client,
 			  enum http_transaction_status status,
 			  const struct http_request_ctx *request_ctx,
@@ -729,21 +749,40 @@ static int config_handler(struct http_client_ctx *client,
 {
 	ARG_UNUSED(user_data);
 
+	/* Terminal events: reset our static state and bail. We get one of
+	 * these once per request (COMPLETE on success, ABORTED on client
+	 * disconnect mid-stream). Without this, a curl ^C in the middle of
+	 * the long /config response leaves config_get_chunk_state pointing
+	 * at "rendering options batch N" and the next /config GET picks
+	 * up from there with no <html><head>…</head><body> preamble. */
+	if (status == HTTP_SERVER_TRANSACTION_COMPLETE ||
+	    status == HTTP_SERVER_TRANSACTION_ABORTED) {
+		config_get_chunk_state = 0;
+		config_post_len = 0;
+		return 0;
+	}
+
 	/* Auth check on the very first chunk so we can 401 immediately. */
 	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
 		/* Body chunks may arrive before we get the final flag; we
 		 * accumulate POST data here. */
 		if (client->method == HTTP_POST) {
-			static uint8_t post_buf[1024];
-			static size_t post_len;
+			/* config_post_buf / config_post_len are at file scope so
+			 * the TRANSACTION_COMPLETE / ABORTED reset above can
+			 * clear them. Pre-this-commit, two separate inner-scope
+			 * statics with the same names existed in this branch
+			 * and the FINAL branch — they were different variables
+			 * (C block-scope static), so DATA_MORE accumulator
+			 * writes were invisible to the FINAL handler's read.
+			 * This commit merges them into one. */
 			if (request_ctx && request_ctx->data_len > 0 &&
-			    post_len + request_ctx->data_len <= sizeof(post_buf)) {
-				memcpy(post_buf + post_len, request_ctx->data,
+			    config_post_len + request_ctx->data_len <= sizeof(config_post_buf)) {
+				memcpy(config_post_buf + config_post_len, request_ctx->data,
 				       request_ctx->data_len);
-				post_len += request_ctx->data_len;
+				config_post_len += request_ctx->data_len;
 			}
-			/* Stash so the FINAL pass can read it; abuse user_data
-			 * via static scope. Cleared at FINAL. */
+			/* Stash so the FINAL pass can read it. Cleared at
+			 * TRANSACTION_COMPLETE / ABORTED. */
 		}
 		return 0;
 	}
@@ -761,21 +800,22 @@ static int config_handler(struct http_client_ctx *client,
 		extern float tinygs_station_lon;
 		extern float tinygs_station_alt;
 		extern int8_t cfg_tx_enable;
-		static uint8_t post_buf[1024];
-		static size_t post_len;
+		/* Use the file-scope config_post_buf / config_post_len declared
+		 * above the handler — the same backing storage the DATA_MORE
+		 * accumulator wrote into. */
 		/* Append any FINAL-chunk data still being delivered. */
 		if (request_ctx && request_ctx->data_len > 0 &&
-		    post_len + request_ctx->data_len <= sizeof(post_buf)) {
-			memcpy(post_buf + post_len, request_ctx->data,
+		    config_post_len + request_ctx->data_len <= sizeof(config_post_buf)) {
+			memcpy(config_post_buf + config_post_len, request_ctx->data,
 			       request_ctx->data_len);
-			post_len += request_ctx->data_len;
+			config_post_len += request_ctx->data_len;
 		}
 
 		char field[256];
 		bool changes = false;
 		bool mqtt_changed = false;
 
-		if (form_get((const char *)post_buf, post_len, "station", field, sizeof(field))
+		if (form_get((const char *)config_post_buf, config_post_len, "station", field, sizeof(field))
 		    && field[0]) {
 			if (strncmp(cfg_station, field, sizeof(cfg_station)) != 0) {
 				strncpy(cfg_station, field, sizeof(cfg_station) - 1);
@@ -786,7 +826,7 @@ static int config_handler(struct http_client_ctx *client,
 				LOG_INF("/config: station -> %s", cfg_station);
 			}
 		}
-		if (form_get((const char *)post_buf, post_len, "lat", field, sizeof(field))
+		if (form_get((const char *)config_post_buf, config_post_len, "lat", field, sizeof(field))
 		    && field[0]) {
 			float v = strtof(field, NULL);
 			if (v != tinygs_station_lat) {
@@ -794,7 +834,7 @@ static int config_handler(struct http_client_ctx *client,
 				changes = true;
 			}
 		}
-		if (form_get((const char *)post_buf, post_len, "lon", field, sizeof(field))
+		if (form_get((const char *)config_post_buf, config_post_len, "lon", field, sizeof(field))
 		    && field[0]) {
 			float v = strtof(field, NULL);
 			if (v != tinygs_station_lon) {
@@ -802,7 +842,7 @@ static int config_handler(struct http_client_ctx *client,
 				changes = true;
 			}
 		}
-		if (form_get((const char *)post_buf, post_len, "alt", field, sizeof(field))
+		if (form_get((const char *)config_post_buf, config_post_len, "alt", field, sizeof(field))
 		    && field[0]) {
 			float v = strtof(field, NULL);
 			if (v != tinygs_station_alt) {
@@ -816,7 +856,7 @@ static int config_handler(struct http_client_ctx *client,
 						    tinygs_station_alt);
 		}
 
-		if (form_get((const char *)post_buf, post_len, "mqtt_user", field, sizeof(field))
+		if (form_get((const char *)config_post_buf, config_post_len, "mqtt_user", field, sizeof(field))
 		    && field[0]) {
 			if (strncmp(cfg_mqtt_user, field, sizeof(cfg_mqtt_user)) != 0) {
 				strncpy(cfg_mqtt_user, field, sizeof(cfg_mqtt_user) - 1);
@@ -827,7 +867,7 @@ static int config_handler(struct http_client_ctx *client,
 					strlen(cfg_mqtt_user));
 			}
 		}
-		if (form_get((const char *)post_buf, post_len, "mqtt_pass", field, sizeof(field))
+		if (form_get((const char *)config_post_buf, config_post_len, "mqtt_pass", field, sizeof(field))
 		    && field[0]) {
 			strncpy(cfg_mqtt_pass, field, sizeof(cfg_mqtt_pass) - 1);
 			cfg_mqtt_pass[sizeof(cfg_mqtt_pass) - 1] = '\0';
@@ -837,7 +877,7 @@ static int config_handler(struct http_client_ctx *client,
 				strlen(cfg_mqtt_pass));
 		}
 
-		if (form_get((const char *)post_buf, post_len, "admin_pw", field, sizeof(field))
+		if (form_get((const char *)config_post_buf, config_post_len, "admin_pw", field, sizeof(field))
 		    && field[0]) {
 			strncpy(cfg_admin_pw, field, sizeof(cfg_admin_pw) - 1);
 			cfg_admin_pw[sizeof(cfg_admin_pw) - 1] = '\0';
@@ -845,7 +885,7 @@ static int config_handler(struct http_client_ctx *client,
 			LOG_INF("/config: admin_pw changed");
 		}
 
-		if (form_get((const char *)post_buf, post_len, "tz", field, sizeof(field))
+		if (form_get((const char *)config_post_buf, config_post_len, "tz", field, sizeof(field))
 		    && field[0]) {
 			char *end_p = NULL;
 			unsigned long v = strtoul(field, &end_p, 10);
@@ -859,7 +899,7 @@ static int config_handler(struct http_client_ctx *client,
 		}
 
 		int8_t tx_new = 0;
-		if (form_get((const char *)post_buf, post_len, "tx", field, sizeof(field))
+		if (form_get((const char *)config_post_buf, config_post_len, "tx", field, sizeof(field))
 		    && field[0]) {
 			tx_new = (field[0] == '1') ? 1 : 0;
 		}
@@ -869,7 +909,8 @@ static int config_handler(struct http_client_ctx *client,
 			LOG_INF("/config: tx_enable -> %d", cfg_tx_enable);
 		}
 
-		post_len = 0; /* reset for next request */
+		config_post_len = 0; /* reset for next request; also reset by
+				      * TRANSACTION_COMPLETE branch at the top */
 
 		const char *banner = mqtt_changed
 			? "<p style='color:#a40'>Saved. Restart to apply MQTT/station changes.</p>"
@@ -889,14 +930,20 @@ static int config_handler(struct http_client_ctx *client,
 	}
 
 	/* GET — chunked render. The HTTP server calls this back repeatedly
-	 * while final_chunk stays false. State below tracks our position
-	 * through the form: 0 = emit header; 1..tinygs_tz_count = emit a
-	 * batch of <option> rows starting at (state-1); > tinygs_tz_count
-	 * = emit footer and reset. Static (not per-request) but the rest
-	 * of the handler already shares mutable state via static body[]
-	 * and post_buf[], so the contract is "one /config request at a
-	 * time" — fine for an admin-only endpoint. */
-	static size_t config_get_chunk_state;
+	 * while final_chunk stays false. config_get_chunk_state (declared at
+	 * file scope above) tracks our position through the form:
+	 *   0                       = emit header
+	 *   1..tinygs_tz_count       = emit a batch of <option> rows starting at (state-1)
+	 *   > tinygs_tz_count        = emit footer + reset state = 0 + final_chunk = true
+	 *
+	 * The state lives at file scope (not function-static) so the
+	 * TRANSACTION_COMPLETE / ABORTED branch at the top can also reset it
+	 * on a client disconnect mid-stream. Without that, a curl ^C between
+	 * chunks left state pointing into the middle of options-rendering and
+	 * the next /config GET emitted <option> rows with no <html><body>
+	 * preamble (corrupt page) until the state machine self-healed at the
+	 * footer. Single-request-at-a-time contract is unchanged; the chunk
+	 * state machine is sequential within a request. */
 	if (config_get_chunk_state == 0) {
 		int n = render_config_form_header(body, sizeof(body));
 		response_ctx->body = (const uint8_t *)body;
