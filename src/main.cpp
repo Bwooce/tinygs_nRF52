@@ -3539,7 +3539,16 @@ int main(void)
                 while (app_state == STATE_MQTT_CONNECT && wait_ms > 0) {
                     int rc = zsock_poll(&mqtt_poll_fd, mqtt_poll_fd_count, 1000);
                     if (rc > 0) {
-                        mqtt_input(&mqtt_client);
+                        int in_rc = mqtt_input(&mqtt_client);
+                        if (in_rc < 0) {
+                            LOG_ERR("mqtt_input failed during connect: %d", in_rc);
+                            app_state = STATE_ERROR;
+                            break;
+                        }
+                    } else if (rc < 0) {
+                        LOG_ERR("zsock_poll failed during connect: %d", rc);
+                        app_state = STATE_ERROR;
+                        break;
                     }
                     mqtt_live(&mqtt_client);
                     wait_ms -= 1000;
@@ -3582,13 +3591,31 @@ int main(void)
                 main_phase = MAIN_PHASE_POLL;
                 int rc = zsock_poll(&mqtt_poll_fd, mqtt_poll_fd_count, 100);
                 if (rc > 0) {
-                    mqtt_input(&mqtt_client);
+                    int in_rc = mqtt_input(&mqtt_client);
+                    if (in_rc < 0) {
+                        LOG_ERR("mqtt_input failed: %d", in_rc);
+                        mqtt_disconnect(&mqtt_client, NULL);
+                        app_state = STATE_MQTT_CONNECT;
+                        break;
+                    }
+                } else if (rc < 0) {
+                    LOG_ERR("zsock_poll failed: %d", rc);
+                    mqtt_disconnect(&mqtt_client, NULL);
+                    app_state = STATE_MQTT_CONNECT;
+                    break;
                 }
+                
                 main_phase = MAIN_PHASE_MQTT_LIVE;
                 {
                     int live_ret = mqtt_live(&mqtt_client);
-                    if (live_ret && live_ret != -EAGAIN) {
+                    if (live_ret != 0 && live_ret != -EAGAIN) {
                         LOG_DBG("mqtt_live: %d (%s)", live_ret, errno_name(live_ret));
+                        if (live_ret == -128) { /* -ENOTCONN */
+                            LOG_ERR("MQTT disconnected (detected by mqtt_live), reconnecting...");
+                            mqtt_disconnect(&mqtt_client, NULL);
+                            app_state = STATE_MQTT_CONNECT;
+                            break;
+                        }
                     }
 
                     /* Active broker liveness probe. Zephyr's mqtt_live() only

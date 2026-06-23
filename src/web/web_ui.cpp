@@ -91,10 +91,15 @@ static bool basic_auth_ok(struct http_client_ctx *client)
 	const char *b64 = value + 6;
 	while (*b64 == ' ') b64++;
 
+	size_t b64_len = strlen(b64);
+	while (b64_len > 0 && b64[b64_len - 1] <= ' ') {
+		b64_len--;
+	}
+
 	uint8_t decoded[96];
 	size_t decoded_len = 0;
 	if (base64_decode(decoded, sizeof(decoded) - 1, &decoded_len,
-			  (const uint8_t *)b64, strlen(b64)) != 0) {
+			  (const uint8_t *)b64, b64_len) != 0) {
 		return false;
 	}
 	decoded[decoded_len] = '\0';
@@ -401,6 +406,9 @@ static int parse_seq_from_query(const char *url_buf, size_t url_len, uint32_t *o
 		return -1;
 	}
 	for (size_t i = 0; i + 3 < url_len; i++) {
+		if (url_buf[i] == '\0') {
+			break;
+		}
 		if (url_buf[i] == 'c' && url_buf[i+1] == '2' && url_buf[i+2] == '=') {
 			uint32_t v = 0;
 			size_t j = i + 3;
@@ -425,6 +433,9 @@ static bool parse_cmd_from_query(const char *url_buf, size_t url_len,
 	out[0] = '\0';
 	if (!url_buf || url_len == 0) return false;
 	for (size_t i = 0; i + 3 < url_len; i++) {
+		if (url_buf[i] == '\0') {
+			break;
+		}
 		if (url_buf[i] == 'c' && url_buf[i+1] == '1' && url_buf[i+2] == '=') {
 			size_t n = 0, j = i + 3;
 			while (j < url_len && out_cap > 1 && n < out_cap - 1) {
@@ -1053,10 +1064,17 @@ static int wm_handler(struct http_client_ctx *client,
 	int cy = (int)(snap.sat_pos_y * 135.0f / 64.0f);
 
 	int n = 0;
-	n += snprintf(body + n, sizeof(body) - n, "%d,%d,", cx, cy);
+#define APPEND_SNPRINTF(...) do { \
+	if (n < (int)sizeof(body) - 1) { \
+		int _wrote = snprintf(body + n, sizeof(body) - n, __VA_ARGS__); \
+		if (_wrote > 0) n += _wrote; \
+	} \
+} while(0)
+
+	APPEND_SNPRINTF("%d,%d,", cx, cy);
 
 	/* === modemconfig: 7 items (mode, freq, foff, noise, sf|br, cr|fdev, bw) === */
-	n += snprintf(body + n, sizeof(body) - n, "%s,%.4f,%.0f,",
+	APPEND_SNPRINTF("%s,%.4f,%.0f,",
 		      snap.modem_mode[0] ? snap.modem_mode : "-",
 		      (double)snap.frequency,
 		      (double)snap.freq_offset);
@@ -1066,25 +1084,25 @@ static int wm_handler(struct http_client_ctx *client,
 	 * read is possible but would need to be plumbed through a non-
 	 * blocking accessor; for now this matches the ESP32 fork's reading
 	 * which is "last observed RSSI"). */
-	n += snprintf(body + n, sizeof(body) - n, "%.0f,",
+	APPEND_SNPRINTF("%.0f,",
 		      (double)snap.last_rssi);
 
 	if (strcmp(snap.modem_mode, "LoRa") == 0) {
-		n += snprintf(body + n, sizeof(body) - n, "%d,%d,",
+		APPEND_SNPRINTF("%d,%d,",
 			      snap.sf, snap.cr);
 	} else {
-		n += snprintf(body + n, sizeof(body) - n, "%.1f,%.0f,",
+		APPEND_SNPRINTF("%.1f,%.0f,",
 			      (double)snap.bitrate, (double)snap.freq_dev);
 	}
-	n += snprintf(body + n, sizeof(body) - n, "%.1f,",
+	APPEND_SNPRINTF("%.1f,",
 		      (double)snap.bw);
 
 	/* === gsstatus: 7 items (name, ver, mqtt, parent_rssi, radio, GNSS, Power) === */
-	n += snprintf(body + n, sizeof(body) - n, "%s,%u,",
+	APPEND_SNPRINTF("%s,%u,",
 		      cfg_station[0] ? cfg_station : "tinygs",
 		      (unsigned)TINYGS_VERSION);
 
-	n += snprintf(body + n, sizeof(body) - n, "%s,",
+	APPEND_SNPRINTF("%s,",
 		      mqtt_up ? "<span class='G'>CONNECTED</span>"
 			      : "<span class='R'>NOT CONNECTED</span>");
 
@@ -1098,13 +1116,12 @@ static int wm_handler(struct http_client_ctx *client,
 			parent_rssi = rssi;
 		}
 	}
-	n += snprintf(body + n, sizeof(body) - n, "%d dBm,", parent_rssi);
+	APPEND_SNPRINTF("%d dBm,", parent_rssi);
 
-	n += snprintf(body + n, sizeof(body) - n,
-		      "<span class='G'>READY</span>,");
+	APPEND_SNPRINTF("<span class='G'>READY</span>,");
 
 	/* GNSS — no module on the T114; placeholder. */
-	n += snprintf(body + n, sizeof(body) - n, "-,");
+	APPEND_SNPRINTF("-,");
 
 	/* Power: USB/Sol|BAT V.VV V (P%). No charge-current sensor on the
 	 * T114, so we don't render mA. Battery percentage is a crude
@@ -1115,29 +1132,27 @@ static int wm_handler(struct http_client_ctx *client,
 		int pct = ((vbat_mv - 3300) * 100) / (4200 - 3300);
 		if (pct < 0) pct = 0;
 		if (pct > 100) pct = 100;
-		n += snprintf(body + n, sizeof(body) - n,
-			      "%s %.2fV %d%%,",
+		APPEND_SNPRINTF("%s %.2fV %d%%,",
 			      vbus ? "USB" : "BAT",
 			      (double)vbat_mv / 1000.0, pct);
 	}
 
 	/* === satdata: 6 items === */
-	n += snprintf(body + n, sizeof(body) - n, "%s,",
+	APPEND_SNPRINTF("%s,",
 		      snap.satellite[0] ? snap.satellite : "-");
 
 	/* Sat lat/lon, az/el — populated by doppler_update() in main.cpp.
 	 * tle_valid is set when we've received a real TLE; before that
 	 * fall back to "-" so the dashboard doesn't show stale zero values. */
 	if (snap.tle_valid) {
-		n += snprintf(body + n, sizeof(body) - n,
-			      "%.2f / %.2f,%.0f / %.1f,",
+		APPEND_SNPRINTF("%.2f / %.2f,%.0f / %.1f,",
 			      (double)snap.sat_lat, (double)snap.sat_lon,
 			      (double)snap.sat_azimuth, (double)snap.sat_elevation);
 	} else {
-		n += snprintf(body + n, sizeof(body) - n, "- / -,- / -,");
+		APPEND_SNPRINTF("- / -,- / -,");
 	}
 
-	n += snprintf(body + n, sizeof(body) - n, "%.0f Hz,",
+	APPEND_SNPRINTF("%.0f Hz,",
 		      (double)snap.freq_doppler);
 
 	/* Local + UTC time. cfg_tz_idx (POSIX TZ rule applied via tinygs_tz_apply
@@ -1147,32 +1162,31 @@ static int wm_handler(struct http_client_ctx *client,
 		struct tm tm_local, tm_utc;
 		localtime_r(&now, &tm_local);
 		gmtime_r(&now, &tm_utc);
-		n += snprintf(body + n, sizeof(body) - n,
-			      "%02d:%02d:%02d,%02d:%02d:%02d,",
+		APPEND_SNPRINTF("%02d:%02d:%02d,%02d:%02d:%02d,",
 			      tm_local.tm_hour, tm_local.tm_min, tm_local.tm_sec,
 			      tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
 	} else {
-		n += snprintf(body + n, sizeof(body) - n, "-,-,");
+		APPEND_SNPRINTF("-,-,");
 	}
 
 	/* Last packet timestamp — emit time-since in seconds for readability,
 	 * or "-" if no packet received yet this boot. */
 	if (snap.last_packet_uptime_ms > 0) {
 		int64_t age_s = (k_uptime_get() - snap.last_packet_uptime_ms) / 1000;
-		n += snprintf(body + n, sizeof(body) - n, "%llds ago,",
+		APPEND_SNPRINTF("%llds ago,",
 			      (long long)age_s);
 	} else {
-		n += snprintf(body + n, sizeof(body) - n, "-,");
+		APPEND_SNPRINTF("-,");
 	}
 
-	n += snprintf(body + n, sizeof(body) - n, "%.0f,%.1f,%.0f,%s\n",
+	APPEND_SNPRINTF("%.0f,%.1f,%.0f,%s\n",
 		      (double)snap.last_rssi,
 		      (double)snap.last_snr,
 		      (double)snap.last_freq_err,
 		      snap.last_crc_error ? "CRC ERROR!" : "");
 
-	if (n < 0) n = 0;
-	if (n > (int)sizeof(body)) n = sizeof(body);
+#undef APPEND_SNPRINTF
+	if (n > (int)sizeof(body) - 1) n = sizeof(body) - 1;
 
 	response_ctx->body = (uint8_t *)body;
 	response_ctx->body_len = (size_t)n;
