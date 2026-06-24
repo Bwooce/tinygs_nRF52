@@ -1018,7 +1018,6 @@ static void init_openthread(void)
     /* Check if we already have a valid dataset (from a previous successful join) */
     otOperationalDataset dataset;
     otError err = otDatasetGetActive(inst, &dataset);
-
     if (err == OT_ERROR_NONE && dataset.mComponents.mIsNetworkKeyPresent) {
         LOG_INF("Found existing dataset — attaching directly");
         dump_ot_dataset(ctx);
@@ -3542,11 +3541,13 @@ int main(void)
                         int in_rc = mqtt_input(&mqtt_client);
                         if (in_rc < 0) {
                             LOG_ERR("mqtt_input failed during connect: %d", in_rc);
+                            mqtt_disconnect(&mqtt_client, NULL);
                             app_state = STATE_ERROR;
                             break;
                         }
                     } else if (rc < 0) {
                         LOG_ERR("zsock_poll failed during connect: %d", rc);
+                        mqtt_disconnect(&mqtt_client, NULL);
                         app_state = STATE_ERROR;
                         break;
                     }
@@ -3609,14 +3610,12 @@ int main(void)
                 {
                     int live_ret = mqtt_live(&mqtt_client);
                     if (live_ret != 0 && live_ret != -EAGAIN) {
-                        LOG_DBG("mqtt_live: %d (%s)", live_ret, errno_name(live_ret));
-                        if (live_ret == -128) { /* -ENOTCONN */
-                            LOG_ERR("MQTT disconnected (detected by mqtt_live), reconnecting...");
-                            mqtt_disconnect(&mqtt_client, NULL);
-                            app_state = STATE_MQTT_CONNECT;
-                            break;
-                        }
+                        LOG_ERR("mqtt_live error: %d (%s)", live_ret, errno_name(live_ret));
+                        mqtt_disconnect(&mqtt_client, NULL);
+                        app_state = STATE_MQTT_CONNECT;
+                        break;
                     }
+                }
 
                     /* Active broker liveness probe. Zephyr's mqtt_live() only
                      * issues PINGREQ when its own internal.last_activity is
@@ -3644,7 +3643,6 @@ int main(void)
                         app_state = STATE_MQTT_CONNECT;
                         break;
                     }
-                }
 
                 main_phase = MAIN_PHASE_LORA_RX;
                 lora_check_rx();

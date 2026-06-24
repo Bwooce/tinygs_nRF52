@@ -27,6 +27,7 @@
 #include <zephyr/sys/base64.h>
 #include <openthread/srp_client.h>
 #include <openthread/thread.h>
+#include <zephyr/net/openthread.h>
 
 #include "web_ui.h"
 #include "tinygs_protocol.h"   /* TINYGS_VERSION, tinygs_radio */
@@ -1112,8 +1113,13 @@ static int wm_handler(struct http_client_ctx *client,
 	{
 		int8_t rssi = 0;
 		otInstance *inst = openthread_get_default_instance();
-		if (inst && otThreadGetParentAverageRssi(inst, &rssi) == OT_ERROR_NONE) {
-			parent_rssi = rssi;
+		struct openthread_context *ot_ctx = openthread_get_default_context();
+		if (inst && ot_ctx) {
+			openthread_api_mutex_lock(ot_ctx);
+			if (otThreadGetParentAverageRssi(inst, &rssi) == OT_ERROR_NONE) {
+				parent_rssi = rssi;
+			}
+			openthread_api_mutex_unlock(ot_ctx);
 		}
 	}
 	APPEND_SNPRINTF("%d dBm,", parent_rssi);
@@ -1322,7 +1328,8 @@ static int srp_register(void)
 		return 0;
 	}
 	otInstance *inst = openthread_get_default_instance();
-	if (!inst) {
+	struct openthread_context *ot_ctx = openthread_get_default_context();
+	if (!inst || !ot_ctx) {
 		return -ENODEV;
 	}
 
@@ -1337,20 +1344,26 @@ static int srp_register(void)
 		snprintf(srp_host_name, sizeof(srp_host_name), "%s", sanitized);
 	} else {
 		otExtAddress eui;
+		openthread_api_mutex_lock(ot_ctx);
 		otLinkGetFactoryAssignedIeeeEui64(inst, &eui);
+		openthread_api_mutex_unlock(ot_ctx);
 		snprintf(srp_host_name, sizeof(srp_host_name), "tinygs-%02x%02x%02x",
 			 eui.m8[5], eui.m8[6], eui.m8[7]);
 	}
 	snprintf(srp_instance_name, sizeof(srp_instance_name), "%s", srp_host_name);
 
+	openthread_api_mutex_lock(ot_ctx);
+
 	otError err = otSrpClientSetHostName(inst, srp_host_name);
 	if (err != OT_ERROR_NONE && err != OT_ERROR_INVALID_STATE) {
+		openthread_api_mutex_unlock(ot_ctx);
 		LOG_ERR("SRP set host name failed: %d", err);
 		return -EIO;
 	}
 
 	err = otSrpClientEnableAutoHostAddress(inst);
 	if (err != OT_ERROR_NONE && err != OT_ERROR_ALREADY) {
+		openthread_api_mutex_unlock(ot_ctx);
 		LOG_ERR("SRP enable auto host address failed: %d", err);
 		return -EIO;
 	}
@@ -1368,12 +1381,15 @@ static int srp_register(void)
 
 	err = otSrpClientAddService(inst, &srp_http_service);
 	if (err != OT_ERROR_NONE && err != OT_ERROR_ALREADY) {
+		openthread_api_mutex_unlock(ot_ctx);
 		LOG_ERR("SRP add service failed: %d", err);
 		return -EIO;
 	}
 
 	otSrpClientSetCallback(inst, srp_callback, NULL);
 	otSrpClientEnableAutoStartMode(inst, srp_autostart_callback, NULL);
+
+	openthread_api_mutex_unlock(ot_ctx);
 
 	srp_registered = true;
 	LOG_INF("SRP: published %s.%s port 80 (autostart on)",
