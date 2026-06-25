@@ -16,6 +16,7 @@
 #include <openthread/dns_client.h>
 #include <openthread/joiner.h>
 #include <openthread/link.h>
+#include <zephyr/storage/flash_map.h>
 
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/drivers/uart.h>
@@ -838,15 +839,58 @@ extern "C" int read_vbat_mv(void)
 }
 
 /* -------------------------------------------------------------------------- */
-/* 1200 Baud Reset (UF2 Bootloader Entry)                                     */
+/* Baud-Rate Reset Triggers                                                   */
+/*                                                                            */
+/* Non-standard rates 1201–1203 avoid Linux ModemManager probing (it cycles  */
+/* 2400/4800/9600 on every new tty). Flash ops cannot run from the USB IRQ    */
+/* context that fires the callback, so we defer to sysworkq.                  */
 /* -------------------------------------------------------------------------- */
+
+#define BAUD_RESET_UF2          1200  /* enter UF2 bootloader */
+#define BAUD_RESET_WIPE_NVS     1201  /* erase OpenThread NVS partition */
+#define BAUD_RESET_WIPE_CONFIG  1202  /* unlink /NAND:/config.json */
+#define BAUD_RESET_FACTORY      1203  /* both: NVS + config.json */
+
+static struct k_work reset_work;
+static uint32_t reset_action_baud = 0;
+
+static void reset_work_handler(struct k_work *work)
+{
+    if (reset_action_baud == BAUD_RESET_WIPE_NVS ||
+        reset_action_baud == BAUD_RESET_FACTORY) {
+        LOG_INF("baud: erase OpenThread NVS (storage_partition)");
+        const struct flash_area *fa;
+        int rc = flash_area_open(FIXED_PARTITION_ID(storage_partition), &fa);
+        if (rc == 0) {
+            flash_area_erase(fa, 0, fa->fa_size);
+            flash_area_close(fa);
+            LOG_INF("NVS erase complete");
+        } else {
+            LOG_ERR("flash_area_open(storage_partition) failed: %d", rc);
+        }
+    }
+
+    if (reset_action_baud == BAUD_RESET_WIPE_CONFIG ||
+        reset_action_baud == BAUD_RESET_FACTORY) {
+        LOG_INF("baud: unlink /NAND:/config.json");
+        fs_unlink("/NAND:/config.json");
+    }
+
+    k_msleep(100); /* flush log + flash writes */
+    sys_reboot(SYS_REBOOT_COLD);
+}
 
 static void baudrate_reset_handler(const struct device *dev, uint32_t baudrate)
 {
-    if (baudrate == 1200) {
+    if (baudrate == BAUD_RESET_UF2) {
         /* No logging here — USB IRQ context, logging to USB would deadlock */
         nrf_power_gpregret_set(NRF_POWER, 0, 0x57);
         sys_reboot(SYS_REBOOT_COLD);
+    } else if (baudrate == BAUD_RESET_WIPE_NVS ||
+               baudrate == BAUD_RESET_WIPE_CONFIG ||
+               baudrate == BAUD_RESET_FACTORY) {
+        reset_action_baud = baudrate;
+        k_work_submit(&reset_work);
     }
 }
 
@@ -969,19 +1013,97 @@ static void log_ot_diagnostics(void)
     openthread_api_mutex_unlock(ctx);
 }
 
+/* Joiner retry.
+ *
+ * Single-shot joiner attempts NOT_FOUND when steering data from the
+ * commissioner hasn't reached a router within radio earshot of us — common
+ * when the OTBR is a peer router and the mesh leader is a closed-box BR
+ * (Nest/HomePod) that doesn't propagate third-party commissioner steering
+ * quickly. Retry indefinitely; once any attempt succeeds the dataset is
+ * persisted in NVS and future boots attach directly.
+ */
+#define JOINER_RETRY_PERIOD_S 60
+
+static struct k_work_delayable joiner_retry_work;
+static atomic_t joiner_attempts = ATOMIC_INIT(0);
+
+static void joiner_retry_handler(struct k_work *work);
+
 static void joiner_callback(otError error, void *context)
 {
+    struct openthread_context *ctx = openthread_get_default_context();
+
     if (error == OT_ERROR_NONE) {
-        LOG_INF("=== Joiner succeeded! Starting Thread... ===");
-        struct openthread_context *ctx = openthread_get_default_context();
-        if (!ctx || !openthread_get_default_instance()) {
+        int n = atomic_get(&joiner_attempts) + 1;
+        LOG_INF("=== Joiner succeeded on attempt %d — starting Thread ===", n);
+        otInstance *inst = ctx ? openthread_get_default_instance() : NULL;
+        if (!ctx || !inst) {
             LOG_ERR("Joiner callback: NULL OT context/instance — cannot start Thread.");
             return;
         }
-        otIp6SetEnabled(openthread_get_default_instance(), true);
-        otThreadSetEnabled(openthread_get_default_instance(), true);
+        /* OT callbacks fire from the OT thread, which already holds the API
+         * mutex — taking it again would deadlock. Call enable directly. */
+        otError e_ip6 = otIp6SetEnabled(inst, true);
+        otError e_thr = otThreadSetEnabled(inst, true);
+        LOG_INF("joiner success: otIp6SetEnabled=%d (%s) otThreadSetEnabled=%d (%s)",
+                (int)e_ip6, otThreadErrorToString(e_ip6),
+                (int)e_thr, otThreadErrorToString(e_thr));
+        if (e_thr != OT_ERROR_NONE) {
+            LOG_ERR("Thread did not enable after joiner — retry in %ds", JOINER_RETRY_PERIOD_S);
+            k_work_schedule(&joiner_retry_work, K_SECONDS(JOINER_RETRY_PERIOD_S));
+        }
+        return;
+    }
+
+    int n = atomic_inc(&joiner_attempts) + 1;
+    LOG_ERR("Joiner attempt %d failed: %d (%s) — retry in %ds",
+            n, (int)error, otThreadErrorToString(error), JOINER_RETRY_PERIOD_S);
+    k_work_schedule(&joiner_retry_work, K_SECONDS(JOINER_RETRY_PERIOD_S));
+}
+
+static void joiner_retry_handler(struct k_work *work)
+{
+    struct openthread_context *ctx = openthread_get_default_context();
+    if (!ctx) {
+        k_work_schedule(&joiner_retry_work, K_SECONDS(JOINER_RETRY_PERIOD_S));
+        return;
+    }
+
+    openthread_api_mutex_lock(ctx);
+    otInstance *inst = openthread_get_default_instance();
+    if (!inst) {
+        openthread_api_mutex_unlock(ctx);
+        k_work_schedule(&joiner_retry_work, K_SECONDS(JOINER_RETRY_PERIOD_S));
+        return;
+    }
+
+    /* If something else (manual ot-ctl push, MeshCoP retry) already loaded
+     * a dataset, just attach rather than redo the joiner handshake. */
+    if (otDatasetIsCommissioned(inst)) {
+        LOG_INF("joiner retry: dataset present, attaching directly");
+        otIp6SetEnabled(inst, true);
+        otThreadSetEnabled(inst, true);
+        openthread_api_mutex_unlock(ctx);
+        return;
+    }
+
+    otError err = otJoinerStart(inst,
+                                CONFIG_OPENTHREAD_JOINER_PSKD,
+                                NULL, NULL, NULL, NULL, NULL,
+                                joiner_callback, NULL);
+    openthread_api_mutex_unlock(ctx);
+
+    if (err == OT_ERROR_NONE) {
+        LOG_INF("joiner retry #%d started", (int)atomic_get(&joiner_attempts) + 1);
+    } else if (err == OT_ERROR_BUSY) {
+        /* Platform AUTOSTART joiner or a prior attempt is still in flight.
+         * Re-check shortly — its own callback will reschedule on failure. */
+        LOG_WRN("joiner retry: Busy, recheck in 15s");
+        k_work_schedule(&joiner_retry_work, K_SECONDS(15));
     } else {
-        LOG_ERR("Joiner failed: %d (%s)", (int)error, otThreadErrorToString(error));
+        LOG_ERR("joiner retry: otJoinerStart err=%d (%s), retry in %ds",
+                (int)err, otThreadErrorToString(err), JOINER_RETRY_PERIOD_S);
+        k_work_schedule(&joiner_retry_work, K_SECONDS(JOINER_RETRY_PERIOD_S));
     }
 }
 
@@ -1003,6 +1125,7 @@ static void init_openthread(void)
 
     LOG_INF("Starting OpenThread (Joiner mode)...");
     openthread_state_changed_cb_register(ctx, &ot_state_cb);
+    k_work_init_delayable(&joiner_retry_work, joiner_retry_handler);
     openthread_start(ctx);
 
     k_msleep(500);
@@ -1036,11 +1159,20 @@ static void init_openthread(void)
                             NULL,   /* vendor data */
                             joiner_callback, NULL);
 
-        if (err != OT_ERROR_NONE) {
-            LOG_ERR("otJoinerStart failed: %d (%s)", (int)err, otThreadErrorToString(err));
-        } else {
+        if (err == OT_ERROR_NONE) {
             LOG_INF("Joiner started, waiting for commissioner (PSKd: %s)...",
                     CONFIG_OPENTHREAD_JOINER_PSKD);
+        } else if (err == OT_ERROR_BUSY) {
+            /* Platform's CONFIG_OPENTHREAD_JOINER_AUTOSTART already kicked
+             * off a joiner. Its callback isn't ours, so it can't reschedule.
+             * Defer our retry past its discovery timeout (~5–10 s). */
+            LOG_WRN("otJoinerStart: Busy (platform AUTOSTART racing) — retry in %ds",
+                    JOINER_RETRY_PERIOD_S);
+            k_work_schedule(&joiner_retry_work, K_SECONDS(JOINER_RETRY_PERIOD_S));
+        } else {
+            LOG_ERR("otJoinerStart failed: %d (%s) — retry in %ds",
+                    (int)err, otThreadErrorToString(err), JOINER_RETRY_PERIOD_S);
+            k_work_schedule(&joiner_retry_work, K_SECONDS(JOINER_RETRY_PERIOD_S));
         }
     }
 
@@ -3241,6 +3373,8 @@ int main(void)
     const struct device *const console_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
     uint32_t dtr = 0;
 
+    k_work_init(&reset_work, reset_work_handler);
+
     if (device_is_ready(console_dev)) {
         cdc_acm_dte_rate_callback_set(console_dev, baudrate_reset_handler);
     }
@@ -3456,6 +3590,14 @@ int main(void)
          * feeder workqueue can prove main isn't wedged regardless of which
          * state we're in. */
         main_alive_uptime_ms = k_uptime_get_32();
+
+        /* Pause the silence timer while Thread isn't attached. With no L3
+         * path, MQTT can't possibly have activity, so the catastrophe-reboot
+         * would just wipe out long-running joiner retries (commissioning may
+         * take many minutes if steering data propagation is intermittent). */
+        if (!thread_attached) {
+            mqtt_last_activity_ms = main_alive_uptime_ms;
+        }
 
         /* Catastrophic-only fallback: if MQTT inbound traffic stops for too
          * long in ANY state (including a never-reached-CONNECTED boot loop),

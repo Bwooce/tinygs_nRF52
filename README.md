@@ -103,6 +103,22 @@ when running the application firmware (VID 2fe3:0001, appears as the
 See [docs/CONFIG.md](docs/CONFIG.md) for the full list of configurable fields,
 types, defaults, and how the file's lifecycle works.
 
+### Device resets via USB baud rate
+
+The CDC ACM callback reacts to specific host baud-rate changes:
+
+| Baud | Action |
+|------|--------|
+| `1200` | Enter UF2 bootloader |
+| `1201` | Erase OpenThread NVS (Thread credentials) |
+| `1202` | Delete `/NAND:/config.json` (Station/MQTT config) |
+| `1203` | Both — factory reset |
+
+Trigger with `stty -F /dev/ttyACMn <baud>` or `scripts/serial_baud_reset.py`.
+Non-standard rates 1201–1203 are used deliberately so Linux ModemManager
+(which probes new ttys at 2400/4800/9600) can't accidentally wipe the device.
+Flash work runs from the system workqueue, not the USB IRQ context.
+
 Compiled-in fallback defaults live in `src/mqtt_credentials.h` (gitignored):
 
 ```c
