@@ -1,5 +1,6 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/logging/log_ctrl.h>   /* log_panic() — flush deferred log before reboot */
 #include <stdarg.h>  /* va_list for early_log_appendf */
 #include <zephyr/net/openthread.h>
 #include <zephyr/net/mqtt.h>
@@ -157,6 +158,43 @@ static volatile uint32_t __noinit crash_icsr;  /* SCB->ICSR — VECTACTIVE ident
 static volatile uint32_t __noinit crash_thread_ptr; /* raw k_current_get() for post-mortem decode */
 static char __noinit crash_thread[16];
 
+/* Cortex-M fault-status registers — let us distinguish "PC was garbage from
+ * smashed return address" (UFSR.INVPC) from "CPU executed a real instruction
+ * that did unaligned access" (UFSR.UNALIGNED) etc. CFSR layout:
+ *   bits 0-7   MMFSR
+ *   bits 8-15  BFSR
+ *   bits 16-31 UFSR (UNDEFINSTR=16, INVSTATE=17, INVPC=18, NOCP=19,
+ *                    UNALIGNED=24, DIVBYZERO=25) */
+static volatile uint32_t __noinit crash_cfsr;
+static volatile uint32_t __noinit crash_hfsr;
+static volatile uint32_t __noinit crash_mmfar;
+static volatile uint32_t __noinit crash_bfar;
+/* Rest of basic ESF — may hold pre-corruption call args / return path */
+static volatile uint32_t __noinit crash_r0;
+static volatile uint32_t __noinit crash_r1;
+static volatile uint32_t __noinit crash_r2;
+static volatile uint32_t __noinit crash_r3;
+static volatile uint32_t __noinit crash_r12;
+static volatile uint32_t __noinit crash_xpsr;
+/* Snapshot 8 words from the faulting stack (above the ESF push) so we can
+ * see the call chain that was on the stack before the smash. */
+static volatile uint32_t __noinit crash_sp;
+static volatile uint32_t __noinit crash_stack[8];
+/* Extra ESF (CONFIG_EXTRA_EXCEPTION_INFO): callee-saved regs r4–r11 and
+ * exc_return/msp. Callee-saved regs are pushed by Zephyr separately on its
+ * own kernel-mode stack, so they survive even when the faulting thread's
+ * PSP is smashed — much more reliable than basic-ESF in fault-in-fault. */
+static volatile uint32_t __noinit crash_r4;
+static volatile uint32_t __noinit crash_r5;
+static volatile uint32_t __noinit crash_r6;
+static volatile uint32_t __noinit crash_r7;
+static volatile uint32_t __noinit crash_r8;
+static volatile uint32_t __noinit crash_r9;
+static volatile uint32_t __noinit crash_r10;
+static volatile uint32_t __noinit crash_r11;
+static volatile uint32_t __noinit crash_msp;
+static volatile uint32_t __noinit crash_exc_return;
+
 /* Watchdog feeder tracking — last thread to call watchdog_feed(), captured
  * at pre-fire so we can identify whose loop went silent. The hung thread
  * is usually NOT this one (this one was running fine until something else
@@ -246,11 +284,68 @@ extern "C" bool web_ui_pop_reboot_request(void);
 extern "C" void k_sys_fatal_error_handler(unsigned int reason,
                                            const struct arch_esf *esf)
 {
+    /* Drain whatever Zephyr's z_arm_fault already queued (CFSR/UFSR/BFSR
+     * dump, faulting-instruction line). Without panic-mode the messages
+     * stay in the deferred log queue and the log thread never runs again
+     * because we're about to sys_reboot. log_panic() switches every
+     * backend to synchronous and processes pending messages in-place. */
+    log_panic();
+
     crash_reason = CRASH_MAGIC | (reason & 0xFFFF);
-    crash_icsr = *(volatile uint32_t *)0xE000ED04; /* SCB->ICSR */
+    crash_icsr  = *(volatile uint32_t *)0xE000ED04; /* SCB->ICSR */
+    /* NOTE: CFSR/HFSR/MMFAR/BFAR may already be cleared by z_arm_fault by
+     * the time we run — Zephyr clears each section after handling it. We
+     * still capture in case of HardFault paths that bypass that clearing. */
+    crash_cfsr  = *(volatile uint32_t *)0xE000ED28;
+    crash_hfsr  = *(volatile uint32_t *)0xE000ED2C;
+    crash_mmfar = *(volatile uint32_t *)0xE000ED34;
+    crash_bfar  = *(volatile uint32_t *)0xE000ED38;
+
     if (esf) {
-        crash_pc = esf->basic.pc;
-        crash_lr = esf->basic.lr;
+        crash_pc   = esf->basic.pc;
+        crash_lr   = esf->basic.lr;
+        crash_r0   = esf->basic.r0;
+        crash_r1   = esf->basic.r1;
+        crash_r2   = esf->basic.r2;
+        crash_r3   = esf->basic.r3;
+        crash_r12  = esf->basic.ip;     /* "ip" alias for r12 in Zephyr ESF */
+        crash_xpsr = esf->basic.xpsr;
+#if defined(CONFIG_EXTRA_EXCEPTION_INFO)
+        /* Callee-saved regs are pushed by Zephyr separately, not by the CPU
+         * onto the PSP. So when the PSP is smashed (our case — basic-ESF
+         * is all garbage), r4–r11 still hold sane values from the function
+         * that was executing when the original fault fired. These often
+         * pinpoint the actual caller. */
+        crash_exc_return = esf->extra_info.exc_return;
+        crash_msp        = esf->extra_info.msp;
+        if (esf->extra_info.callee != NULL && IN_SRAM(esf->extra_info.callee)) {
+            crash_r4  = esf->extra_info.callee->v1;
+            crash_r5  = esf->extra_info.callee->v2;
+            crash_r6  = esf->extra_info.callee->v3;
+            crash_r7  = esf->extra_info.callee->v4;
+            crash_r8  = esf->extra_info.callee->v5;
+            crash_r9  = esf->extra_info.callee->v6;
+            crash_r10 = esf->extra_info.callee->v7;
+            crash_r11 = esf->extra_info.callee->v8;
+        }
+#endif
+        /* The ESF was pushed by the CPU on top of the faulting thread's stack.
+         * The next 8 words above the ESF (basic ESF is 8 words / 32 bytes
+         * unless FP context is also stacked, which we don't have on
+         * nRF52840) are the last meaningful frames of the call chain
+         * pre-fault — i.e. saved LRs / locals that survived whatever smash
+         * happened. Range-check before reading. */
+        const uint32_t *stk = (const uint32_t *)(((uintptr_t)esf) + 32);
+        crash_sp = (uint32_t)(uintptr_t)stk;
+        if (IN_SRAM(stk) && IN_SRAM(stk + 7)) {
+            for (int i = 0; i < 8; i++) {
+                crash_stack[i] = stk[i];
+            }
+        } else {
+            for (int i = 0; i < 8; i++) {
+                crash_stack[i] = 0xBADBAD00 | i;
+            }
+        }
     }
 
     /* Thread pointer is always safe to record — k_current_get() just reads
@@ -3481,7 +3576,50 @@ int main(void)
                 r, reason_str,
                 (unsigned)crash_pc, (unsigned)crash_lr,
                 (unsigned)crash_icsr, irq_num, irq_str);
-        LOG_ERR("Use: arm-zephyr-eabi-addr2line -e build/zephyr/zephyr.elf 0x%08x",
+        /* Decode CFSR — the bit that's set tells us the exact fault subtype.
+         * UFSR.INVPC (bit 18) means the saved return address was garbage
+         * (smashed stack); UFSR.UNALIGNED (bit 24) means a real instruction
+         * at PC did an unaligned access. Very different bugs. */
+        {
+            uint32_t cfsr = crash_cfsr;
+            uint32_t ufsr = (cfsr >> 16) & 0xFFFF;
+            uint32_t bfsr = (cfsr >> 8)  & 0xFF;
+            uint32_t mmfsr = cfsr & 0xFF;
+            LOG_ERR("  CFSR=0x%08x  UFSR=0x%04x [%s%s%s%s%s%s] BFSR=0x%02x MMFSR=0x%02x HFSR=0x%08x",
+                    (unsigned)cfsr, (unsigned)ufsr,
+                    (ufsr & (1u<<0))  ? "UNDEFINSTR " : "",
+                    (ufsr & (1u<<1))  ? "INVSTATE "   : "",
+                    (ufsr & (1u<<2))  ? "INVPC "      : "",
+                    (ufsr & (1u<<3))  ? "NOCP "       : "",
+                    (ufsr & (1u<<8))  ? "UNALIGNED "  : "",
+                    (ufsr & (1u<<9))  ? "DIVBYZERO "  : "",
+                    (unsigned)bfsr, (unsigned)mmfsr,
+                    (unsigned)crash_hfsr);
+            LOG_ERR("  MMFAR=0x%08x BFAR=0x%08x", (unsigned)crash_mmfar, (unsigned)crash_bfar);
+        }
+        LOG_ERR("  R0=0x%08x R1=0x%08x R2=0x%08x R3=0x%08x R12=0x%08x xPSR=0x%08x",
+                (unsigned)crash_r0, (unsigned)crash_r1, (unsigned)crash_r2,
+                (unsigned)crash_r3, (unsigned)crash_r12, (unsigned)crash_xpsr);
+#if defined(CONFIG_EXTRA_EXCEPTION_INFO)
+        /* Callee-saved r4-r11 survive PSP corruption (Zephyr pushes them
+         * separately on its own kernel-mode stack). One or more of these is
+         * usually a real flash address pointing INTO the function whose
+         * stack got smashed — the actual culprit. addr2line every one. */
+        LOG_ERR("  R4=0x%08x R5=0x%08x R6=0x%08x R7=0x%08x",
+                (unsigned)crash_r4, (unsigned)crash_r5,
+                (unsigned)crash_r6, (unsigned)crash_r7);
+        LOG_ERR("  R8=0x%08x R9=0x%08x R10=0x%08x R11=0x%08x",
+                (unsigned)crash_r8, (unsigned)crash_r9,
+                (unsigned)crash_r10, (unsigned)crash_r11);
+        LOG_ERR("  MSP=0x%08x EXC_RETURN=0x%08x", (unsigned)crash_msp, (unsigned)crash_exc_return);
+#endif
+        LOG_ERR("  stack@0x%08x: %08x %08x %08x %08x %08x %08x %08x %08x",
+                (unsigned)crash_sp,
+                (unsigned)crash_stack[0], (unsigned)crash_stack[1],
+                (unsigned)crash_stack[2], (unsigned)crash_stack[3],
+                (unsigned)crash_stack[4], (unsigned)crash_stack[5],
+                (unsigned)crash_stack[6], (unsigned)crash_stack[7]);
+        LOG_ERR("Use: arm-zephyr-eabi-addr2line -e build/zephyr/zephyr.elf 0x%08x  (and PC/LR/stack words above)",
                 (unsigned)crash_pc);
         crash_reason = 0; /* Clear so we don't report again */
     } else if ((crash_reason & 0xFFFF0000) == WDT_CRASH_MAGIC) {
