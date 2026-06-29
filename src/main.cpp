@@ -1,6 +1,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_ctrl.h>   /* log_panic() — flush deferred log before reboot */
+#include <zephyr/debug/coredump.h>     /* explicit coredump() call from fault handler */
 #include <stdarg.h>  /* va_list for early_log_appendf */
 #include <zephyr/net/openthread.h>
 #include <zephyr/net/mqtt.h>
@@ -18,6 +19,7 @@
 #include <openthread/joiner.h>
 #include <openthread/link.h>
 #include <zephyr/storage/flash_map.h>
+#include <zephyr/net/ieee802154_radio.h>  /* direct radio rx-on-when-idle during joiner DTLS */
 
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/drivers/uart.h>
@@ -61,6 +63,13 @@
 #endif
 
 LOG_MODULE_REGISTER(tinygs_nrf52, LOG_LEVEL_DBG);
+
+/* Joiner PSKd. Mirrors the prj.conf TINYGS_JOINER_PSKD value but
+ * defined here so we don't depend on the Kconfig — the Kconfig only exists
+ * when CONFIG_OPENTHREAD_JOINER_AUTOSTART=y, and we want to keep AUTOSTART
+ * disabled (our init_openthread() drives joiner explicitly, eliminating the
+ * race with the platform autostart). Keep the two strings in sync. */
+#define TINYGS_JOINER_PSKD "TNYGS2026NRF"
 
 /* Translate common negative errno values to symbolic names. Values
  * match Zephyr minimal libc errno.h, which differs from POSIX above
@@ -290,6 +299,12 @@ extern "C" void k_sys_fatal_error_handler(unsigned int reason,
      * because we're about to sys_reboot. log_panic() switches every
      * backend to synchronous and processes pending messages in-place. */
     log_panic();
+
+    /* Force coredump dump explicitly. Zephyr's z_arm_fault is supposed to
+     * call coredump() when CONFIG_DEBUG_COREDUMP is set, but its output
+     * was going to the deferred log queue and getting dropped. With
+     * log_panic() now in panic mode, the bytes will flush synchronously. */
+    coredump(reason, esf, (struct k_thread *)k_current_get());
 
     crash_reason = CRASH_MAGIC | (reason & 0xFFFF);
     crash_icsr  = *(volatile uint32_t *)0xE000ED04; /* SCB->ICSR */
@@ -1009,6 +1024,7 @@ static void ot_state_changed_handler(otChangedFlags flags,
                                      struct openthread_context *ot_context,
                                      void *user_data)
 {
+    LOG_INF("ATTACH-DEBUG: ot_state_changed flags=0x%08x", (unsigned)flags);
     if (flags & OT_CHANGED_THREAD_ROLE) {
         static otDeviceRole prev_role = OT_DEVICE_ROLE_DISABLED;
         static int64_t detached_at_ms = 0;
@@ -1117,12 +1133,169 @@ static void log_ot_diagnostics(void)
  * quickly. Retry indefinitely; once any attempt succeeds the dataset is
  * persisted in NVS and future boots attach directly.
  */
-#define JOINER_RETRY_PERIOD_S 60
+/* Short retry period: with the channel mask restricted to ch12 the joiner
+ * discovery scan completes in ~300 ms (single OPENTHREAD_CONFIG_MAC_SCAN_
+ * DURATION window). If the OTBR's MeshCoP beacon isn't transmitted within
+ * that 300 ms, scan returns NotFound. OTBR beacons aren't frequent, so
+ * we need many short re-scans to catch one. Retry every 5 s gives ~12
+ * scans/min, statistically catching the beacon within ~1 min on first
+ * boot. After a successful join the dataset persists to NVS and this
+ * loop doesn't fire again. */
+#define JOINER_RETRY_PERIOD_S 5
 
 static struct k_work_delayable joiner_retry_work;
 static atomic_t joiner_attempts = ATOMIC_INIT(0);
 
 static void joiner_retry_handler(struct k_work *work);
+
+/* Conditional rx-on-when-idle for the joiner.
+ *
+ * The nRF radio is left rx-OFF-when-idle (sleepy) by OpenThread for our
+ * MTD-non-SED device, so during the joiner DTLS "Connecting" wait the radio
+ * sleeps and never receives the commissioner's reply (handshake times out →
+ * Security). But forcing rx-on globally breaks the discovery scan (it needs
+ * rx-off for channel hopping → NotFound). So we flip rx-on-when-idle ON only
+ * while the joiner is in CONNECT/CONNECTED/ENTRUST, and OFF during
+ * DISCOVER/IDLE. The DTLS retransmits at 8/16/32 s, so even if we set rx-on a
+ * fraction of a second into CONNECT, a retransmitted flight's reply is caught.
+ * Once committed+attached we keep rx-on permanently (MED, needs to receive). */
+static struct k_work_delayable joiner_rxon_poll_work;
+static bool joiner_rxon_applied = false;
+
+/* Force the 802.15.4 radio's rx-on-when-idle directly at the driver level.
+ * otThreadSetLinkMode() does NOT propagate to the radio for an unattached
+ * joiner (verified: link-mode rx-on=1 leaves the driver at rx_on_when_idle=0),
+ * so we drive IEEE802154_CONFIG_RX_ON_WHEN_IDLE ourselves. During the DTLS
+ * connecting wait OT never touches this config (it only toggles it during the
+ * channel-hopping scan), so a value we set here sticks. */
+static void joiner_force_radio_rxon(bool on)
+{
+    const struct device *radio = DEVICE_DT_GET(DT_CHOSEN(zephyr_ieee802154));
+    if (!device_is_ready(radio)) {
+        return;
+    }
+    const struct ieee802154_radio_api *api =
+        (const struct ieee802154_radio_api *)radio->api;
+    if (!api || !api->configure) {
+        return;
+    }
+    struct ieee802154_config cfg = {};
+    cfg.rx_on_when_idle = on;
+    int rc = api->configure(radio, IEEE802154_CONFIG_RX_ON_WHEN_IDLE, &cfg);
+    LOG_INF("joiner-rxon: force radio rx_on_when_idle=%d rc=%d", (int)on, rc);
+}
+
+static void joiner_rxon_poll_handler(struct k_work *work)
+{
+    struct openthread_context *ctx = openthread_get_default_context();
+    if (!ctx) {
+        return;
+    }
+    openthread_api_mutex_lock(ctx);
+    otInstance *inst = openthread_get_default_instance();
+    bool want_rxon = false;
+    bool joined = false;
+    if (inst) {
+        otJoinerState js = otJoinerGetState(inst);
+        want_rxon = (js == OT_JOINER_STATE_CONNECT ||
+                     js == OT_JOINER_STATE_CONNECTED ||
+                     js == OT_JOINER_STATE_ENTRUST ||
+                     js == OT_JOINER_STATE_JOINED);
+        joined = otDatasetIsCommissioned(inst) &&
+                 otThreadGetDeviceRole(inst) != OT_DEVICE_ROLE_DISABLED;
+        if (joined) {
+            /* Operational: make sure the attached MED keeps rx-on (so it can
+             * receive Thread/MQTT traffic) via the normal link-mode path. */
+            otLinkModeConfig mode = otThreadGetLinkMode(inst);
+            mode.mRxOnWhenIdle = true;
+            otThreadSetLinkMode(inst, mode);
+        }
+    }
+    openthread_api_mutex_unlock(ctx);
+
+    /* Drive the radio config outside the OT mutex. Only act on a change so we
+     * don't fight the scan's own toggling during DISCOVER. */
+    if (inst && want_rxon != joiner_rxon_applied) {
+        joiner_force_radio_rxon(want_rxon);
+        joiner_rxon_applied = want_rxon;
+    }
+
+    if (!joined) {
+        k_work_schedule(&joiner_rxon_poll_work, K_MSEC(150));
+    }
+}
+
+/* Comprehensively install + enable the OT operational dataset.
+ *
+ * Single helper called from all three "we have a dataset, now bring up
+ * Thread" paths: init_openthread (NVS-loaded), joiner_callback (joiner just
+ * succeeded), and joiner_retry_handler (saw PAN/Channel set, dataset must
+ * be present internally).
+ *
+ * The point: don't whack-a-mole individual TLVs. Use the TLV-bytes round-
+ * trip (otDatasetGetActiveTlvs → otDatasetSetActiveTlvs) so every TLV the
+ * dataset has — Channel/PAN/Key/XPan/MLP/Name/Pskc/SecPol/ActiveTs/ChMask
+ * — gets re-applied to OT's internal subsystems in one shot. Bypasses the
+ * mIs*Present-flag-fragility on the struct-form API. Also dump a one-line
+ * dataset state so we can see what stuck.
+ *
+ * Caller must hold the OT API mutex. */
+static void ot_install_active_and_enable(otInstance *inst, const char *tag)
+{
+    /* Don't otJoinerStop() — it can tear down joiner state that MLE's first
+     * timer still references, leading to a NULL fn ptr crash on MPSL Work
+     * when that timer fires. If the joiner is still running, our SetEnabled
+     * will return Busy and we'll be retried; better than crashing. */
+
+    /* Probe every store OT exposes. Pending dataset is where the joiner
+     * staging data and any delayed network-key migration sits before being
+     * promoted to Active. If only Pending has TLVs, that's the bug — joiner
+     * stored to Pending but never committed to Active. */
+    otOperationalDatasetTlvs at = {};
+    otOperationalDatasetTlvs pt = {};
+    otError e_at = otDatasetGetActiveTlvs(inst, &at);
+    otError e_pt = otDatasetGetPendingTlvs(inst, &pt);
+    LOG_INF("DS(%s): activeTlvs rc=%d len=%u  pendingTlvs rc=%d len=%u  isCommissioned=%d",
+            tag, (int)e_at, (unsigned)at.mLength,
+            (int)e_pt, (unsigned)pt.mLength,
+            (int)otDatasetIsCommissioned(inst));
+
+    /* Promote Pending to Active if Pending has bytes and Active doesn't. */
+    if ((e_at != OT_ERROR_NONE || at.mLength == 0) &&
+        e_pt == OT_ERROR_NONE && pt.mLength > 0) {
+        otError e_set = otDatasetSetActiveTlvs(inst, &pt);
+        LOG_INF("DS(%s): promoted Pending->Active rc=%d (%s)",
+                tag, (int)e_set, otThreadErrorToString(e_set));
+    } else if (e_at == OT_ERROR_NONE && at.mLength > 0) {
+        /* Active already populated — round-trip to force re-application. */
+        otError e_set = otDatasetSetActiveTlvs(inst, &at);
+        LOG_INF("DS(%s): Active round-trip rc=%d (%s)",
+                tag, (int)e_set, otThreadErrorToString(e_set));
+    } else {
+        LOG_WRN("DS(%s): no TLVs in Active or Pending — nothing to install",
+                tag);
+    }
+
+    /* Live-state diagnostic — what OT actually has now after the round-trip. */
+    otPanId panid = otLinkGetPanId(inst);
+    uint8_t chan = otLinkGetChannel(inst);
+    const otExtendedPanId *xp = otThreadGetExtendedPanId(inst);
+    const otMeshLocalPrefix *ml = otThreadGetMeshLocalPrefix(inst);
+    const char *netname = otThreadGetNetworkName(inst);
+    LOG_INF("DS(%s): PAN=0x%04x ch=%u name=%s xpan=%02x%02x%02x%02x%02x%02x%02x%02x mlp=%02x%02x:%02x%02x:%02x%02x:%02x%02x::",
+            tag, (unsigned)panid, (unsigned)chan,
+            netname ? netname : "(null)",
+            xp->m8[0], xp->m8[1], xp->m8[2], xp->m8[3],
+            xp->m8[4], xp->m8[5], xp->m8[6], xp->m8[7],
+            ml->m8[0], ml->m8[1], ml->m8[2], ml->m8[3],
+            ml->m8[4], ml->m8[5], ml->m8[6], ml->m8[7]);
+
+    /* Enable IP6 and Thread. Order matters: IP6 first, then Thread. */
+    otError e_ip6 = otIp6SetEnabled(inst, true);
+    otError e_thr = otThreadSetEnabled(inst, true);
+    LOG_INF("DS(%s): otIp6SetEnabled=%d otThreadSetEnabled=%d (%s)",
+            tag, (int)e_ip6, (int)e_thr, otThreadErrorToString(e_thr));
+}
 
 static void joiner_callback(otError error, void *context)
 {
@@ -1130,23 +1303,27 @@ static void joiner_callback(otError error, void *context)
 
     if (error == OT_ERROR_NONE) {
         int n = atomic_get(&joiner_attempts) + 1;
-        LOG_INF("=== Joiner succeeded on attempt %d — starting Thread ===", n);
+        LOG_INF("=== Joiner succeeded on attempt %d — enabling Thread ===", n);
         otInstance *inst = ctx ? openthread_get_default_instance() : NULL;
         if (!ctx || !inst) {
             LOG_ERR("Joiner callback: NULL OT context/instance — cannot start Thread.");
             return;
         }
         /* OT callbacks fire from the OT thread, which already holds the API
-         * mutex — taking it again would deadlock. Call enable directly. */
-        otError e_ip6 = otIp6SetEnabled(inst, true);
+         * mutex — taking it again would deadlock.
+         *
+         * Joiner::Finish has just torn down the SecureAgent and reset its
+         * mTimer; the dataset is already SaveLocal()'d to NVS by the JOIN_ENT
+         * handler. DO NOT re-enter ot_install_active_and_enable here — its
+         * otDatasetSetActiveTlvs round-trip re-imports the dataset while MLE
+         * is mid-attach and the joiner's mTimer/k_work hasn't been fully
+         * disarmed in mpsl_work_q, causing a NULL fn-ptr crash on MPSL Work
+         * (work struct inside ot::gInstanceRaw, handler cleared by Stop()).
+         * Just enable Thread — IPv6 is already on (we did it before joiner
+         * start). MLE will attach using the dataset Joiner saved. */
         otError e_thr = otThreadSetEnabled(inst, true);
-        LOG_INF("joiner success: otIp6SetEnabled=%d (%s) otThreadSetEnabled=%d (%s)",
-                (int)e_ip6, otThreadErrorToString(e_ip6),
+        LOG_INF("joiner-cb: otThreadSetEnabled rc=%d (%s)",
                 (int)e_thr, otThreadErrorToString(e_thr));
-        if (e_thr != OT_ERROR_NONE) {
-            LOG_ERR("Thread did not enable after joiner — retry in %ds", JOINER_RETRY_PERIOD_S);
-            k_work_schedule(&joiner_retry_work, K_SECONDS(JOINER_RETRY_PERIOD_S));
-        }
         return;
     }
 
@@ -1172,27 +1349,34 @@ static void joiner_retry_handler(struct k_work *work)
         return;
     }
 
-    /* If something else (manual ot-ctl push, MeshCoP retry) already loaded
-     * a dataset, just attach rather than redo the joiner handshake. */
+    /* "Dataset present" must mean a real commissioned dataset (network key
+     * persisted in NVS), NOT just leftover PAN/Channel from a previous
+     * joiner discovery scan. otLinkGetPanId/Channel return the cached scan
+     * result even when no dataset is committed — mis-detecting "present"
+     * here causes the retry to skip the next joiner attempt entirely.
+     * otDatasetIsCommissioned() is the authoritative signal. */
     if (otDatasetIsCommissioned(inst)) {
-        LOG_INF("joiner retry: dataset present, attaching directly");
-        otIp6SetEnabled(inst, true);
-        otThreadSetEnabled(inst, true);
+        LOG_INF("joiner retry: dataset committed (PAN 0x%04x ch %u), enabling Thread",
+                (unsigned)otLinkGetPanId(inst), (unsigned)otLinkGetChannel(inst));
+        otError e_ip6 = otIp6SetEnabled(inst, true);
+        otError e_thr = otThreadSetEnabled(inst, true);
+        LOG_INF("joiner retry: otIp6SetEnabled=%d otThreadSetEnabled=%d (%s)",
+                (int)e_ip6, (int)e_thr, otThreadErrorToString(e_thr));
         openthread_api_mutex_unlock(ctx);
         return;
     }
 
+        LOG_INF("Supported channel mask: 0x%08X", (unsigned int)otLinkGetSupportedChannelMask(inst));
     otError err = otJoinerStart(inst,
-                                CONFIG_OPENTHREAD_JOINER_PSKD,
+                                TINYGS_JOINER_PSKD,
                                 NULL, NULL, NULL, NULL, NULL,
                                 joiner_callback, NULL);
     openthread_api_mutex_unlock(ctx);
 
     if (err == OT_ERROR_NONE) {
         LOG_INF("joiner retry #%d started", (int)atomic_get(&joiner_attempts) + 1);
+        k_work_schedule(&joiner_rxon_poll_work, K_MSEC(100));
     } else if (err == OT_ERROR_BUSY) {
-        /* Platform AUTOSTART joiner or a prior attempt is still in flight.
-         * Re-check shortly — its own callback will reschedule on failure. */
         LOG_WRN("joiner retry: Busy, recheck in 15s");
         k_work_schedule(&joiner_retry_work, K_SECONDS(15));
     } else {
@@ -1221,49 +1405,53 @@ static void init_openthread(void)
     LOG_INF("Starting OpenThread (Joiner mode)...");
     openthread_state_changed_cb_register(ctx, &ot_state_cb);
     k_work_init_delayable(&joiner_retry_work, joiner_retry_handler);
-    openthread_start(ctx);
+    k_work_init_delayable(&joiner_rxon_poll_work, joiner_rxon_poll_handler);
 
-    k_msleep(500);
+    /* DO NOT call openthread_start(ctx). It's a deprecated alias for
+     * openthread_run() which bypasses CONFIG_OPENTHREAD_MANUAL_START and
+     * fires Zephyr's own platform joiner (using ot_joiner_start_handler).
+     * That created a race: platform joiner runs with its callback, ours
+     * BUSYs out and never installs, and any post-join cleanup goes via
+     * paths we don't control. With MANUAL_START=y, openthread_init() has
+     * already allocated the instance, started openthread_work_q, and
+     * registered the L2 state-changed handler at sys_init — we just need
+     * to enable Ip6 + start our own joiner. */
 
     openthread_api_mutex_lock(ctx);
     otInstance *inst = openthread_get_default_instance();
     if (!inst) {
-        LOG_ERR("OpenThread instance is NULL after openthread_start — bailing.");
+        LOG_ERR("OpenThread instance is NULL — bailing.");
         openthread_api_mutex_unlock(ctx);
         return;
     }
 
-    /* Check if we already have a valid dataset (from a previous successful join) */
-    otOperationalDataset dataset;
-    otError err = otDatasetGetActive(inst, &dataset);
-    if (err == OT_ERROR_NONE && dataset.mComponents.mIsNetworkKeyPresent) {
-        LOG_INF("Found existing dataset — attaching directly");
+    /* Check for a persisted, commissioned dataset first. */
+    if (otDatasetIsCommissioned(inst)) {
+        LOG_INF("Found committed dataset — enabling Thread directly");
         dump_ot_dataset(ctx);
-        otIp6SetEnabled(inst, true);
-        otThreadSetEnabled(inst, true);
+        otError e_ip6 = otIp6SetEnabled(inst, true);
+        otError e_thr = otThreadSetEnabled(inst, true);
+        LOG_INF("init: otIp6SetEnabled=%d otThreadSetEnabled=%d (%s)",
+                (int)e_ip6, (int)e_thr, otThreadErrorToString(e_thr));
     } else {
-        LOG_INF("No valid dataset — starting Joiner with PSKd");
+        LOG_INF("No committed dataset — starting Joiner with PSKd");
+
         otIp6SetEnabled(inst, true);
 
-        err = otJoinerStart(inst,
-                            CONFIG_OPENTHREAD_JOINER_PSKD,  /* PSKd */
-                            NULL,   /* provisioning URL */
-                            NULL,   /* vendor name */
-                            NULL,   /* vendor model */
-                            NULL,   /* vendor sw version */
-                            NULL,   /* vendor data */
-                            joiner_callback, NULL);
+        LOG_INF("Supported channel mask: 0x%08X", (unsigned int)otLinkGetSupportedChannelMask(inst));
+        otError err = otJoinerStart(inst,
+                                    TINYGS_JOINER_PSKD,  /* PSKd */
+                                    NULL,   /* provisioning URL */
+                                    NULL,   /* vendor name */
+                                    NULL,   /* vendor model */
+                                    NULL,   /* vendor sw version */
+                                    NULL,   /* vendor data */
+                                    joiner_callback, NULL);
 
         if (err == OT_ERROR_NONE) {
             LOG_INF("Joiner started, waiting for commissioner (PSKd: %s)...",
-                    CONFIG_OPENTHREAD_JOINER_PSKD);
-        } else if (err == OT_ERROR_BUSY) {
-            /* Platform's CONFIG_OPENTHREAD_JOINER_AUTOSTART already kicked
-             * off a joiner. Its callback isn't ours, so it can't reschedule.
-             * Defer our retry past its discovery timeout (~5–10 s). */
-            LOG_WRN("otJoinerStart: Busy (platform AUTOSTART racing) — retry in %ds",
-                    JOINER_RETRY_PERIOD_S);
-            k_work_schedule(&joiner_retry_work, K_SECONDS(JOINER_RETRY_PERIOD_S));
+                    TINYGS_JOINER_PSKD);
+            k_work_schedule(&joiner_rxon_poll_work, K_MSEC(100));
         } else {
             LOG_ERR("otJoinerStart failed: %d (%s) — retry in %ds",
                     (int)err, otThreadErrorToString(err), JOINER_RETRY_PERIOD_S);
@@ -2575,8 +2763,8 @@ static void setup_usb_storage(void)
                     "Run on your OTBR: <code>ot-ctl commissioner joiner add '*' %s</code></p>"
                     "</div></body></html>",
                     device_client_id,
-                    CONFIG_OPENTHREAD_JOINER_PSKD,
-                    CONFIG_OPENTHREAD_JOINER_PSKD);
+                    TINYGS_JOINER_PSKD,
+                    TINYGS_JOINER_PSKD);
                 fs_write(&file, commission_html, clen);
                 fs_sync(&file);
                 fs_close(&file);
@@ -3509,7 +3697,7 @@ int main(void)
     /* Wait briefly for serial monitor to connect — only if USB is up.
      * Without this guard the DTR poll wastes 3 s on battery boots. */
     if (usb_is_enabled) {
-        for (int i = 0; i < 30 && !dtr; i++) {
+        for (int i = 0; i < 150 && !dtr; i++) {
             uart_line_ctrl_get(console_dev, UART_LINE_CTRL_DTR, &dtr);
             k_msleep(100);
         }
@@ -3688,10 +3876,10 @@ int main(void)
             if (!commissioned) {
                 LOG_INF("*** COMMISSIONING MODE ***");
                 LOG_INF("Device not provisioned — staying awake for 15 minutes");
-                LOG_INF("Joiner PSKd: %s", CONFIG_OPENTHREAD_JOINER_PSKD);
+                LOG_INF("Joiner PSKd: %s", TINYGS_JOINER_PSKD);
                 LOG_INF("Scan QR code from index.html or run:");
                 LOG_INF("  ot-ctl commissioner joiner add '*' %s",
-                        CONFIG_OPENTHREAD_JOINER_PSKD);
+                        TINYGS_JOINER_PSKD);
                 /* Keep display on during commissioning */
                 tinygs_display_set_timeout(900); /* 15 minutes */
             } else {
