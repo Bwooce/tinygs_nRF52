@@ -1194,21 +1194,33 @@ static void joiner_rxon_poll_handler(struct k_work *work)
     openthread_api_mutex_lock(ctx);
     otInstance *inst = openthread_get_default_instance();
     bool want_rxon = false;
-    bool joined = false;
+    bool commissioned = false;
     if (inst) {
         otJoinerState js = otJoinerGetState(inst);
-        want_rxon = (js == OT_JOINER_STATE_CONNECT ||
-                     js == OT_JOINER_STATE_CONNECTED ||
-                     js == OT_JOINER_STATE_ENTRUST ||
-                     js == OT_JOINER_STATE_JOINED);
-        joined = otDatasetIsCommissioned(inst) &&
-                 otThreadGetDeviceRole(inst) != OT_DEVICE_ROLE_DISABLED;
-        if (joined) {
-            /* Operational: make sure the attached MED keeps rx-on (so it can
-             * receive Thread/MQTT traffic) via the normal link-mode path. */
+        bool joiner_active = (js == OT_JOINER_STATE_CONNECT ||
+                              js == OT_JOINER_STATE_CONNECTED ||
+                              js == OT_JOINER_STATE_ENTRUST ||
+                              js == OT_JOINER_STATE_JOINED);
+        commissioned = otDatasetIsCommissioned(inst);
+        /* The radio must be rx-on-when-idle whenever we are operational: a
+         * commissioned MED — whether attached OR re-attaching — has to hear
+         * Parent Responses and frame ACKs. It may only be rx-off during the
+         * joiner DISCOVER scan (uncommissioned, needs channel hopping).
+         * otThreadSetLinkMode does NOT propagate rx-on to the radio driver for
+         * this MTD (the driver config does), so we drive the driver directly.
+         * Earlier this only tracked the joiner state, so once the joiner went
+         * IDLE post-join the driver was forced rx-OFF and never restored — the
+         * MED then slept through every ACK/Parent Response (NoAck storms,
+         * could not hold/recover attachment). Gating on `commissioned` keeps an
+         * operational MED rx-on for its whole lifetime, including Detached
+         * re-attach windows. */
+        want_rxon = joiner_active || commissioned;
+        if (commissioned) {
             otLinkModeConfig mode = otThreadGetLinkMode(inst);
-            mode.mRxOnWhenIdle = true;
-            otThreadSetLinkMode(inst, mode);
+            if (!mode.mRxOnWhenIdle) {
+                mode.mRxOnWhenIdle = true;
+                otThreadSetLinkMode(inst, mode);
+            }
         }
     }
     openthread_api_mutex_unlock(ctx);
@@ -1220,9 +1232,11 @@ static void joiner_rxon_poll_handler(struct k_work *work)
         joiner_rxon_applied = want_rxon;
     }
 
-    if (!joined) {
-        k_work_schedule(&joiner_rxon_poll_work, K_MSEC(150));
-    }
+    /* Keep the poll alive for the device's lifetime — fast while still
+     * commissioning (the joiner toggles rx quickly), slow steady re-assert once
+     * operational so a later OT-driven rx-off can't permanently deafen us. */
+    k_work_schedule(&joiner_rxon_poll_work,
+                    commissioned ? K_SECONDS(1) : K_MSEC(150));
 }
 
 /* Comprehensively install + enable the OT operational dataset.
@@ -1433,6 +1447,11 @@ static void init_openthread(void)
         otError e_thr = otThreadSetEnabled(inst, true);
         LOG_INF("init: otIp6SetEnabled=%d otThreadSetEnabled=%d (%s)",
                 (int)e_ip6, (int)e_thr, otThreadErrorToString(e_thr));
+        /* Booting straight from a stored dataset (no joiner this boot) — start
+         * the rx-on poll so the operational MED's radio is driven rx-on-when-
+         * idle. Without this the driver stays rx-off and the MED sleeps through
+         * ACKs / Parent Responses and can never attach. */
+        k_work_schedule(&joiner_rxon_poll_work, K_MSEC(100));
     } else {
         LOG_INF("No committed dataset — starting Joiner with PSKd");
 
