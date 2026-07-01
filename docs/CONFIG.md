@@ -22,7 +22,8 @@ The device-generated file looks like this (example values):
   "lon": 151.2093,
   "alt": 50,
   "display_timeout": 30,
-  "tx_enable": false
+  "tx_enable": false,
+  "log_level": 3
 }
 ```
 
@@ -42,6 +43,7 @@ until the next reboot, so be careful.
 | `alt` | float (m) | `0` | Station altitude in metres. Used in the welcome payload's `station_location` field. |
 | `display_timeout` | int (s) | `30` | Seconds before the on-board TFT display blanks after last activity. Set to `0` to keep the display always on (higher power). |
 | `tx_enable` | bool | `false` | Enable on-air transmit. **Default off** — station advertises `tx:false` in welcome, server never schedules transmits, `tx` MQTT command handler refuses. Setting to `true` is an explicit opt-in; operator is responsible for antenna, licensing, and regulatory compliance before enabling. |
+| `log_level` | int | `3` | OpenThread/network console log verbosity: `0`=none, `1`=critical, `2`=warning, `3`=note (default). The steady-state `MeshForwarder: Dropping rx (frag) frame` flood (benign — inbound multicast reassembly timeouts, not the MQTT path) is emitted at note level; set `2` to silence it on the serial console without a reflash. Values above `3` have no effect (INFO/DEBG strings aren't compiled in). Application and error logs are unaffected. Takes effect on reboot. |
 
 ## What happens on edit
 
@@ -53,7 +55,8 @@ until the next reboot, so be careful.
    `config.json` with the current (now updated) values, and continues. Some
    fields take effect immediately (lat/lon, display_timeout); credentials
    take effect on the next MQTT reconnect; `tx_enable` takes effect on the
-   next welcome the station publishes.
+   next welcome the station publishes; `log_level` takes effect on the next
+   reboot (it is applied to OpenThread once during boot).
 
 ## Things you can't configure in `config.json`
 

@@ -2921,6 +2921,25 @@ static void setup_usb_storage(void)
                 }
             }
 
+            /* log_level — JSON int (OT log-level scale 0..3). Same snapshot
+             * diff as tx_enable. Clamp to [0,3]; applied to OpenThread after
+             * init_openthread() via tinygs_apply_log_level(). */
+            if (have_file) {
+                int fv = json_extract_int(file_buf, "\"log_level\":", -1);
+                int sv = have_snapshot ?
+                    json_extract_int(cfg_last_snapshot, "\"log_level\":", -1) :
+                    -1;
+                bool edited = have_snapshot ? (fv != sv) : (fv != -1);
+                if (edited && fv >= 0 && fv <= 3) {
+                    EARLY_LOG("Config: user edit 'log_level' %d -> %d, persisting",
+                            (int)cfg_log_level, fv);
+                    cfg_log_level = (int8_t)fv;
+                    int8_t v = cfg_log_level;
+                    tinygs_config_save("log", &v, sizeof(v));
+                    edits++;
+                }
+            }
+
             #undef DIFF_AND_APPLY_FLOAT
             #undef DIFF_AND_APPLY_STR
 
@@ -2946,13 +2965,15 @@ static void setup_usb_storage(void)
                     "  \"lon\": %.4f,\n"
                     "  \"alt\": %.0f,\n"
                     "  \"display_timeout\": 30,\n"
-                    "  \"tx_enable\": %s\n"
+                    "  \"tx_enable\": %s,\n"
+                    "  \"log_level\": %d\n"
                     "}\n",
                     cfg_station, cfg_mqtt_user, cfg_mqtt_pass,
                     (double)tinygs_station_lat,
                     (double)tinygs_station_lon,
                     (double)tinygs_station_alt,
-                    cfg_tx_enable ? "true" : "false");
+                    cfg_tx_enable ? "true" : "false",
+                    (int)cfg_log_level);
                 /* snprintf returns the would-have-written length, which
                  * can exceed the buffer if a future field bloats things.
                  * Cap to actual buffer fill so fs_write can't read past
@@ -3871,6 +3892,10 @@ int main(void)
     log_heap_usage("boot");
     epoch_persist_restore();
     init_openthread();
+
+    /* Push the configured OT console verbosity now that OpenThread is up.
+     * Downtunes the steady-state MeshForwarder flood when log_level < NOTE. */
+    tinygs_apply_log_level();
 
 #if defined(CONFIG_IOT_LOG)
     {

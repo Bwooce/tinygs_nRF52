@@ -5,6 +5,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
+#include <openthread/logging.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -18,6 +19,7 @@ char cfg_adv_prm[256] = "";  /* set_adv_prm stores last server-pushed JSON here 
 char cfg_admin_pw[32] = "tinygs";  /* Web UI Basic auth password — change via /config */
 int8_t cfg_tx_enable = 0;    /* Default: RX-only. See tinygs_config.h for semantics. */
 uint16_t cfg_tz_idx = 456;   /* Default: Etc/UTC. tinygs_tz_apply() at boot wires picolibc tzset. */
+int8_t cfg_log_level = 3;    /* Default: NOTE (unchanged). See tinygs_config.h — OT log-level scale. */
 char cfg_last_snapshot[TINYGS_CONFIG_SNAPSHOT_MAX] = "";  /* last config.json we wrote */
 /* tinygs_station_lat/lon/alt and tinygs_radio are in tinygs_protocol.cpp */
 
@@ -115,6 +117,11 @@ static int tgs_settings_set(const char *name, size_t len,
         if (len == sizeof(val) && read_cb(cb_arg, &val, sizeof(val)) == sizeof(val)) {
             cfg_tz_idx = val;
         }
+    } else if (!strcmp(name, "log")) {
+        int8_t val;
+        if (len == sizeof(val) && read_cb(cb_arg, &val, sizeof(val)) == sizeof(val)) {
+            cfg_log_level = (val < 0) ? 0 : (val > 3 ? 3 : val);
+        }
     } else if (!strcmp(name, "snap")) {
         if (len < sizeof(cfg_last_snapshot)) {
             read_cb(cb_arg, cfg_last_snapshot, len);
@@ -174,6 +181,18 @@ int tinygs_config_init(void)
     tinygs_tz_apply(cfg_tz_idx);
 
     return 0;
+}
+
+void tinygs_apply_log_level(void)
+{
+    otLogLevel lvl = (otLogLevel)((cfg_log_level < 0) ? 0 :
+                                  (cfg_log_level > 3 ? 3 : cfg_log_level));
+    otError err = otLoggingSetLevel(lvl);
+    if (err != OT_ERROR_NONE) {
+        LOG_WRN("otLoggingSetLevel(%d) -> %d", (int)lvl, (int)err);
+    } else {
+        LOG_INF("OT console log level set to %d (0=NONE 2=WARN 3=NOTE)", (int)lvl);
+    }
 }
 
 int tinygs_config_save(const char *key, const void *data, size_t len)
