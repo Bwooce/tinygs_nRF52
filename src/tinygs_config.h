@@ -60,10 +60,11 @@ extern int8_t cfg_tx_enable;
 extern uint16_t cfg_tz_idx;
 
 /* OpenThread/network console log verbosity, on the OT log-level scale:
- * 0=NONE, 1=CRIT, 2=WARN, 3=NOTE. Default 3 (NOTE) = unchanged behaviour.
- * The steady-state MeshForwarder "Dropping rx (frag) frame" flood is emitted
- * at NOTE; set 2 (WARN) via config.json "log_level" to silence it without a
- * reflash. Applied at boot (and after /config edits) via tinygs_apply_log_level().
+ * 0=NONE, 1=CRIT, 2=WARN, 3=NOTE. Default 2 (WARN) — silences the steady-state
+ * MeshForwarder "Dropping rx (frag) frame" flood (emitted at NOTE, benign
+ * multicast reassembly timeouts). Set 3 (NOTE) via config.json "log_level" to
+ * restore MLE attach/role/parent NOTES for an RF/attach debug session, without
+ * a reflash. Applied at boot (and after /config edits) via tinygs_apply_log_level().
  * Compile-time max is NOTE (prj.conf), so values >3 have no effect. App/ERR
  * logs are unaffected — this only gates the high-volume OT network stack. */
 extern int8_t cfg_log_level;

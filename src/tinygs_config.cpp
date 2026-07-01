@@ -19,7 +19,7 @@ char cfg_adv_prm[256] = "";  /* set_adv_prm stores last server-pushed JSON here 
 char cfg_admin_pw[32] = "tinygs";  /* Web UI Basic auth password — change via /config */
 int8_t cfg_tx_enable = 0;    /* Default: RX-only. See tinygs_config.h for semantics. */
 uint16_t cfg_tz_idx = 456;   /* Default: Etc/UTC. tinygs_tz_apply() at boot wires picolibc tzset. */
-int8_t cfg_log_level = 3;    /* Default: NOTE (unchanged). See tinygs_config.h — OT log-level scale. */
+int8_t cfg_log_level = 2;    /* Default: WARN — silences the steady-state MeshForwarder flood. See tinygs_config.h. */
 char cfg_last_snapshot[TINYGS_CONFIG_SNAPSHOT_MAX] = "";  /* last config.json we wrote */
 /* tinygs_station_lat/lon/alt and tinygs_radio are in tinygs_protocol.cpp */
 
