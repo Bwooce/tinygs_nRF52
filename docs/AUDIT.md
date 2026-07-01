@@ -243,7 +243,7 @@ Configured static budget (author-measured peaks in comments):
 | Consumer | Configured | Peak | Ref |
 |---|---|---|---|
 | mbedTLS heap | 32 KB | 21.7 KB (54%) | prj.conf:414 |
-| mbedTLS SSL IN / OUT | 8 KB / 2 KB | — | prj.conf:437,446 |
+| mbedTLS SSL IN / OUT | 8 KB / 512 B | — | prj.conf:457,470 |
 | OT message buffers | 80 × ~128 B ≈ 10 KB | — | prj.conf:364 |
 | net_buf TX / RX | 64 / 32 × ~152 B ≈ 15 KB | TX 47/64 | prj.conf:304-312 |
 | Main stack | 12 KB | ~6 KB | prj.conf:56 |
@@ -277,6 +277,9 @@ RAM is now higher — confirm via the STATUS line.
 
 **Avoid (last resort):** dropping `SSL_IN_CONTENT_LEN` below 8192 — needs
 server-side fragmentation, risks breaking the broker handshake (AGENTS.md:46).
+(Post-audit, `SSL_OUT_CONTENT_LEN` *was* cut 2 KB→512 B — but that's the
+**OUT** side: it drives the RFC 6066 MFL down so TLS records stay under the
+6LoWPAN fragment threshold. `IN` remains 8192, so this warning still holds.)
 
 ### Verification gate (before landing any reclaim)
 1. `./build.sh` then `west build -t ram_report` — record the delta.
