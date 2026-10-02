@@ -1,8 +1,4 @@
-#pragma GCC diagnostic ignored "-Wunused-variable"
-int tinygs_usb_init(void);
-int tinygs_usb_enable(void);
-int tinygs_usb_disable(void);
-
+#include "usb_stack.h"
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_ctrl.h>   /* log_panic() — flush deferred log before reboot */
@@ -1574,8 +1570,6 @@ static void dns_callback(otError aError, const otDnsAddressResponse *aResponse, 
  * failure. Blocks up to 15 s waiting on the DNS callback. */
 static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
 {
-    struct openthread_context *ctx = openthread_get_default_context();
-
     /* Lock for the whole resolve so dns_sem / dns_result / dns_callback
      * can't be co-opted by an overlapping caller. Hold ≤15 s. */
     k_mutex_lock(&dns_mutex, K_FOREVER);
@@ -2468,7 +2462,7 @@ static int mqtt_tls_connect(void)
     LOG_INF("Connecting with TLS...");
 
     /* Enable mbedTLS debug output (level 2 = state changes + info) */
-    int dbg_level = 2;
+    
     /* Note: this gets applied after socket creation, inside mqtt_connect */
 
     int ret = mqtt_connect(&mqtt_client);
@@ -3580,7 +3574,7 @@ static bool lora_check_rx(void)
             uint8_t count = tinygs_radio.filter[0];
             uint8_t start = tinygs_radio.filter[1];
             bool filtered = false;
-            for (uint8_t i = 0; i < count && i + 2 < sizeof(tinygs_radio.filter); i++) {
+            for (uint8_t i = 0; i < count && (size_t)(i + 2) < sizeof(tinygs_radio.filter); i++) {
                 if (start + i >= len || data[start + i] != tinygs_radio.filter[2 + i]) {
                     filtered = true;
                     break;
@@ -3701,9 +3695,7 @@ int main(void)
 
     k_work_init(&reset_work, reset_work_handler);
 
-    if (device_is_ready(console_dev)) {
-        
-    }
+    
 
     enable_peripherals();
 
@@ -3720,7 +3712,9 @@ int main(void)
     /* FATFS operations BEFORE USB enable — mount, write, read, unmount.
      * Must complete before USB MSC goes live to avoid concurrent access. */
     setup_usb_storage();
-    if (tinygs_usb_init() != 0) { LOG_ERR("USB Init failed!"); }
+    if (tinygs_usb_init() != 0) {
+        LOG_ERR("USB init failed");
+    }
 
     /* Enable USB composite (CDC ACM console + MSC drive) only if a cable
      * is plugged in. The usb_vbus_work delayable on the system workqueue
@@ -4268,22 +4262,12 @@ int main(void)
                     /* mbedTLS private heap — TLS handshake is the dominant
                      * consumer (peaks during initial CONNECT, shrinks back
                      * during steady-state). Both queries are O(1). */
-                    size_t mtls_cur = 0, mtls_max = 0;
-#if defined(CONFIG_MBEDTLS_MEMORY_BUFFER_ALLOC_C)
-                    {
-                        // size_t blk_unused;
-                        // mbedtls_memory_buffer_alloc_cur_get(&mtls_cur, &blk_unused);
-                        // mbedtls_memory_buffer_alloc_max_get(&mtls_max, &blk_unused);
-                    }
-#endif
-
-                    /* heap= now reports the unified pool: malloc/new (via
-                     * __wrap_*) and k_malloc both land in _system_heap. */
+                    
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
                     struct sys_memory_stats stats;
                     sys_heap_runtime_stats_get(&_system_heap.heap, &stats);
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
-                            "heap=%u/%u(peak=%u) mtls=%u(peak=%u/%u) "
+                            "heap=%u/%u(peak=%u) "
                             "stack=%u/%u http_stack=%u/%u "
                             "nbuf=rx%u/%u,tx%u/%u pkt=rx%u/%u,tx%u/%u "
                             "vbat=%dmV sat=%s",
@@ -4292,8 +4276,6 @@ int main(void)
                             (unsigned)stats.allocated_bytes,
                             (unsigned)CONFIG_HEAP_MEM_POOL_SIZE,
                             (unsigned)stats.max_allocated_bytes,
-                            (unsigned)mtls_cur, (unsigned)mtls_max,
-                            (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
                             (unsigned)stack_used, (unsigned)stack_size,
                             (unsigned)http_stack_used, (unsigned)http_stack_size,
                             (unsigned)nb_rx_peak, (unsigned)nb_rx_total,
@@ -4304,14 +4286,11 @@ int main(void)
                             tinygs_radio.satellite);
 #else
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
-                            "mtls=%u(peak=%u/%u) "
                             "stack=%u/%u http_stack=%u/%u "
                             "nbuf=rx%u/%u,tx%u/%u pkt=rx%u/%u,tx%u/%u "
                             "vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
-                            (unsigned)mtls_cur, (unsigned)mtls_max,
-                            (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
                             (unsigned)stack_used, (unsigned)stack_size,
                             (unsigned)http_stack_used, (unsigned)http_stack_size,
                             (unsigned)nb_rx_peak, (unsigned)nb_rx_total,
@@ -4321,6 +4300,7 @@ int main(void)
                             read_vbat_mv(),
                             tinygs_radio.satellite);
 #endif
+
                     last_status_log_ms = now_ms;
                 }
 

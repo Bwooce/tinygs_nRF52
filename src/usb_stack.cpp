@@ -1,5 +1,6 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include "usb_stack.h"
 #include <zephyr/usb/usbd.h>
 #include <zephyr/usb/class/usbd_msc.h>
 #include <zephyr/drivers/uart.h>
@@ -41,6 +42,7 @@ int tinygs_usb_init(void)
     err = usbd_add_descriptor(&tinygs_usbd, &tinygs_usb_lang);
     err |= usbd_add_descriptor(&tinygs_usbd, &tinygs_usb_mfr);
     err |= usbd_add_descriptor(&tinygs_usbd, &tinygs_usb_product);
+    err |= usbd_add_descriptor(&tinygs_usbd, &tinygs_usb_sn);
     if (err) {
         LOG_ERR("Failed to init descriptors");
         return err;
