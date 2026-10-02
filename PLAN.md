@@ -665,6 +665,8 @@ Migration on its own does **not** solve the eject problem (see Q1) — both stac
 
 **Decision (2026-05-04):** keep the legacy stack. SCSI-eject is parked. Re-evaluate when the first feature actually wanting USB-next lands, or when an NCS release bumps the deprecation to a build-failing error.
 
+**Update (2026-10-02):** migrated to USB-next (`src/usb_stack.cpp`) as part of the NCS v3.4.1 / Zephyr 4.4 move. The SCSI-eject gap in Q1 is unchanged, so physical unplug remains the config-apply trigger. The 1200-baud reset now arrives as a `USBD_MSG_CDC_ACM_LINE_CODING` message instead of the legacy DTE-rate callback. Not yet verified on hardware.
+
 ### Phase 5: RadioLib ZephyrHal Upstream PR
 The Zephyr HAL is functionally complete and multi-instance safe. To submit as a PR
 to [jgromes/RadioLib](https://github.com/jgromes/RadioLib), the following packaging

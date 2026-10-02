@@ -22,7 +22,6 @@
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/net/ieee802154_radio.h>  /* direct radio rx-on-when-idle during joiner DTLS */
 
-#include <zephyr/usb/usb_device.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/drivers/uart/cdc_acm.h>
 #include <zephyr/fs/fs.h>
