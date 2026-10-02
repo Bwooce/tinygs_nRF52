@@ -29,6 +29,7 @@ set(RADIOLIB_SRCS
 target_sources(app PRIVATE
     ${RADIOLIB_SRCS}
     src/main.cpp
+    src/usb_stack.cpp
     src/hal/test_ZephyrHal.cpp
     src/tinygs_protocol.cpp
     src/tinygs_json.cpp

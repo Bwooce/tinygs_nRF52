@@ -1,3 +1,8 @@
+#pragma GCC diagnostic ignored "-Wunused-variable"
+int tinygs_usb_init(void);
+int tinygs_usb_enable(void);
+int tinygs_usb_disable(void);
+
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_ctrl.h>   /* log_panic() — flush deferred log before reboot */
@@ -502,7 +507,7 @@ static struct sockaddr_storage broker_addr;
 
 static const struct gpio_dt_spec vext_pwr = GPIO_DT_SPEC_GET(DT_ALIAS(vext), gpios);
 
-static const struct spi_dt_spec lora_spi = SPI_DT_SPEC_GET(DT_NODELABEL(sx1262), SPI_WORD_SET(8) | SPI_TRANSFER_MSB, 0);
+static const struct spi_dt_spec lora_spi = SPI_DT_SPEC_GET(DT_NODELABEL(sx1262), SPI_WORD_SET(8) | SPI_TRANSFER_MSB);
 static const struct gpio_dt_spec lora_cs = GPIO_DT_SPEC_GET_BY_IDX(DT_PARENT(DT_NODELABEL(sx1262)), cs_gpios, 0);
 static const struct gpio_dt_spec lora_reset = GPIO_DT_SPEC_GET(DT_NODELABEL(sx1262), reset_gpios);
 static const struct gpio_dt_spec lora_busy = GPIO_DT_SPEC_GET(DT_NODELABEL(sx1262), busy_gpios);
@@ -990,7 +995,7 @@ static void reset_work_handler(struct k_work *work)
     sys_reboot(SYS_REBOOT_COLD);
 }
 
-static void baudrate_reset_handler(const struct device *dev, uint32_t baudrate)
+void baudrate_reset_handler(const struct device *dev, uint32_t baudrate)
 {
     if (baudrate == BAUD_RESET_UF2) {
         /* No logging here — USB IRQ context, logging to USB would deadlock */
@@ -1020,9 +1025,7 @@ static const char *ot_role_str(otDeviceRole role)
     }
 }
 
-static void ot_state_changed_handler(otChangedFlags flags,
-                                     struct openthread_context *ot_context,
-                                     void *user_data)
+static void ot_state_changed_handler(otChangedFlags flags, void *aContext)
 {
     LOG_INF("ATTACH-DEBUG: ot_state_changed flags=0x%08x", (unsigned)flags);
     if (flags & OT_CHANGED_THREAD_ROLE) {
@@ -1054,8 +1057,8 @@ static void ot_state_changed_handler(otChangedFlags flags,
     }
 }
 
-static struct openthread_state_changed_cb ot_state_cb = {
-    .state_changed_cb = ot_state_changed_handler,
+static struct openthread_state_changed_callback ot_state_cb = {
+    .otCallback = ot_state_changed_handler,
 };
 
 static void dump_ot_dataset(struct openthread_context *ctx)
@@ -1119,9 +1122,9 @@ static void log_ot_diagnostics(void)
         LOG_WRN("OT diagnostics: NULL context, skipping");
         return;
     }
-    openthread_api_mutex_lock(ctx);
+    openthread_mutex_lock();
     dump_ot_state(ctx);
-    openthread_api_mutex_unlock(ctx);
+    openthread_mutex_unlock();
 }
 
 /* Joiner retry.
@@ -1191,7 +1194,7 @@ static void joiner_rxon_poll_handler(struct k_work *work)
     if (!ctx) {
         return;
     }
-    openthread_api_mutex_lock(ctx);
+    openthread_mutex_lock();
     otInstance *inst = openthread_get_default_instance();
     bool want_rxon = false;
     bool commissioned = false;
@@ -1223,7 +1226,7 @@ static void joiner_rxon_poll_handler(struct k_work *work)
             }
         }
     }
-    openthread_api_mutex_unlock(ctx);
+    openthread_mutex_unlock();
 
     /* Drive the radio config outside the OT mutex. Only act on a change so we
      * don't fight the scan's own toggling during DISCOVER. */
@@ -1355,10 +1358,10 @@ static void joiner_retry_handler(struct k_work *work)
         return;
     }
 
-    openthread_api_mutex_lock(ctx);
+    openthread_mutex_lock();
     otInstance *inst = openthread_get_default_instance();
     if (!inst) {
-        openthread_api_mutex_unlock(ctx);
+        openthread_mutex_unlock();
         k_work_schedule(&joiner_retry_work, K_SECONDS(JOINER_RETRY_PERIOD_S));
         return;
     }
@@ -1376,7 +1379,7 @@ static void joiner_retry_handler(struct k_work *work)
         otError e_thr = otThreadSetEnabled(inst, true);
         LOG_INF("joiner retry: otIp6SetEnabled=%d otThreadSetEnabled=%d (%s)",
                 (int)e_ip6, (int)e_thr, otThreadErrorToString(e_thr));
-        openthread_api_mutex_unlock(ctx);
+        openthread_mutex_unlock();
         return;
     }
 
@@ -1385,7 +1388,7 @@ static void joiner_retry_handler(struct k_work *work)
                                 TINYGS_JOINER_PSKD,
                                 NULL, NULL, NULL, NULL, NULL,
                                 joiner_callback, NULL);
-    openthread_api_mutex_unlock(ctx);
+    openthread_mutex_unlock();
 
     if (err == OT_ERROR_NONE) {
         LOG_INF("joiner retry #%d started", (int)atomic_get(&joiner_attempts) + 1);
@@ -1417,7 +1420,7 @@ static void init_openthread(void)
     }
 
     LOG_INF("Starting OpenThread (Joiner mode)...");
-    openthread_state_changed_cb_register(ctx, &ot_state_cb);
+    openthread_state_changed_callback_register(&ot_state_cb);
     k_work_init_delayable(&joiner_retry_work, joiner_retry_handler);
     k_work_init_delayable(&joiner_rxon_poll_work, joiner_rxon_poll_handler);
 
@@ -1431,11 +1434,11 @@ static void init_openthread(void)
      * registered the L2 state-changed handler at sys_init — we just need
      * to enable Ip6 + start our own joiner. */
 
-    openthread_api_mutex_lock(ctx);
+    openthread_mutex_lock();
     otInstance *inst = openthread_get_default_instance();
     if (!inst) {
         LOG_ERR("OpenThread instance is NULL — bailing.");
-        openthread_api_mutex_unlock(ctx);
+        openthread_mutex_unlock();
         return;
     }
 
@@ -1479,7 +1482,7 @@ static void init_openthread(void)
     }
 
     dump_ot_state(ctx);
-    openthread_api_mutex_unlock(ctx);
+    openthread_mutex_unlock();
 }
 
 /* Build a NAT64-synthesised IPv6 peer from the mesh's favored NAT64
@@ -1586,9 +1589,9 @@ static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
     otDnsQueryConfig config;
     memset(&config, 0, sizeof(config));
     static const uint8_t dns_v4[4] = TINYGS_DNS_SERVER_V4;
-    openthread_api_mutex_lock(ctx);
+    openthread_mutex_lock();
     bool found = nat64_synth(openthread_get_default_instance(), dns_v4, &config.mServerSockAddr.mAddress);
-    openthread_api_mutex_unlock(ctx);
+    openthread_mutex_unlock();
     if (!found) {
         LOG_ERR("No /96 NAT64 route in Thread netdata — mesh has no NAT64 translator?");
         k_mutex_unlock(&dns_mutex);
@@ -1609,12 +1612,12 @@ static int resolve_ipv4_hostname(const char *hostname, otIp6Address *out)
      * for AAAA queries. With mNat64Mode=ALLOW and a NAT64 prefix in
      * netdata, OT synthesises an AAAA from the A response — we get back
      * a NAT64-prefixed address directly usable as a peer. */
-    openthread_api_mutex_lock(ctx);
+    openthread_mutex_lock();
     otError err = otDnsClientResolveIp4Address(openthread_get_default_instance(),
                                                hostname,
                                                dns_callback, (void *)(uintptr_t)current_dns_id,
                                                &config);
-    openthread_api_mutex_unlock(ctx);
+    openthread_mutex_unlock();
 
     if (err != OT_ERROR_NONE) {
         LOG_ERR("otDnsClientResolveAddress failed: %d (%s)",
@@ -2220,15 +2223,15 @@ static void mqtt_evt_handler(struct mqtt_client *client, const struct mqtt_evt *
                     struct openthread_context *ot_ctx =
                         openthread_get_default_context();
                     if (ot_ctx) {
-                        openthread_api_mutex_lock(ot_ctx);
+                        openthread_mutex_lock();
                         otThreadSetEnabled(openthread_get_default_instance(), false);
                         otIp6SetEnabled(openthread_get_default_instance(), false);
-                        openthread_api_mutex_unlock(ot_ctx);
+                        openthread_mutex_unlock();
                     }
 
                     /* USB holds HFCLK on whenever it's enabled — releasing
                      * it lets the SoC drop to LFCLK during k_sleep(). */
-                    usb_disable();
+                    tinygs_usb_disable();
 
                     /* Release the PWM peripheral so it stops requesting
                      * its clock. Also kills the breathing LED, fine, the
@@ -2692,14 +2695,14 @@ static void usb_vbus_work_handler(struct k_work *work)
     } else if (now_present != usb_is_enabled &&
                (now_ms - vbus_change_ms) >= USB_VBUS_DEBOUNCE_MS) {
         if (now_present) {
-            if (usb_enable(NULL) == 0) {
+            if (tinygs_usb_enable() == 0) {
                 usb_is_enabled = true;
                 LOG_INF("USB cable detected — stack enabled (MSC + CDC ACM)");
             } else {
                 LOG_WRN("USB cable detected but usb_enable() failed");
             }
         } else {
-            usb_disable();
+            tinygs_usb_disable();
             usb_is_enabled = false;
             LOG_INF("USB cable removed — stack disabled (~1 mA saved)");
 
@@ -3178,10 +3181,10 @@ static void sntp_sync(void)
 
     k_sem_reset(&sntp_sem);
 
-    openthread_api_mutex_lock(ot_ctx);
+    openthread_mutex_lock();
     otError err = otSntpClientQuery(openthread_get_default_instance(), &query,
                                      sntp_response_handler, NULL);
-    openthread_api_mutex_unlock(ot_ctx);
+    openthread_mutex_unlock();
 
     if (err != OT_ERROR_NONE) {
         LOG_WRN("SNTP: query failed (%d %s)", (int)err, otThreadErrorToString(err));
@@ -3699,7 +3702,7 @@ int main(void)
     k_work_init(&reset_work, reset_work_handler);
 
     if (device_is_ready(console_dev)) {
-        cdc_acm_dte_rate_callback_set(console_dev, baudrate_reset_handler);
+        
     }
 
     enable_peripherals();
@@ -3717,6 +3720,7 @@ int main(void)
     /* FATFS operations BEFORE USB enable — mount, write, read, unmount.
      * Must complete before USB MSC goes live to avoid concurrent access. */
     setup_usb_storage();
+    tinygs_usb_init();
 
     /* Enable USB composite (CDC ACM console + MSC drive) only if a cable
      * is plugged in. The usb_vbus_work delayable on the system workqueue
@@ -3726,7 +3730,7 @@ int main(void)
     last_vbus_state = usb_vbus_present();
     vbus_change_ms = k_uptime_get_32();
     if (last_vbus_state) {
-        if (usb_enable(NULL) == 0) {
+        if (tinygs_usb_enable() == 0) {
             usb_is_enabled = true;
             EARLY_LOG("USB active (MSC + CDC ACM)");
         }
@@ -3913,9 +3917,9 @@ int main(void)
     {
         struct openthread_context *ot_ctx = openthread_get_default_context();
         if (ot_ctx) {
-            openthread_api_mutex_lock(ot_ctx);
+            openthread_mutex_lock();
             bool commissioned = otDatasetIsCommissioned(openthread_get_default_instance());
-            openthread_api_mutex_unlock(ot_ctx);
+            openthread_mutex_unlock();
 
             if (!commissioned) {
                 LOG_INF("*** COMMISSIONING MODE ***");
@@ -4267,9 +4271,9 @@ int main(void)
                     size_t mtls_cur = 0, mtls_max = 0;
 #if defined(CONFIG_MBEDTLS_MEMORY_BUFFER_ALLOC_C)
                     {
-                        size_t blk_unused;
-                        mbedtls_memory_buffer_alloc_cur_get(&mtls_cur, &blk_unused);
-                        mbedtls_memory_buffer_alloc_max_get(&mtls_max, &blk_unused);
+                        // size_t blk_unused;
+                        // mbedtls_memory_buffer_alloc_cur_get(&mtls_cur, &blk_unused);
+                        // mbedtls_memory_buffer_alloc_max_get(&mtls_max, &blk_unused);
                     }
 #endif
 

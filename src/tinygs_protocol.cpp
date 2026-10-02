@@ -183,9 +183,9 @@ int tinygs_build_ping(char *buf, size_t buflen,
     int8_t thread_rssi = 0;
     struct openthread_context *ot_ctx = openthread_get_default_context();
     if (ot_ctx) {
-        openthread_api_mutex_lock(ot_ctx);
+        openthread_mutex_lock();
         otThreadGetParentAverageRssi(openthread_get_default_instance(), &thread_rssi);
-        openthread_api_mutex_unlock(ot_ctx);
+        openthread_mutex_unlock();
     }
     inst_rssi = (float)thread_rssi; /* Use Thread RSSI instead of LoRa radio RSSI */
 
