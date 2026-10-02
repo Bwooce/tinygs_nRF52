@@ -204,3 +204,17 @@ The `iot_log` system is strictly based on **Multicast UDP**. This decision is fo
 - **Zero Configuration:** Devices should not require a destination IP; they simply join the `ff05::e510` group.
 - **Efficiency:** Allows multiple LAN recipients to monitor logs simultaneously without additional device load.
 - **Action:** If logging fails, diagnose the network plumbing (MLD reports, BBR status, hardware offload bugs) rather than suggesting a switch to unicast.
+
+## 12. AI Agent Papercuts & Friction Log
+
+This section documents systemic friction points encountered by AI agents during this project's development. Future agents MUST review this to avoid repeating catastrophic mistakes.
+
+### 12.1 The Zephyr `LOG_INF` Macro Trap
+- **The Friction:** Zephyr's logging macros (`LOG_INF`, `LOG_ERR`) in this project are extremely long, often spread across multiple lines to format large telemetry strings (e.g., in `main.cpp`). Crucially, they are frequently embedded inside C preprocessor `#ifdef` blocks (like `CONFIG_SYS_HEAP_RUNTIME_STATS`).
+- **The Mistake:** Using blind shell tools like `sed` or naive multiline regex to remove or modify these statements. This led to mismatched braces, half-deleted `#else` blocks, and a cascading compiler failure loop that lasted for multiple iterations.
+- **The Rule:** NEVER use `sed`, `awk`, or blind regexes to edit Zephyr logging macros. Use exact string replacement (via the `replace_file_content` tool) or target edits manually after explicitly fetching and reading the `git show` or `cat` output of the file.
+
+### 12.2 The `git reset --hard` Black Hole
+- **The Friction:** When managing complex refactors or squashing commits, it is tempting to use `git reset --hard` to clean the slate.
+- **The Mistake:** An agent used `git reset --hard` without checking for untracked scripts (e.g., `fix_main.py`) or uncommitted symlinks (`CLAUDE.md`). This permanently deleted the agent's own refactoring tools and broke the commit payload without the agent realizing it before pushing `git commit --amend`.
+- **The Rule:** Always use `git diff --stat` and `git status` before committing. Never run `git reset --hard` without first stashing or committing untracked WIP scripts. Verify the actual payload of a commit (`git show HEAD --stat`) matches the commit message claims.
