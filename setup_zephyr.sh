@@ -21,8 +21,15 @@ west update
 west zephyr-export
 
 echo "Applying local patches..."
+OT_PATCH="${REPO_DIR}/patches/0001-openthread-force-mtd-discovery.patch"
 cd "$WORKSPACE_DIR/modules/lib/openthread"
-git apply ../../../../patches/0001-openthread-force-mtd-discovery.patch || echo "Patch already applied or failed."
+if git apply --reverse --check "$OT_PATCH" 2>/dev/null; then
+    echo "OpenThread patch already applied."
+else
+    # set -e aborts here if the patch is missing or no longer applies.
+    git apply "$OT_PATCH"
+    echo "OpenThread patch applied."
+fi
 
 echo "Setting up Python virtual environment..."
 cd "$REPO_DIR"

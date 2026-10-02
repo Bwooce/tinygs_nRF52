@@ -994,7 +994,8 @@ static void reset_work_handler(struct k_work *work)
 void baudrate_reset_handler(const struct device *dev, uint32_t baudrate)
 {
     if (baudrate == BAUD_RESET_UF2) {
-        /* No logging here — USB IRQ context, logging to USB would deadlock */
+        /* Called from the USBD message work item (see usb_stack.cpp). No
+         * logging: the reboot is immediate and the USB console goes with it. */
         nrf_power_gpregret_set(NRF_POWER, 0, 0x57);
         sys_reboot(SYS_REBOOT_COLD);
     } else if (baudrate == BAUD_RESET_WIPE_NVS ||
@@ -2461,10 +2462,6 @@ static int mqtt_tls_connect(void)
 
     LOG_INF("Connecting with TLS...");
 
-    /* Enable mbedTLS debug output (level 2 = state changes + info) */
-    
-    /* Note: this gets applied after socket creation, inside mqtt_connect */
-
     int ret = mqtt_connect(&mqtt_client);
     if (ret != 0) {
         LOG_ERR("mqtt_connect() failed: %d (%s, errno=%d/%s)",
@@ -3695,8 +3692,6 @@ int main(void)
 
     k_work_init(&reset_work, reset_work_handler);
 
-    
-
     enable_peripherals();
 
     /* NVS (settings) BEFORE FATFS so the runtime variables hold the
@@ -4262,12 +4257,22 @@ int main(void)
                     /* mbedTLS private heap — TLS handshake is the dominant
                      * consumer (peaks during initial CONNECT, shrinks back
                      * during steady-state). Both queries are O(1). */
-                    
+                    size_t mtls_cur = 0, mtls_max = 0;
+#if defined(CONFIG_MBEDTLS_MEMORY_DEBUG)
+                    {
+                        size_t blk_unused;
+                        mbedtls_memory_buffer_alloc_cur_get(&mtls_cur, &blk_unused);
+                        mbedtls_memory_buffer_alloc_max_get(&mtls_max, &blk_unused);
+                    }
+#endif
+
+                    /* heap= reports the unified pool: malloc/new (via
+                     * __wrap_*) and k_malloc both land in _system_heap. */
 #ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
                     struct sys_memory_stats stats;
                     sys_heap_runtime_stats_get(&_system_heap.heap, &stats);
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
-                            "heap=%u/%u(peak=%u) "
+                            "heap=%u/%u(peak=%u) mtls=%u(peak=%u/%u) "
                             "stack=%u/%u http_stack=%u/%u "
                             "nbuf=rx%u/%u,tx%u/%u pkt=rx%u/%u,tx%u/%u "
                             "vbat=%dmV sat=%s",
@@ -4276,6 +4281,8 @@ int main(void)
                             (unsigned)stats.allocated_bytes,
                             (unsigned)CONFIG_HEAP_MEM_POOL_SIZE,
                             (unsigned)stats.max_allocated_bytes,
+                            (unsigned)mtls_cur, (unsigned)mtls_max,
+                            (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
                             (unsigned)stack_used, (unsigned)stack_size,
                             (unsigned)http_stack_used, (unsigned)http_stack_size,
                             (unsigned)nb_rx_peak, (unsigned)nb_rx_total,
@@ -4286,11 +4293,14 @@ int main(void)
                             tinygs_radio.satellite);
 #else
                     LOG_INF("STATUS: up=%us conn=%us mqtt_rx=%u lora_rx=%u "
+                            "mtls=%u(peak=%u/%u) "
                             "stack=%u/%u http_stack=%u/%u "
                             "nbuf=rx%u/%u,tx%u/%u pkt=rx%u/%u,tx%u/%u "
                             "vbat=%dmV sat=%s",
                             (unsigned)uptime_s, (unsigned)conn_s,
                             (unsigned)mqtt_rx_count, (unsigned)lora_rx_count,
+                            (unsigned)mtls_cur, (unsigned)mtls_max,
+                            (unsigned)CONFIG_MBEDTLS_HEAP_SIZE,
                             (unsigned)stack_used, (unsigned)stack_size,
                             (unsigned)http_stack_used, (unsigned)http_stack_size,
                             (unsigned)nb_rx_peak, (unsigned)nb_rx_total,
@@ -4300,7 +4310,6 @@ int main(void)
                             read_vbat_mv(),
                             tinygs_radio.satellite);
 #endif
-
                     last_status_log_ms = now_ms;
                 }
 

@@ -46,6 +46,15 @@ target_sources(app PRIVATE
 # App Include Directories
 target_include_directories(app PRIVATE src src/hal src/web lib/RadioLib/src lib/ArduinoJson/src lib/AioP13/src)
 
+# nrf_security's generated mbedTLS config headers have no entry for
+# MBEDTLS_MEMORY_DEBUG, so CONFIG_MBEDTLS_MEMORY_DEBUG=y alone never reaches
+# memory_buffer_alloc.c. Define it for every target so the library builds
+# mbedtls_memory_buffer_alloc_{cur,max}_get and the header declares them
+# (used by the STATUS log in src/main.cpp).
+if(CONFIG_MBEDTLS_MEMORY_DEBUG)
+  zephyr_compile_definitions(MBEDTLS_MEMORY_DEBUG)
+endif()
+
 # Toolchain-provided picolibc ships both nano-malloc.c and the regular
 # malloc.c in libc.a, both defining malloc/free. Combined with Zephyr's
 # COMMON_LIBC_MALLOC the linker sees duplicates. --allow-multiple-definition
