@@ -218,3 +218,10 @@ This section documents systemic friction points encountered by AI agents during 
 - **The Friction:** When managing complex refactors or squashing commits, it is tempting to use `git reset --hard` to clean the slate.
 - **The Mistake:** An agent used `git reset --hard` without checking for untracked scripts (e.g., `fix_main.py`) or uncommitted symlinks (`CLAUDE.md`). This permanently deleted the agent's own refactoring tools and broke the commit payload without the agent realizing it before pushing `git commit --amend`.
 - **The Rule:** Always use `git diff --stat` and `git status` before committing. Never run `git reset --hard` without first stashing or committing untracked WIP scripts. Verify the actual payload of a commit (`git show HEAD --stat`) matches the commit message claims.
+
+### 12.3 Post-Migration & Refactor Hygiene
+- **The Friction:** Agents often leave behind temporary python scripts used for refactoring, leave orphaned comments/configs in `prj.conf` after trial-and-error, and ignore minor compiler warnings as long as the build succeeds. This leads to configuration rot and broken continuous integration.
+- **The Rule:** Before finalizing any major feature or migration, you MUST:
+  1. Delete any temporary scratch scripts (e.g., `fix_main.py`) from the repository.
+  2. Audit `prj.conf` and `app.overlay` to remove orphaned comments and duplicated keys.
+  3. Treat all compiler warnings as errors. Fix nested comments (`/*` inside comments), unused variables, and deprecated macros. A successful build means a warning-free build.
