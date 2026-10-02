@@ -971,7 +971,7 @@ static void reset_work_handler(struct k_work *work)
         reset_action_baud == BAUD_RESET_FACTORY) {
         LOG_INF("baud: erase OpenThread NVS (storage_partition)");
         const struct flash_area *fa;
-        int rc = flash_area_open(FIXED_PARTITION_ID(storage_partition), &fa);
+        int rc = flash_area_open(PARTITION_ID(storage_partition), &fa);
         if (rc == 0) {
             flash_area_erase(fa, 0, fa->fa_size);
             flash_area_close(fa);
@@ -1239,78 +1239,6 @@ static void joiner_rxon_poll_handler(struct k_work *work)
                     commissioned ? K_SECONDS(1) : K_MSEC(150));
 }
 
-/* Comprehensively install + enable the OT operational dataset.
- *
- * Single helper called from all three "we have a dataset, now bring up
- * Thread" paths: init_openthread (NVS-loaded), joiner_callback (joiner just
- * succeeded), and joiner_retry_handler (saw PAN/Channel set, dataset must
- * be present internally).
- *
- * The point: don't whack-a-mole individual TLVs. Use the TLV-bytes round-
- * trip (otDatasetGetActiveTlvs → otDatasetSetActiveTlvs) so every TLV the
- * dataset has — Channel/PAN/Key/XPan/MLP/Name/Pskc/SecPol/ActiveTs/ChMask
- * — gets re-applied to OT's internal subsystems in one shot. Bypasses the
- * mIs*Present-flag-fragility on the struct-form API. Also dump a one-line
- * dataset state so we can see what stuck.
- *
- * Caller must hold the OT API mutex. */
-static void ot_install_active_and_enable(otInstance *inst, const char *tag)
-{
-    /* Don't otJoinerStop() — it can tear down joiner state that MLE's first
-     * timer still references, leading to a NULL fn ptr crash on MPSL Work
-     * when that timer fires. If the joiner is still running, our SetEnabled
-     * will return Busy and we'll be retried; better than crashing. */
-
-    /* Probe every store OT exposes. Pending dataset is where the joiner
-     * staging data and any delayed network-key migration sits before being
-     * promoted to Active. If only Pending has TLVs, that's the bug — joiner
-     * stored to Pending but never committed to Active. */
-    otOperationalDatasetTlvs at = {};
-    otOperationalDatasetTlvs pt = {};
-    otError e_at = otDatasetGetActiveTlvs(inst, &at);
-    otError e_pt = otDatasetGetPendingTlvs(inst, &pt);
-    LOG_INF("DS(%s): activeTlvs rc=%d len=%u  pendingTlvs rc=%d len=%u  isCommissioned=%d",
-            tag, (int)e_at, (unsigned)at.mLength,
-            (int)e_pt, (unsigned)pt.mLength,
-            (int)otDatasetIsCommissioned(inst));
-
-    /* Promote Pending to Active if Pending has bytes and Active doesn't. */
-    if ((e_at != OT_ERROR_NONE || at.mLength == 0) &&
-        e_pt == OT_ERROR_NONE && pt.mLength > 0) {
-        otError e_set = otDatasetSetActiveTlvs(inst, &pt);
-        LOG_INF("DS(%s): promoted Pending->Active rc=%d (%s)",
-                tag, (int)e_set, otThreadErrorToString(e_set));
-    } else if (e_at == OT_ERROR_NONE && at.mLength > 0) {
-        /* Active already populated — round-trip to force re-application. */
-        otError e_set = otDatasetSetActiveTlvs(inst, &at);
-        LOG_INF("DS(%s): Active round-trip rc=%d (%s)",
-                tag, (int)e_set, otThreadErrorToString(e_set));
-    } else {
-        LOG_WRN("DS(%s): no TLVs in Active or Pending — nothing to install",
-                tag);
-    }
-
-    /* Live-state diagnostic — what OT actually has now after the round-trip. */
-    otPanId panid = otLinkGetPanId(inst);
-    uint8_t chan = otLinkGetChannel(inst);
-    const otExtendedPanId *xp = otThreadGetExtendedPanId(inst);
-    const otMeshLocalPrefix *ml = otThreadGetMeshLocalPrefix(inst);
-    const char *netname = otThreadGetNetworkName(inst);
-    LOG_INF("DS(%s): PAN=0x%04x ch=%u name=%s xpan=%02x%02x%02x%02x%02x%02x%02x%02x mlp=%02x%02x:%02x%02x:%02x%02x:%02x%02x::",
-            tag, (unsigned)panid, (unsigned)chan,
-            netname ? netname : "(null)",
-            xp->m8[0], xp->m8[1], xp->m8[2], xp->m8[3],
-            xp->m8[4], xp->m8[5], xp->m8[6], xp->m8[7],
-            ml->m8[0], ml->m8[1], ml->m8[2], ml->m8[3],
-            ml->m8[4], ml->m8[5], ml->m8[6], ml->m8[7]);
-
-    /* Enable IP6 and Thread. Order matters: IP6 first, then Thread. */
-    otError e_ip6 = otIp6SetEnabled(inst, true);
-    otError e_thr = otThreadSetEnabled(inst, true);
-    LOG_INF("DS(%s): otIp6SetEnabled=%d otThreadSetEnabled=%d (%s)",
-            tag, (int)e_ip6, (int)e_thr, otThreadErrorToString(e_thr));
-}
-
 static void joiner_callback(otError error, void *context)
 {
     struct openthread_context *ctx = openthread_get_default_context();
@@ -1328,7 +1256,7 @@ static void joiner_callback(otError error, void *context)
          *
          * Joiner::Finish has just torn down the SecureAgent and reset its
          * mTimer; the dataset is already SaveLocal()'d to NVS by the JOIN_ENT
-         * handler. DO NOT re-enter ot_install_active_and_enable here — its
+         * handler. DO NOT re-import the dataset here — an
          * otDatasetSetActiveTlvs round-trip re-imports the dataset while MLE
          * is mid-attach and the joiner's mTimer/k_work hasn't been fully
          * disarmed in mpsl_work_q, causing a NULL fn-ptr crash on MPSL Work

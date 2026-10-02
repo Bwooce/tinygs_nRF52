@@ -103,7 +103,7 @@ int tinygs_parse_filter(const char *json, size_t len, uint8_t *buf, size_t buf_s
 /*
  * Parse foff command payload.
  * Can be a simple float ("1500.0") or array [offset, tolerance, refresh_ms].
- * Returns offset in Hz. If tolerance/refresh present, writes them to *tol/*refresh_ms.
+ * Returns offset in Hz. If tolerance/refresh present, writes them to *tol and *refresh_ms.
  * Pass NULL for tol/refresh_ms if not needed.
  */
 /*

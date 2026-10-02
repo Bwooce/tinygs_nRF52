@@ -46,6 +46,11 @@ target_sources(app PRIVATE
 # App Include Directories
 target_include_directories(app PRIVATE src src/hal src/web lib/RadioLib/src lib/ArduinoJson/src lib/AioP13/src)
 
+# AioP13 is third-party code; keep its warnings out of the build log without
+# editing the vendored source.
+set_source_files_properties(lib/AioP13/src/AioP13.cpp PROPERTIES
+  COMPILE_OPTIONS "-Wno-parentheses;-Wno-unused-function;-Wno-comment")
+
 # nrf_security's generated mbedTLS config headers have no entry for
 # MBEDTLS_MEMORY_DEBUG, so CONFIG_MBEDTLS_MEMORY_DEBUG=y alone never reaches
 # memory_buffer_alloc.c. Define it for every target so the library builds

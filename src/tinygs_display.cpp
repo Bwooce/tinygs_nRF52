@@ -211,9 +211,9 @@ static void draw_xbm_2x(int x, int y, int w, int h,
     uint16_t row_buf[DISP_W];
     struct display_buffer_descriptor desc = {
         .buf_size = (uint32_t)(w * 2 * sizeof(uint16_t)),
-        .width = (uint32_t)(w * 2),
+        .width = (uint16_t)(w * 2),
         .height = 1,
-        .pitch = (uint32_t)(w * 2),
+        .pitch = (uint16_t)(w * 2),
     };
     for (int r = 0; r < h; r++) {
         /* Build one scaled row */
@@ -514,7 +514,6 @@ bool tinygs_display_init(void)
     /* Boot splash — TinyGS logo (2x scaled) + version, 2 seconds */
     {
         int logo_2x_w = LOGO_W * 2;  /* 134 pixels */
-        int logo_2x_h = LOGO_H * 2;  /* 64 pixels */
         int logo_x = (DISP_W - logo_2x_w) / 2;  /* centered */
         int logo_y = 4;
         draw_xbm_2x(logo_x, logo_y, LOGO_W, LOGO_H,

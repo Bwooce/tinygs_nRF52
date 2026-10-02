@@ -18,9 +18,10 @@ USBD_DESC_SERIAL_NUMBER_DEFINE(tinygs_usb_sn);
 
 USBD_DESC_CONFIG_DEFINE(fs_cfg_desc, "FS Configuration");
 
+/* bMaxPower is in 2 mA units: 50 = 100 mA. */
 USBD_CONFIGURATION_DEFINE(tinygs_fs_config,
               USB_SCD_SELF_POWERED,
-              100, &fs_cfg_desc);
+              50, &fs_cfg_desc);
 
 USBD_DEFINE_MSC_LUN(nand, "NAND", "Zephyr", "FlashDisk", "0.00");
 
