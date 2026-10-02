@@ -1,12 +1,12 @@
 #!/bin/bash
-# TinyGS Zephyr Build Script — NCS v3.3.0 / Zephyr 3.7 / SDK 0.17.4
+# TinyGS Zephyr Build Script — NCS v3.4.1 / Zephyr 4.4 / SDK 1.0.1
 #
 # Optimised for 16 cores. Output in build/.
 
 set -e
 
 WORKSPACE_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-SDK_DIR="${ZEPHYR_SDK_DIR:-$HOME/zephyr-sdk-0.17.4}"
+SDK_DIR="${ZEPHYR_SDK_DIR:-$HOME/zephyr-sdk-1.0.1}"
 NCS_DIR="${WORKSPACE_DIR}/ncs"
 
 source "${WORKSPACE_DIR}/.venv/bin/activate"
@@ -14,7 +14,7 @@ source "${NCS_DIR}/zephyr/zephyr-env.sh"
 
 export ZEPHYR_SDK_INSTALL_DIR="${SDK_DIR}"
 
-echo "Building Zephyr App against NCS v3.3.0 (SDK ${SDK_DIR##*-})..."
+echo "Building Zephyr App against NCS v3.4.1 (SDK ${SDK_DIR##*-})..."
 # Out-of-tree board lives at boards/heltec/heltec_mesh_node_t114/. Point
 # west at it via BOARD_ROOT so HWMv2 board discovery picks it up.
 CMAKE_BUILD_PARALLEL_LEVEL=16 west build \

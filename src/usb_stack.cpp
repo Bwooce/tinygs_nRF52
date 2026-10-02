@@ -13,6 +13,7 @@ USBD_DEVICE_DEFINE(tinygs_usbd,
 USBD_DESC_LANG_DEFINE(tinygs_usb_lang);
 USBD_DESC_MANUFACTURER_DEFINE(tinygs_usb_mfr, "TinyGS");
 USBD_DESC_PRODUCT_DEFINE(tinygs_usb_product, "TinyGS Configurator");
+USBD_DESC_SERIAL_NUMBER_DEFINE(tinygs_usb_sn);
 
 USBD_DESC_CONFIG_DEFINE(fs_cfg_desc, "FS Configuration");
 
@@ -52,14 +53,16 @@ int tinygs_usb_init(void)
     }
 
     err = usbd_register_class(&tinygs_usbd, "cdc_acm_0", USBD_SPEED_FS, 1);
-    if (err && err != -EALREADY) LOG_ERR("Failed to register cdc_acm_0");
+    if (err && err != -EALREADY) return err;
 
     err = usbd_register_class(&tinygs_usbd, "msc_0", USBD_SPEED_FS, 1);
-    if (err && err != -EALREADY) LOG_ERR("Failed to register msc_0");
+    if (err && err != -EALREADY) return err;
 
     err = usbd_device_set_code_triple(&tinygs_usbd, USBD_SPEED_FS, USB_BCC_MISCELLANEOUS, 0x02, 0x01);
-    
+    if (err) return err;
+
     err = usbd_msg_register_cb(&tinygs_usbd, usbd_msg_cb);
+    if (err) return err;
 
     err = usbd_init(&tinygs_usbd);
     if (err) {

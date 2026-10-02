@@ -1,1 +1,206 @@
-AGENTS.md
+# AI Agent Instructions - TinyGS nRF52 Port
+
+This document provides foundational mandates and workflows for AI agents working on the TinyGS port to the Heltec Mesh Node T114 (nRF52840).
+
+## 1. Project Mandates
+- **Framework:** Must use Zephyr RTOS (nRF Connect SDK).
+- **Core Strategy:** Native MQTT over TLS directly to `mqtt.tinygs.com` via OpenThread NAT64.
+- **Hardware:** Heltec T114 (nRF52840 + SX1262 LoRa).
+- **Architecture:** Zero Bluetooth/Matter. Use Pure USB Mass Storage Class (MSC) for initial configuration.
+
+## 2. Development Workflow
+- **Environment:** NCS workspace is `./ncs` (NCS v3.4.1 / Zephyr 4.3.99-dev / Zephyr SDK 1.0.1). The legacy v2.6.0 workspace was removed once v3.3 was proven in production (2026-05-07). The Python virtual environment is in `./.venv`.
+- **Build:** Use `./build.sh`. Builds against NCS v3.4.1, optimized for 16 cores (`CMAKE_BUILD_PARALLEL_LEVEL=16`). Output in `build/` (sysbuild layout: `build/tinygs_nRF52/zephyr/zephyr.uf2`).
+- **Flash:** Use `./flash.sh`. Performs a hard pre-flight UF2 safety check (refuses to flash if any block reaches outside the app partition into FATFS or the bootloader), triggers a 1200-baud auto-reset, waits for the UF2 bootloader drive, copies the firmware, and restarts the serial logger.
+- **Debugging:** All logs are routed to the USB CDC ACM serial port (`/dev/ttyACM0`). Always use `LOG_INF`, `LOG_ERR`, etc. Use `python3 scripts/serial_log.py` to monitor and log to file.
+
+### USB Device Identities
+The device presents different USB identities depending on its state:
+
+| State | VID:PID | USB Name | /dev/sda is | /dev/ttyACM0 is |
+|-------|---------|----------|-------------|-----------------|
+| **UF2 Bootloader** (double-tap RST or 1200-baud reset) | 239a:0071 | HT-n5262 | UF2 flash drive — copy .uf2 here | Bootloader serial |
+| **Application firmware** (normal boot) | 2fe3:0001 | TinyGS Configurator | 64KB FATFS partition (config.json) — NOT for flashing | CDC ACM console log |
+
+**IMPORTANT:** When the application is running, `/dev/sda` is the FATFS config partition, NOT the bootloader flash drive. Do NOT copy .uf2 files to it.
+
+### Flash Workflow
+1. `./build.sh` — builds firmware, generates `build/zephyr/zephyr.uf2`
+2. `./flash.sh` — sends 1200-baud reset, mounts bootloader drive, copies .uf2
+3. Device auto-reboots into new firmware
+4. `python3 scripts/serial_log.py /dev/ttyACM0 115200 serial.log` — monitor output
+
+### 1200-Baud Reset (Verified Working)
+The firmware registers a CDC ACM baud rate callback. When the host sets 1200 baud
+(via `stty -F /dev/ttyACM0 1200`), the firmware writes `0x57` to GPREGRET and does
+a cold reboot, entering the UF2 bootloader. This avoids needing a physical RST double-tap.
+Note: the LOG_INF in the callback was intentionally removed — logging to USB from USB
+IRQ context would deadlock.
+
+## 3. Memory Management (The "Squeeze" Playbook)
+The nRF52840 has 256KB RAM. The current baseline (Thread + USB MSC + mbedTLS) uses ~162KB (62%). If RAM becomes critical (< 5KB free), apply these optimizations in order:
+
+1.  **LTO:** Enable `CONFIG_LTO=y` in `prj.conf` to strip unused static data.
+2.  **Heap Sharing:** Set `CONFIG_MBEDTLS_ENABLE_HEAP=n` to force mbedTLS to use the global system heap (`CONFIG_HEAP_MEM_POOL_SIZE`) instead of a static 60KB array.
+3.  **Stack Profiling:** Use `CONFIG_THREAD_ANALYZER=y` to identify and shrink oversized thread stacks.
+4.  **Buffer Shrinking:** As a last resort, reduce `CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN` from 16384 to 4096 (requires server-side fragment support).
+
+## 4. Coding Standards
+- **RadioLib HAL:** All LoRa interaction must go through the custom `ZephyrHal` class in `src/hal/`.
+- **JSON:** Use Zephyr json.h for protocol parsing, snprintf for JSON output.
+- **Portability:**
+    - Use explicit byte shifting for wire protocols.
+    - Always cast `uint32_t` to `(unsigned long)` and use `%lu` or `%lX` in log statements for compatibility across ESP32/nRF52.
+    - Every Zephyr thread/workqueue must feed the Task Watchdog if enabled.
+
+## 5. Kconfig vs Board Definition
+
+We build against `nrf52840dk/nrf52840` (HWMv2 board name format introduced in Zephyr 3.7) and override everything in `app.overlay` and `prj.conf`.
+The board Kconfig (nrf52840dk) already sets some options like `SOC_DCDC_NRF52X` and clock sources.
+
+**Rules:**
+- **prj.conf** is for application-level config (MQTT, TLS, networking, app features). Prefer this.
+- **Board Kconfig** sets hardware-level defaults (DCDC, SoC features). Don't duplicate in prj.conf.
+- If a Kconfig symbol has no prompt ("not directly user-configurable"), it's set by board/SoC Kconfig. Do NOT add it to prj.conf — it will error.
+- Before adding a new CONFIG_ option, check if the board already provides it: `grep CONFIG_NAME ncs/zephyr/boards/nordic/nrf52840dk/Kconfig*` (note: HWMv2 path is `boards/nordic/nrf52840dk/`, not the old `boards/arm/nrf52840dk_nrf52840/`).
+- Long-term: create a proper T114 board definition under `boards/` to replace the dk overlay hack.
+
+## 6. Configuration Architecture
+- Do NOT add BLE or Matter code.
+- Configuration is handled via a dynamic `index.html` on the USB MSC drive.
+- The device parses `config.json` from the FATFS partition at boot.
+- Remote configuration changes via MQTT must be persisted back to the `config.json` file.
+
+## 7. OTA Updates
+- OTA is deferred to Phase 3+ and will require MCUboot (flashed via SWD).
+- For Phase 1, use the Adafruit UF2 bootloader with `.uf2` files for USB flashing.
+- See PLAN.md Section 3.5 for the MCUboot migration path.
+
+## 8. Flash Partition Safety — CRITICAL
+
+### The Adafruit UF2 bootloader lives at the TOP of flash, NOT at 0x0.
+
+The nRF52840 flash layout with Adafruit bootloader (verified via SWD recovery log):
+
+```
+Address    Region                      Size     Protection
+────────────────────────────────────────────────────────────
+0x00000    MBR + SoftDevice S140       152KB    read-only (DTS)
+0x26000    Application code            752KB    code_partition
+0xE2000    FATFS storage (USB MSC)     64KB     tinygs_storage (min 128 sectors for FAT format)
+0xF2000    NVS settings (OpenThread)   8KB      storage_partition
+0xF4000    Adafruit Bootloader code    38KB     read-only (DTS) ← PROTECTED
+0xFDC00    Bootloader config           2KB      ← PROTECTED
+0xFE000    MBR params page             4KB      ← PROTECTED
+0xFF000    Bootloader settings         4KB      ← PROTECTED
+0x100000   End of flash
+```
+
+### MANDATORY RULES — violating these BRICKS the device:
+
+1. **NEVER place any writable partition at or above 0xF4000.** The bootloader, its
+   config, MBR params, and settings pages occupy 0xF4000-0x100000. Writing to ANY
+   address in this range destroys the bootloader and requires SWD to recover.
+
+2. **NEVER set CONFIG_FLASH_LOAD_SIZE such that FLASH_LOAD_OFFSET + FLASH_LOAD_SIZE > 0xE2000.**
+   The application must not extend into the FATFS region or beyond.
+
+3. **NEVER move any writable partition above 0xE2000** except NVS at 0xF2000-0xF4000.
+   FATFS (64KB) must stay within 0xE2000-0xF2000. NVS (8KB) within 0xF2000-0xF4000.
+
+4. **Always verify the partition map after ANY change to app.overlay or prj.conf:**
+   - Build the project
+   - Check `build/zephyr/zephyr.dts` for the merged partition layout
+   - Confirm NO partition overlaps with 0xF4000-0x100000
+   - Confirm the UF2 start address in build output matches 0x26000
+
+5. **The `boot_partition` at 0x0 is the MBR + SoftDevice, NOT the bootloader.**
+   The actual bootloader code is `bootloader_partition` at 0xF4000. Both must be
+   marked `read-only` in the DTS overlay.
+
+6. **CONFIG_BOOTLOADER_MCUBOOT must remain `n`.** Enabling it generates MCUboot
+   child images that overwrite the UF2 bootloader when flashed via UF2.
+
+### How the bootloader was bricked (twice):
+- A FATFS partition was placed at 0xF8000 (inside the bootloader region)
+- `fs_mkfs()` erased flash pages from 0xF8000 to 0x100000
+- This destroyed the bootloader binary, config, MBR params, and settings
+- Device became completely unresponsive on USB (no bootloader = no DFU)
+- Recovery required SWD probe + full reflash of bootloader + SoftDevice
+
+### Reference:
+- Adafruit bootloader linker: https://github.com/adafruit/Adafruit_nRF52_Bootloader/blob/master/linker/nrf52840.ld
+- Bootloader code: FLASH ORIGIN=0xF4000, LENGTH=38KB
+- MBR params: 0xFE000 (4KB)
+- Bootloader settings: 0xFF000 (4KB)
+
+## 9. Runtime Configuration Items
+
+These values need to be user-configurable at runtime (eventually via NVS Preferences
+store with wear-levelling). Items marked **[server]** are set/updated by the TinyGS
+MQTT server. Items marked **[user]** are set locally via USB MSC config.json or
+commissioning. Items marked **[build]** are compile-time only (prj.conf).
+
+### Station Identity
+| Item | Source | Current Location | Notes |
+|------|--------|-----------------|-------|
+| MQTT username | **[user]** | mqtt_credentials.h (gitignored) | TinyGS dashboard credential |
+| MQTT password | **[user]** | mqtt_credentials.h (gitignored) | TinyGS dashboard credential |
+| Station name | **[user]** | Derived from FICR DEVICEID | MAC-based %04X%08X |
+| Station latitude | **[user]** | config.json `lat` field, tinygs_station_lat | Read at boot from FATFS; default -33.8688 (Sydney) |
+| Station longitude | **[user]** | config.json `lon` field, tinygs_station_lon | Read at boot from FATFS; default 151.2093 (Sydney) |
+| Station altitude (m) | **[user/server]** | config.json `alt` field, tinygs_station_alt | Read at boot; also updated by set_pos_prm command |
+
+### Radio Configuration (from server)
+All radio parameters are fully dynamic, set by the server via begine/batch_conf MQTT commands.
+
+| Item | Source | Current Location | Notes |
+|------|--------|-----------------|-------|
+| Frequency (MHz) | **[server]** | tinygs_radio.frequency | Via begine/batch_conf/freq commands |
+| Spreading factor | **[server]** | tinygs_radio.sf | 7-12, via begine/batch_conf |
+| Coding rate | **[server]** | tinygs_radio.cr | 5-8, via begine/batch_conf |
+| Bandwidth (kHz) | **[server]** | tinygs_radio.bw | Via begine/batch_conf |
+| Sync word | **[server]** | tinygs_radio.sw | Via begine/batch_conf (default 18) |
+| Preamble length | **[server]** | tinygs_radio.pl | Via begine/batch_conf |
+| CRC settings | **[server]** | tinygs_radio.crc | sw CRC, poly, init, etc. via begine/batch_conf |
+| FLDRO | **[server]** | tinygs_radio.fldro | Force LDRO, via begine/batch_conf |
+| IQ inversion | **[server]** | tinygs_radio.iIQ | Via begine/batch_conf |
+| Gain | **[server]** | tinygs_radio.gain | Via begine/batch_conf (unused on SX1262) |
+| Freq offset (Hz) | **[server]** | tinygs_radio.freq_offset | Via foff command |
+| Packet filter | **[server]** | tinygs_radio.filter | Via filter command |
+| modem_conf | **[server]** | tinygs_radio.modem_conf | Last begine/batch_conf JSON payload; echoed in welcome |
+| Satellite name | **[server]** | tinygs_radio.satellite | Via begine/batch_conf/sat commands |
+| NORAD ID | **[server]** | tinygs_radio.norad | Catalog number from server |
+
+### Operational Settings
+| Item | Source | Current Location | Notes |
+|------|--------|-----------------|-------|
+| Station name | **[server]** | NVS settings / config.json | Via set_name command; persisted to NVS, reboots to reconnect with new name |
+| MQTT keepalive (s) | **[build]** | prj.conf CONFIG_MQTT_KEEPALIVE=90 | Also sets TinyGS ping interval; 90 s for fast half-open detection after Thread flaps. 300 s / 600 s reliable on the wire but detection lag ~9 min at 300 s lost begines during mesh churn. |
+| TX allowed | **[user]** | Hardcoded false | Currently always false |
+| Low power mode | **[user]** | Not implemented | Phase 3 SED sleep config |
+| OT log level | **[build]** | prj.conf OPENTHREAD_LOG_LEVEL_CRIT | CRIT/WARN/NOTE/INFO/DEBG |
+| App log level | **[build]** | prj.conf LOG_DEFAULT_LEVEL=3 | 0=off, 1=err, 2=wrn, 3=inf, 4=dbg |
+
+### Thread Network (managed by OpenThread)
+| Item | Source | Current Location | Notes |
+|------|--------|-----------------|-------|
+| Thread dataset | **[auto]** | NVS (0xF2000) | Obtained via Joiner commissioning |
+| Joiner PSKd | **[build]** | prj.conf OPENTHREAD_JOINER_PSKD | "TNYGS2026NRF" |
+
+## 10. Known Network Bugs
+
+### Intel Wi-Fi IPv6 Multicast UDP Checksum Bug (AX210 / iwlwifi)
+- **Symptom:** UDP multicast packets (like `ff05::e510` used by `iot_log`) are silently dropped by the receiving device (e.g., OpenThread Border Router or nRF52) because the UDP checksum is mathematically invalid. `tcpdump` on the sender shows `[bad udp cksum]`, and the receiver's `Udp6InCsumErrors` counter (`/proc/net/snmp6`) increments.
+- **Root Cause:** A hardware offload math bug in Intel Wi-Fi adapters (AX200/AX210/AX211 via `iwlwifi`). The hardware silicon miscalculates the IPv6 pseudo-header for multicast addresses when generating the hardware UDP checksum.
+- **Fix:** Disable IPv6 TX checksum offloading for the interface so the Linux kernel calculates the checksum correctly in software.
+  - **Temporary:** `sudo ethtool -K wlp3s0 tx-checksum-ipv6 off`
+  - **Permanent (NetworkManager):** `nmcli connection modify "YourWiFiName" 802-11-wireless.mtu 1500 +ethtool.feature-tx-checksum-ipv6 off`
+
+## 11. IoT Log Architectural Decisions
+
+### Multicast Mandate
+The `iot_log` system is strictly based on **Multicast UDP**. This decision is foundational and should not be circumvented with unicast workarounds.
+- **Zero Configuration:** Devices should not require a destination IP; they simply join the `ff05::e510` group.
+- **Efficiency:** Allows multiple LAN recipients to monitor logs simultaneously without additional device load.
+- **Action:** If logging fails, diagnose the network plumbing (MLD reports, BBR status, hardware offload bugs) rather than suggesting a switch to unicast.

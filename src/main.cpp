@@ -3720,7 +3720,7 @@ int main(void)
     /* FATFS operations BEFORE USB enable — mount, write, read, unmount.
      * Must complete before USB MSC goes live to avoid concurrent access. */
     setup_usb_storage();
-    tinygs_usb_init();
+    if (tinygs_usb_init() != 0) { LOG_ERR("USB Init failed!"); }
 
     /* Enable USB composite (CDC ACM console + MSC drive) only if a cable
      * is plugged in. The usb_vbus_work delayable on the system workqueue

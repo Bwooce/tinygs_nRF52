@@ -9,8 +9,8 @@ This document provides foundational mandates and workflows for AI agents working
 - **Architecture:** Zero Bluetooth/Matter. Use Pure USB Mass Storage Class (MSC) for initial configuration.
 
 ## 2. Development Workflow
-- **Environment:** NCS workspace is `./ncs` (NCS v3.3.0 / Zephyr 4.3.99-dev / Zephyr SDK 0.17.4). The legacy v2.6.0 workspace was removed once v3.3 was proven in production (2026-05-07). The Python virtual environment is in `./.venv`.
-- **Build:** Use `./build.sh`. Builds against NCS v3.3.0, optimized for 16 cores (`CMAKE_BUILD_PARALLEL_LEVEL=16`). Output in `build/` (sysbuild layout: `build/tinygs_nRF52/zephyr/zephyr.uf2`).
+- **Environment:** NCS workspace is `./ncs` (NCS v3.4.1 / Zephyr 4.3.99-dev / Zephyr SDK 1.0.1). The legacy v2.6.0 workspace was removed once v3.3 was proven in production (2026-05-07). The Python virtual environment is in `./.venv`.
+- **Build:** Use `./build.sh`. Builds against NCS v3.4.1, optimized for 16 cores (`CMAKE_BUILD_PARALLEL_LEVEL=16`). Output in `build/` (sysbuild layout: `build/tinygs_nRF52/zephyr/zephyr.uf2`).
 - **Flash:** Use `./flash.sh`. Performs a hard pre-flight UF2 safety check (refuses to flash if any block reaches outside the app partition into FATFS or the bootloader), triggers a 1200-baud auto-reset, waits for the UF2 bootloader drive, copies the firmware, and restarts the serial logger.
 - **Debugging:** All logs are routed to the USB CDC ACM serial port (`/dev/ttyACM0`). Always use `LOG_INF`, `LOG_ERR`, etc. Use `python3 scripts/serial_log.py` to monitor and log to file.
 
