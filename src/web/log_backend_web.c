@@ -258,7 +258,7 @@ int web_log_read_since(uint32_t since_seq, char *out, int cap, uint32_t *out_seq
 			if (epoch > 0) {
 				time_t t = (time_t)epoch;
 				struct tm tm_local;
-				localtime_r(&t, &tm_local);
+				gmtime_r(&t, &tm_local);
 				snprintf(ts, sizeof(ts), WEB_LOG_TS_PREFIX_FMT,
 					 tm_local.tm_hour, tm_local.tm_min,
 					 tm_local.tm_sec);

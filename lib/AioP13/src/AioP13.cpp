@@ -1,3 +1,6 @@
+#pragma GCC diagnostic ignored "-Wparentheses"
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wcomment"
 //
 // AioP13.cpp
 //

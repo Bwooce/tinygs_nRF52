@@ -1,0 +1,22 @@
+diff --git a/src/core/thread/discover_scanner.cpp b/src/core/thread/discover_scanner.cpp
+index a79333657..00de96cdd 100644
+--- a/src/core/thread/discover_scanner.cpp
++++ b/src/core/thread/discover_scanner.cpp
+@@ -153,7 +153,7 @@ Error DiscoverScanner::Discover(const Mac::ChannelMask &aScanChannels,
+     mState       = (mScanChannels.GetNextChannel(mScanChannel) == kErrorNone) ? kStateScanning : kStateScanDone;
+ 
+     // For rx-off-when-idle device, temporarily enable receiver during discovery procedure.
+-    if (!Get<Mle>().IsDisabled() && !Get<Mle>().IsRxOnWhenIdle())
++    if (true /* FORCED MTD DISCOVERY */)
+     {
+         Get<MeshForwarder>().SetRxOnWhenIdle(true);
+     }
+@@ -245,7 +245,7 @@ void DiscoverScanner::HandleDiscoveryRequestFrameTxDone(Message &aMessage, Error
+ void DiscoverScanner::HandleDiscoverComplete(void)
+ {
+     // Restore Data Polling or CSL for rx-off-when-idle device.
+-    if (!Get<Mle>().IsDisabled() && !Get<Mle>().IsRxOnWhenIdle())
++    if (true /* FORCED MTD DISCOVERY */)
+     {
+         Get<MeshForwarder>().SetRxOnWhenIdle(false);
+     }
