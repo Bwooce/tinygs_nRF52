@@ -932,20 +932,32 @@ extern "C" int read_vbat_mv(void)
         .resolution = 12,
     };
 
-    int ret = adc_read(adc_dev, &seq);
+    int32_t sample_sum = 0;
+    int valid_samples = 0;
+    
+    for (int i = 0; i < 8; i++) {
+        int ret = adc_read(adc_dev, &seq);
+        if (ret == 0 && sample >= 0) {
+            sample_sum += sample;
+            valid_samples++;
+        }
+        k_sleep(K_MSEC(1)); /* small delay between samples */
+    }
 
     /* Disable bias to save power */
     if (device_is_ready(adc_ctrl.port)) {
         gpio_pin_set_dt(&adc_ctrl, 0);
     }
 
-    if (ret != 0 || sample < 0) {
-        LOG_WRN("ADC read failed: %d (sample=%d)", ret, sample);
+    if (valid_samples == 0) {
+        LOG_WRN("ADC read failed (0 valid samples)");
         return 3700;
     }
 
+    float avg_sample = (float)sample_sum / valid_samples;
+
     /* raw * (3600mV / 4096) * 4.9 */
-    return (int)((float)sample * 3600.0f / 4096.0f * 4.9f);
+    return (int)(avg_sample * 3600.0f / 4096.0f * 4.9f);
 }
 
 /* -------------------------------------------------------------------------- */
