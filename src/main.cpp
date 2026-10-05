@@ -908,7 +908,10 @@ extern "C" int read_vbat_mv(void)
     if (device_is_ready(adc_ctrl.port)) {
         gpio_pin_configure_dt(&adc_ctrl, GPIO_OUTPUT_ACTIVE);
         gpio_pin_set_dt(&adc_ctrl, 1);
-        k_msleep(2);
+        /* Let the sense node settle before sampling: the 390k:100k divider
+         * has ~80k source impedance, so any filter capacitance on the pin
+         * charges slowly. Meshtastic waits 10 ms on this board. */
+        k_msleep(50);
     }
 
     /* input_positive is the SAADC channel index (NRF_SAADC_AINn = n), which
