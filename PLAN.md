@@ -667,6 +667,8 @@ Migration on its own does **not** solve the eject problem (see Q1) — both stac
 
 **Update (2026-10-02):** migrated to USB-next (`src/usb_stack.cpp`) as part of the NCS v3.4.1 / Zephyr 4.4 move. The SCSI-eject gap in Q1 is unchanged, so physical unplug remains the config-apply trigger. The 1200-baud reset now arrives as a `USBD_MSG_CDC_ACM_LINE_CODING` message instead of the legacy DTE-rate callback. Not yet verified on hardware.
 
+**Update (2026-10-05):** verified on hardware at `78586f1`. On the bench the config drive, CDC console and 1200-baud reset all work, and a 3 h 20 min USB soak held one MQTT connection with no Thread events. The three USB-next threads (`usbd`, `usbd_msc`, `udc_nrfx`) peaked under 450 B of their 2048 B stacks. Outside with no USB host the board ran 20 h without a reboot and received 55 LoRa packets; MQTT dropped intermittently on a −90 dBm Thread link. Still open: the daily SNTP resync on `sysworkq` has not been observed, the vbat averaging and settle-delay commits (`b572659`, `efb8106`) have not run on a board, and the UF2 is 32 bytes under the `flash.sh` limit.
+
 ### Phase 5: RadioLib ZephyrHal Upstream PR
 The Zephyr HAL is functionally complete and multi-instance safe. To submit as a PR
 to [jgromes/RadioLib](https://github.com/jgromes/RadioLib), the following packaging
